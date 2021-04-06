@@ -22,15 +22,21 @@ def btc_scraping():
 
     return format_result
 
+def btc_price_list():
+    price_list = []
+    price_list.append(btc_scraping())
+
+    return price_list[0]
+
 
 def report():
-    btc_price = f'Buenos días Caballes el precio de Bitcoin es de {btc_scraping()}'
+    btc_price = f'Buenos días Caballes el precio de Bitcoin es de {btc_price_list()}'
     bot_send_text(btc_price)
 
 if __name__ == '__main__':
     
-    schedule.every().day.at("08:00").do(report)
-    #schedule.every(10).minutes.do(report)
+    #schedule.every().day.at("08:00").do(report)
+    schedule.every(10).minutes.do(report)
 
     while True:
         schedule.run_pending()
