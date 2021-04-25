@@ -1,7 +1,6 @@
 from bs4 import BeautifulSoup  
 import requests
 import schedule
-import statics
 
 def bot_send_text(bot_message):
 
@@ -26,23 +25,23 @@ def btc_scraping():
 price_list = [] 
 def btc_price_list():
     price_list.append(btc_scraping())
-    mean = statics.mean(price_list)
-    max_btc = statics.max(price_list)
-    min_btc = statics.min(price_list)
-    print(f'El promedio del BTC es {mean} y el max es {max_btc} y el min es {min_btc}')
+    #max_btc = max(price_list)
+    #min_btc = min(price_list)
+    #print(f'El precio del BTC es {price_list[-1]}, el max es {max_btc} y el min es {min_btc}')
 
     return 
 
 
 def report():
-    btc_price = f'Buenos días Caballes el precio de Bitcoin es de {btc_price_list()}'
+    btc_price = f'El precio del BTC es {price_list[-1]}, el max es {max(price_list)} y el min es {min(price_list)}'
     bot_send_text(btc_price)
+
 
 if __name__ == '__main__':
     
     #schedule.every().day.at("08:00").do(report)
-    #schedule.every(10).minutes.do(report)
-    schedule.every(1).minutes.do(btc_price_list)
+    schedule.every(60).minutes.do(report)
+    schedule.every(10).minutes.do(btc_price_list)
     
 
     while True:
