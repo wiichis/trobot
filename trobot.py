@@ -22,11 +22,12 @@ def btc_scraping():
 
     return format_result
 
+price_list = [] 
 def btc_price_list():
-    price_list = []
     price_list.append(btc_scraping())
+    print(price_list)
 
-    return price_list[0]
+    return 
 
 
 def report():
@@ -36,7 +37,9 @@ def report():
 if __name__ == '__main__':
     
     #schedule.every().day.at("08:00").do(report)
-    schedule.every(10).minutes.do(report)
+    #schedule.every(10).minutes.do(report)
+    schedule.every(2).minutes.do(btc_price_list)
+    
 
     while True:
         schedule.run_pending()
