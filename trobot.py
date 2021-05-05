@@ -29,6 +29,7 @@ def read():
     with open("./archivos/btc_price.csv", "r", encoding="utf-8") as f:
         for i in f:
             price_list.append(i)
+    #Quitando los "\n"
     price_list_filter = list(filter(lambda x: x != "\n", price_list))
 
 def btc_price_list():
@@ -41,9 +42,6 @@ def btc_price_list():
     price_list_number = {i.replace(",","") for i in price_list_number}
     price_list_number = {float(i) for i in price_list_number}
 
-
-    #print(f'El precio del BTC es {price_list[-1]}, el max es {max(price_list)}, el min es {min(price_list)} y el promedio es {btc_price_mean}')
-    #print(price_list_number)
     return 
 
 #Guardando el archivo
@@ -55,7 +53,7 @@ def write():
             
 
 def report():
-    btc_price = f'El precio del BTC es {price_list_filter[-1]}, el max es {max(price_list_filter)}, el min es {min(price_list_filter)} y el promedio es ${int(sum(price_list_number)/len(price_list_number))}'
+    btc_price = f'El precio del BTC es {price_list_filter[0]}\n El max es {max(price_list_filter)} El min es {min(price_list_filter)} El promedio es ${int(sum(price_list_number)/len(price_list_number))}'
     bot_send_text(btc_price)
 
 
