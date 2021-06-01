@@ -34,7 +34,7 @@ def read():
 
 def btc_price_list():
     price_list_filter.insert(0, btc_scraping())
-    if len(price_list_filter) > 800:
+    if len(price_list_filter) > 600:
         price_list_filter.pop()
     #Quitando $ de la lista original y convirtiendo en float
     global price_list_number
@@ -53,14 +53,13 @@ def write():
             
 
 def report():
-    btc_price = f'El precio del BTC es {price_list_filter[0]}\n El max es {max(price_list_filter)} El min es {min(price_list_filter)} El promedio es ${int(sum(price_list_number)/len(price_list_number))}'
+    btc_price = f'El precio del BTC es {price_list_filter[0]}\nEl max es {max(price_list_filter)}El min es {min(price_list_filter)}El promedio es ${int(sum(price_list_number)/len(price_list_number))}'
     bot_send_text(btc_price)
 
 
 if __name__ == '__main__':
-    
     #schedule.every().day.at("08:00").do(report)
-    schedule.every(290).minutes.do(report)
+    schedule.every(250).minutes.do(report)
     schedule.every(45).minutes.do(read)
     schedule.every(45).minutes.do(btc_price_list)
     schedule.every(45).minutes.do(write)
