@@ -51,6 +51,10 @@ def write():
             f.write(i + "\n")
             
             
+def run():
+    read()
+    btc_price_list()
+    write()
 
 def report():
     btc_price = f'El precio del BTC es {price_list_filter[0]}\nEl max es {max(price_list_filter)}El min es {min(price_list_filter)}El promedio es ${int(sum(price_list_number)/len(price_list_number))}'
@@ -60,10 +64,8 @@ def report():
 if __name__ == '__main__':
     #schedule.every().day.at("08:00").do(report)
     schedule.every(250).minutes.do(report)
-    schedule.every(45).minutes.do(read)
-    schedule.every(45).minutes.do(btc_price_list)
-    schedule.every(45).minutes.do(write)
-    
+    schedule.every(1).minutes.do(run)
+
 
     while True:
         schedule.run_pending()
