@@ -2,13 +2,13 @@ from bs4 import BeautifulSoup
 import requests
 import schedule
 import numpy as np
+import credentials
 
 def bot_send_text(bot_message):
 
-    bot_token = '1794033765:AAHRZZFudN6zqDo2HJ6OeteGzRGV9vplpdo'
-    bot_chatID = '566709397'
-    send_text = 'https://api.telegram.org/bot' + bot_token + '/sendMessage?chat_id=' + bot_chatID + '&parse_mode=Markdown&text=' + bot_message
-
+    bot_token = credentials.token
+    bot_chatID = credentials.chatID
+    send_text = credentials.send + bot_message
     response = requests.get(send_text)
 
     return response
@@ -55,7 +55,7 @@ def run():
     write()
 
 def report():
-    btc_price = f'El precio del BTC es {price_list_filter[0]}\nEl max es {max(price_list_filter)}El min es {min(price_list_filter)}El promedio es ${int(sum(price_list_number)/len(price_list_number))}'
+    btc_price = f'Reporte Mensual BTC\nEl precio del BTC es {price_list_filter[0]}\nEl max es {max(price_list_filter)}El min es {min(price_list_filter)}El promedio es ${int(sum(price_list_number)/len(price_list_number))}'
     bot_send_text(btc_price)
 
 #Reporte Diario
