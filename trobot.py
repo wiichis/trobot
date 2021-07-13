@@ -62,7 +62,7 @@ def report():
 def btc_price_day():
     run()
     price_list_day = price_list_filter[0:30]
-    btc_report_day = f'Reporte Diario BTC\nArranco con {price_list_day[14]}Cerro con {price_list_day[0]}\nEl max fue {max(price_list_day)}El min fue {min(price_list_day)}'
+    btc_report_day = f'Reporte Diario BTC\nAbrió con {price_list_day[14]}Cerró con {price_list_day[0]}\nEl max fue {max(price_list_day)}El min fue {min(price_list_day)}'
     bot_send_text(btc_report_day)
 
 
