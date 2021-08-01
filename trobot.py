@@ -39,7 +39,7 @@ def read():
 
 def btc_price_list():
     global actual_value 
-    actual_value = btc_scraping()
+    actual_value = actual_value
     price_list_filter.insert(0, actual_value)
     if len(price_list_filter) > 800:
         price_list_filter.pop()
