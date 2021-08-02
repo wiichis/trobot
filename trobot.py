@@ -38,8 +38,7 @@ def read():
     price_list_filter = list(filter(lambda x: x != "\n", price_list))
 
 def btc_price_list():
-    global actual_value 
-    actual_value = actual_value
+    actual_value = btc_scraping()
     price_list_filter.insert(0, actual_value)
     if len(price_list_filter) > 800:
         price_list_filter.pop()
@@ -81,7 +80,7 @@ def btc_price_day():
 
 if __name__ == '__main__':
     schedule.every().day.at("18:00").do(btc_price_day)
-    schedule.every(250).minutes.do(report)
+    schedule.every(290).minutes.do(report)
     schedule.every(35).minutes.do(run)
 
 
