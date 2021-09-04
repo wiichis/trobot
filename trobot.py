@@ -27,6 +27,12 @@ def report_max_min(value_max_min):
     btc_price_max_min = f'Alerta el valor {value_max_min} se acaba de romper el nuevo {value_max_min} es {price_list_filter[0]}'
     bot_send_text(btc_price_max_min)
 
+#Alerta para comprar o vender
+def report_buy_sell(value_buy_sell):
+    btc_price_buy_sell = f'El precio del BTC es cercano al promedio ${mean_number} se recomienda {value_buy_sell} lo antes posible'
+    bot_send_text(btc_price_buy_sell)
+
+
 #Leyendo el archivo
 def read():
     global price_list_filter
@@ -40,7 +46,7 @@ def read():
 def btc_price_list():
     actual_value = btc_scraping()
     price_list_filter.insert(0, actual_value)
-    if len(price_list_filter) > 800:
+    if len(price_list_filter) > 1000:
         price_list_filter.pop()
 
     #Alerta de cambio de Techo o piso
@@ -51,37 +57,44 @@ def btc_price_list():
 
     #Quitando $ de la lista original y convirtiendo en float
     global price_list_number
-    price_list_number = {i.lstrip("$") for i in price_list_filter}
-    price_list_number = {i.replace(",","") for i in price_list_number}
+    global mean_number
+    price_list_number = {i.replace(",","").replace("$","") for i in price_list_filter}
     price_list_number = {float(i) for i in price_list_number}
+    
+    # Alerta compra o venta
+    mean_number = int(sum(price_list_number)/len(price_list_number))
+    actual_value_int = float(actual_value.replace(",","").replace("$",""))
+    if actual_value_int < mean_number*1.01:
+        report_buy_sell('comprar')
+    elif actual_value_int > mean_number*1.15:
+        report_buy_sell('vender')
     return 
-
 #Guardando el archivo
 def write():
     with open("./archivos/btc_price.csv", "w", encoding="utf-8") as f:
         for i in price_list_filter:
-            f.write(i + "\n")
-            
+            f.write("\n" + i)
+                        
 def run():
     read()
     btc_price_list()
     write()
 
 def report():
-    btc_price = f'Reporte Mensual BTC\nEl precio del BTC es {price_list_filter[0]}\nEl max es {max(price_list_filter)}El min es {min(price_list_filter)}El promedio es ${int(sum(price_list_number)/len(price_list_number))}'
+    btc_price = f'Reporte Mensual BTC\nEl precio del BTC es {price_list_filter[0]}\nEl max es {max(price_list_filter)}El min es {min(price_list_filter)}El promedio es ${mean_number}'
     bot_send_text(btc_price)
 
 #Reporte Diario
 def btc_price_day():
     run()
     price_list_day = price_list_filter[0:30]
-    btc_report_day = f'Reporte Diario BTC\nAbrió con {price_list_day[14]}Cerró con {price_list_day[0]}\nEl max fue {max(price_list_day)}El min fue {min(price_list_day)}'
+    btc_report_day = f'Reporte Diario BTC\nAbrió con {price_list_day[16]}Cerró con {price_list_day[0]}\nEl max fue {max(price_list_day)}El min fue {min(price_list_day)}'
     bot_send_text(btc_report_day)
 
 if __name__ == '__main__':
     schedule.every().day.at("18:00").do(btc_price_day)
     schedule.every(290).minutes.do(report)
-    schedule.every(35).minutes.do(run)
+    schedule.every(30).minutes.do(run)
 
 
     while True:
