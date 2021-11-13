@@ -28,8 +28,8 @@ def report_max_min(value_max_min):
     bot_send_text(btc_price_max_min)
 
 #Alerta para comprar o vender
-def report_buy_sell(value_buy_sell):
-    btc_price_buy_sell = f'El precio del BTC es cercano al promedio ${mean_number} se recomienda {value_buy_sell} lo antes posible'
+def report_buy_sell(value_buy_sell, value_mean):
+    btc_price_buy_sell = f'El precio del BTC es {price_list_filter[0]} {value_mean} al promedio ${mean_number} se recomienda {value_buy_sell} lo antes posible'
     bot_send_text(btc_price_buy_sell)
 
 
@@ -46,7 +46,7 @@ def read():
 def btc_price_list():
     actual_value = btc_scraping()
     price_list_filter.insert(0, actual_value)
-    if len(price_list_filter) > 1000:
+    if len(price_list_filter) > 1400:
         price_list_filter.pop()
 
     #Alerta de cambio de Techo o piso
@@ -65,9 +65,9 @@ def btc_price_list():
     mean_number = int(sum(price_list_number)/len(price_list_number))
     actual_value_int = float(actual_value.replace(",","").replace("$",""))
     if actual_value_int < mean_number*1.01:
-        report_buy_sell('comprar')
-    elif actual_value_int > mean_number*1.15:
-        report_buy_sell('vender')
+        report_buy_sell('comprar','inferior')
+    elif actual_value_int > mean_number*1.05:
+        report_buy_sell('vender','superior en mas del 5%')
     return 
 #Guardando el archivo
 def write():
@@ -88,12 +88,12 @@ def report():
 def btc_price_day():
     run()
     price_list_day = price_list_filter[0:30]
-    btc_report_day = f'Reporte Diario BTC\nAbrió con {price_list_day[16]}Cerró con {price_list_day[0]}\nEl max fue {max(price_list_day)}El min fue {min(price_list_day)}'
+    btc_report_day = f'Reporte Diario BTC\nAbrió con {price_list_day[20]}Cerró con {price_list_day[0]}\nEl max fue {max(price_list_day)}El min fue {min(price_list_day)}'
     bot_send_text(btc_report_day)
 
 if __name__ == '__main__':
     schedule.every().day.at("18:00").do(btc_price_day)
-    schedule.every(290).minutes.do(report)
+    schedule.every(280).minutes.do(report)
     schedule.every(30).minutes.do(run)
 
 
