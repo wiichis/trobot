@@ -28,8 +28,8 @@ def report_max_min(value_max_min):
     bot_send_text(btc_price_max_min)
 
 #Alerta para comprar o vender
-def report_buy_sell(value_buy_sell, value_mean):
-    btc_price_buy_sell = f'El precio del BTC es {price_list_filter[0]} {value_mean} al promedio ${mean_number} se recomienda {value_buy_sell} lo antes posible'
+def report_buy_sell(value_buy_sell, value_mean, dif_percent_positive):
+    btc_price_buy_sell = f'El precio del BTC es {price_list_filter[0]} {value_mean} {dif_percent_positive}% al valor promedio ${mean_number} se recomienda {value_buy_sell}'
     bot_send_text(btc_price_buy_sell)
 
 
@@ -64,10 +64,11 @@ def btc_price_list():
     # Alerta compra o venta
     mean_number = int(sum(price_list_number)/len(price_list_number))
     actual_value_int = float(actual_value.replace(",","").replace("$",""))
+
     if actual_value_int < mean_number*1.01:
-        report_buy_sell('comprar','inferior')
+        report_buy_sell('Aumentar el capital de trabajo','inferior en un',dif_percent_positive = int(100-((actual_value_int/mean_number)*100)))
     elif actual_value_int > mean_number*1.05:
-        report_buy_sell('vender','superior en mas del 5%')
+        report_buy_sell('Vender BTC por dinero FIAT','superior en un',dif_percent_positive = int(((actual_value_int/mean_number)*100)-100))
     return 
 #Guardando el archivo
 def write():
