@@ -2,7 +2,11 @@ from bs4 import BeautifulSoup
 import requests
 import schedule
 import numpy as np
+import locale
 import credentials
+
+#Configurando Dolares
+locale.setlocale(locale.LC_ALL,'en_US.UTF-8')
 
 def bot_send_text(bot_message):
 
@@ -24,13 +28,18 @@ def btc_scraping():
 
 #Alertando cuando se rompe el techo o el piso
 def report_max_min(value_max_min):
-    btc_price_max_min = f'Alerta el valor {value_max_min} se acaba de romper el nuevo {value_max_min} es {price_list_filter[0]}'
+    btc_price_max_min = f'Alerta el valor {value_max_min} se acaba de romper el nuevo {value_max_min} es {locale.currency(price_list_filter[0])}'
     bot_send_text(btc_price_max_min)
 
-#Alerta para comprar o vender
-def report_buy_sell(value_buy_sell, value_mean, dif_percent_positive):
-    btc_price_buy_sell = f'El precio del BTC es {price_list_filter[0]} {value_mean} {dif_percent_positive}% al valor promedio ${mean_number} se recomienda {value_buy_sell}'
+#Alerta para comprar o vender FIAT
+def report_buy_sell(value_buy_sell, value_mean, dif_percent):
+    btc_price_buy_sell = f'El precio del BTC es {locale.currency(price_list_filter[0])} {value_mean} {dif_percent}% al valor promedio {locale.currency(mean_number)} se recomienda {value_buy_sell}'
     bot_send_text(btc_price_buy_sell)
+
+#Poner la orden de compra
+def order_value(order_value_text, order_value_money):
+    order_value_act = f'Se recomienda actualizar el valor de la orden de {order_value_text} a {locale.currency(order_value_money)} ahora mismo'
+    bot_send_text(order_value_act)
 
 
 #Leyendo el archivo
@@ -42,39 +51,52 @@ def read():
             price_list.append(i)
     #Quitando los "\n"
     price_list_filter = list(filter(lambda x: x != "\n", price_list))
+    price_list_filter = list(np.float_(price_list_filter))
 
 def btc_price_list():
     actual_value = btc_scraping()
-    price_list_filter.insert(0, actual_value)
-    if len(price_list_filter) > 1400:
+    actual_value_int = float(actual_value.replace(",","").replace("$",""))
+    price_list_filter.insert(0, actual_value_int)
+    if len(price_list_filter) > 1440:
         price_list_filter.pop()
 
     #Alerta de cambio de Techo o piso
-    if actual_value == max(price_list_filter):
+    if actual_value_int == max(price_list_filter):
         report_max_min('maximo')
-    elif actual_value == min(price_list_filter):
-        report_max_min('minimo')    
+    elif actual_value_int == min(price_list_filter):
+        report_max_min('minimo') 
 
-    #Quitando $ de la lista original y convirtiendo en float
-    global price_list_number
+ 
+    #Calulo promedio y mean
     global mean_number
-    price_list_number = {i.replace(",","").replace("$","") for i in price_list_filter}
-    price_list_number = {float(i) for i in price_list_number}
-    
-    # Alerta compra o venta
-    mean_number = int(sum(price_list_number)/len(price_list_number))
-    actual_value_int = float(actual_value.replace(",","").replace("$",""))
+    mean_number = int(np.mean(price_list_filter))
 
-    if actual_value_int < mean_number*1.01:
-        report_buy_sell('Aumentar el capital de trabajo','inferior en un',dif_percent_positive = int(100-((actual_value_int/mean_number)*100)))
-    elif actual_value_int > mean_number*1.05:
-        report_buy_sell('Vender BTC por dinero FIAT','superior en un',dif_percent_positive = int(((actual_value_int/mean_number)*100)-100))
+    #Alerta actualizar orden de compra
+    price_list_number_day = price_list_filter[0:48]
+    mean_number_day = int(np.mean(price_list_number_day))
+
+    if actual_value_int < mean_number_day * 0.97:
+        order_value_money_act = np.mean(price_list_number_day[0:4]) + 2000
+        if actual_value_int + 2000 < order_value_money_act:
+            order_value('compra', actual_value_int + 2000)
+    elif actual_value_int > mean_number_day * 1.03:
+        order_value_money_act = np.mean(price_list_number_day[0:4]) - 2000
+        if actual_value_int -2000 > order_value_money_act:
+            order_value('venta', actual_value_int - 2000)
+
+
+    #Alerta compra o venta
+    if actual_value_int < mean_number * 1.06:
+        report_buy_sell('aumentar el capital de trabajo','inferior en un',dif_percent = int(100-((actual_value_int/mean_number)*100)))
+    elif actual_value_int > mean_number * 1.06:
+        report_buy_sell('vender BTC por dinero FIAT','superior en un',dif_percent = int(((actual_value_int/mean_number)*100)-100))
     return 
+    
 #Guardando el archivo
 def write():
     with open("./archivos/btc_price.csv", "w", encoding="utf-8") as f:
         for i in price_list_filter:
-            f.write("\n" + i)
+            f.write(str(i) + '\n')
                         
 def run():
     read()
@@ -82,7 +104,7 @@ def run():
     write()
 
 def report():
-    btc_price = f'Reporte Mensual BTC\nEl precio del BTC es {price_list_filter[0]}\nEl max es {max(price_list_filter)}El min es {min(price_list_filter)}El promedio es ${mean_number}'
+    btc_price = f'Reporte Mensual BTC\nEl precio del BTC es {locale.currency(price_list_filter[0])}\nEl max es {locale.currency(max(price_list_filter))}\nEl min es {locale.currency(min(price_list_filter))}\nEl promedio es {locale.currency(mean_number)}'
     bot_send_text(btc_price)
 
 #Reporte Diario
