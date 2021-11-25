@@ -75,18 +75,18 @@ def btc_price_list():
     price_list_number_day = price_list_filter[0:48]
     mean_number_day = int(np.mean(price_list_number_day))
 
-    if actual_value_int < mean_number_day * 0.97:
-        order_value_money_act = np.mean(price_list_number_day[0:4]) + 2000
+    if actual_value_int < mean_number * 0.97:
+        order_value_money_act = mean_number_day + 2000
         if actual_value_int + 2000 < order_value_money_act:
             order_value('compra', actual_value_int + 2000)
-    elif actual_value_int > mean_number_day * 1.03:
-        order_value_money_act = np.mean(price_list_number_day[0:4]) - 2000
+    elif actual_value_int > mean_number * 1.03:
+        order_value_money_act = mean_number_day - 2000
         if actual_value_int -2000 > order_value_money_act:
             order_value('venta', actual_value_int - 2000)
 
 
     #Alerta compra o venta
-    if actual_value_int < mean_number * 1.06:
+    if actual_value_int < mean_number * 0.94:
         report_buy_sell('aumentar el capital de trabajo','inferior en un',dif_percent = int(100-((actual_value_int/mean_number)*100)))
     elif actual_value_int > mean_number * 1.06:
         report_buy_sell('vender BTC por dinero FIAT','superior en un',dif_percent = int(((actual_value_int/mean_number)*100)-100))
@@ -111,7 +111,7 @@ def report():
 def btc_price_day():
     run()
     price_list_day = price_list_filter[0:30]
-    btc_report_day = f'Reporte Diario BTC\nAbrió con {price_list_day[20]}Cerró con {price_list_day[0]}\nEl max fue {max(price_list_day)}El min fue {min(price_list_day)}'
+    btc_report_day = f'Reporte Diario BTC\nAbrió con {locale.currency(price_list_day[20])}\nCerró con {locale.currency(price_list_day[0])}\nEl max fue {locale.currency(max(price_list_day))}\nEl min fue {locale.currency(min(price_list_day))}'
     bot_send_text(btc_report_day)
 
 if __name__ == '__main__':
