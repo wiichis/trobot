@@ -4,6 +4,7 @@ from urllib import request
 from requests import Request, Session
 from requests.exceptions import ConnectionError, Timeout, TooManyRedirects
 import json
+import credentials
 import pandas as pd
 
 url = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest'
@@ -14,7 +15,7 @@ parameters = {
 }
 headers = {
   'Accepts': 'application/json',
-  'X-CMC_PRO_API_KEY': 'dd5a391c-047f-49df-bf3f-7c800272cd51',
+  'X-CMC_PRO_API_KEY': credentials.key,
 }
 
 session = Session()
@@ -31,7 +32,7 @@ try:
       quote = entry['quote']['USD']['price']
       price_now.setdefault(symbol, quote)
   
-  
+  #Pasando el diccionario a un dataframe y guardadno en un archivo
   df = pd.DataFrame([price_now])
   df_file = pd.read_csv('./archivos/cripto_price.csv')
   df_new = pd.concat([df_file.reset_index(drop=True),df.tail(1).reset_index(drop=True)],axis=0)

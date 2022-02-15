@@ -4,10 +4,12 @@ import schedule
 import numpy as np
 import locale
 import credentials
+import api
 
 #Configurando Dolares
 locale.setlocale(locale.LC_ALL,'en_US.UTF-8')
 
+#Fucncion Enviar Mensajes
 def bot_send_text(bot_message):
 
     bot_token = credentials.token
@@ -25,6 +27,8 @@ def btc_scraping():
     format_result = result.text
 
     return format_result
+
+
 
 #Alertando cuando se rompe el techo o el piso
 def report_max_min(value_max_min):
@@ -116,7 +120,7 @@ if __name__ == '__main__':
     schedule.every().day.at("18:00").do(btc_price_day)
     schedule.every(280).minutes.do(report)
     schedule.every(30).minutes.do(run)
-
+    schedule.every(5).minutes.do(api.df)
 
     while True:
         schedule.run_pending()
