@@ -75,10 +75,10 @@ def btc_price_list():
     price_list_number_day = price_list_filter[0:720]
     mean_number_day = int(np.mean(price_list_number_day))
 
-    if actual_value_int < min(price_list_number_day[1:720]):
+    if actual_value_int < min(price_list_number_day[1:480]):
         if actual_value_int + 2000 < max(price_list_number_day[1:144]):
             order_value('compra', actual_value_int + 2000)
-    elif actual_value_int > max(price_list_number_day[1:720]):
+    elif actual_value_int > max(price_list_number_day[1:480]):
         if actual_value_int -2000 > min(price_list_number_day[1:144]):
             order_value('venta', actual_value_int - 2000)
 
