@@ -29,41 +29,37 @@ def read():
 
 #Reporte Mensual
 def report():
-    list = df.iloc[-1]['BTC']
-    maximos = df.max()
-    minimos = df.min()
-    promedio = df.mean()
-    cripto_price = f'--REPORTE MENSUAL--\n  MAX:\n{maximos}\n\n    MIN:\n{minimos}\n\n    MEAN:\n{promedio}'
-
-
-    # btc_price = f'Reporte Mensual BTC\nEl precio del BTC es {locale.currency(price_list_filter[0])}\n
-    #               El max es {locale.currency(max(price_list_filter))}\n
-    #               El min es {locale.currency(min(price_list_filter))}\n
-    #               El promedio es {locale.currency(mean_number)}'
+    cripto_price = f'--REPORTE MENSUAL--\n  MAX:\n{df.max()}\n\n    MIN:\n{df.min()}\n\n    MEAN:\n{df.mean()}'
     bot_send_text(cripto_price)
 
-# #Alertando cuando se rompe el techo o el piso
-# def report_max_min(value_max_min):
-#     btc_price_max_min = f'Alerta el valor {value_max_min} se acaba de romper el nuevo {value_max_min} es {locale.currency(price_list_filter[0])}'
-#     bot_send_text(btc_price_max_min)
+#Alertando cuando se rompe el techo o el piso
+def report_max_min(value_max_min,cripto_name,cripto_value):
+    btc_price_max_min = f'Alerta el valor {value_max_min} del {cripto_name} se acaba de romper el nuevo {value_max_min} es {cripto_value}'
+    bot_send_text(btc_price_max_min)
+
+#Alerta de cambio de Techo o piso
+def floor_ceiling():
+    cripto_list = list(df)
+    for cripto in cripto_list:
+        if df.iloc[-1][cripto] == df[cripto].max():
+            report_max_min('maximo',cripto,df.iloc[-1][cripto])
+        elif df.iloc[-1][cripto] == df[cripto].min():
+            report_max_min('minimo', cripto,df.iloc[-1][cripto]) 
+
 
 # #Alerta para comprar o vender FIAT
 # def report_buy_sell(value_buy_sell, value_mean, dif_percent):
 #     btc_price_buy_sell = f'El precio del BTC es {locale.currency(price_list_filter[0])} {value_mean} {dif_percent}% al valor promedio {locale.currency(mean_number)} se recomienda {value_buy_sell}'
 #     bot_send_text(btc_price_buy_sell)
 
+    
+
+
+
 # #Poner la orden de compra
 # def order_value(order_value_text, order_value_money):
 #     order_value_act = f'Se recomienda actualizar el valor de la orden de {order_value_text} a {locale.currency(order_value_money)} ahora mismo'
 #     bot_send_text(order_value_act)
-
-    
-#     #Alerta de cambio de Techo o piso
-#     if actual_value_int == max(price_list_filter):
-#         report_max_min('maximo')
-#     elif actual_value_int == min(price_list_filter):
-#         report_max_min('minimo') 
-
  
 #     #Calulo promedio y mean
 #     global mean_number
@@ -107,8 +103,10 @@ def run():
 if __name__ == '__main__':
     #schedule.every().day.at("18:00").do(btc_price_day)
     #schedule.every(280).minutes.do(report)
-    schedule.every(1).minutes.do(run)
+    schedule.every(60).minutes.do(run)
     schedule.every(5).minutes.do(api.get_data)
+    schedule.every(5).minutes.do(read)
+    schedule.every(5).minutes.do(floor_ceiling)
 
     while True:
         schedule.run_pending()
