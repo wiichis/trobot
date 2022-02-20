@@ -7,39 +7,41 @@ import json
 import credentials
 import pandas as pd
 
-url = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest'
-parameters = {
-  'start':'1',
-  'limit':'20',
-  'convert':'USD'
-}
-headers = {
-  'Accepts': 'application/json',
-  'X-CMC_PRO_API_KEY': credentials.key,
-}
 
-session = Session()
-session.headers.update(headers)
+def get_data():
+  url = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest'
+  parameters = {
+    'start':'1',
+    'limit':'20',
+    'convert':'USD'
+  }
+  headers = {
+    'Accepts': 'application/json',
+    'X-CMC_PRO_API_KEY': credentials.key,
+  }
 
-try:
-  response = session.get(url, params=parameters)
-  data = json.loads(response.text)
+  session = Session()
+  session.headers.update(headers)
 
-#Obteniendo los campos buscados y guardando en un diccionario
-  price_now = {}
-  for entry in data['data']:
-      symbol =entry['symbol']
-      quote = entry['quote']['USD']['price']
-      price_now.setdefault(symbol, quote)
-  
-  #Pasando el diccionario a un dataframe y guardadno en un archivo
-  df = pd.DataFrame([price_now])
-  df_file = pd.read_csv('./archivos/cripto_price.csv')
-  df_new = pd.concat([df_file.reset_index(drop=True),df.tail(1).reset_index(drop=True)],axis=0)
-  df_new.to_csv('./archivos/cripto_price.csv',index = False)
+  try:
+    response = session.get(url, params=parameters)
+    data = json.loads(response.text)
 
-except (ConnectionError, Timeout, TooManyRedirects) as e:
-  print(e)
-   
+  #Obteniendo los campos buscados y guardando en un diccionario
+    price_now = {}
+    for entry in data['data']:
+        symbol =entry['symbol']
+        quote = entry['quote']['USD']['price']
+        price_now.setdefault(symbol, quote)
+    
+    #Pasando el diccionario a un dataframe y guardadno en un archivo
+    df = pd.DataFrame([price_now])
+    df_file = pd.read_csv('./archivos/cripto_price.csv')
+    df_new = pd.concat([df_file.reset_index(drop=True),df.tail(1).reset_index(drop=True)],axis=0)
+    df_new.to_csv('./archivos/cripto_price.csv',index = False)
+
+  except (ConnectionError, Timeout, TooManyRedirects) as e:
+    print(e)
+    
 
 
