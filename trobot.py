@@ -76,10 +76,10 @@ def order_value():
     cripto_list = list(df)
     for cripto in cripto_list:
         actual_value = df.iloc[-1][cripto]
-        if actual_value < df.iloc[-1390][cripto].min():  #Actualizar a 2880
+        if actual_value < df.iloc[-1417][cripto].min():  #Actualizar a 2880
             if actual_value + (actual_value * 0.05) < df.iloc[-1000][cripto].max(): #Actualizar a 1728
                 report_order_value('compra', actual_value + (actual_value * 0.05),cripto)
-        elif actual_value > df.iloc[-1390][cripto].max(): #Actualizar a 2880
+        elif actual_value > df.iloc[-1417][cripto].max(): #Actualizar a 2880
             if actual_value - (actual_value * 0.05) > df.iloc[-1000][cripto].min(): #Actualizar a 1728
                 report_order_value('venta', actual_value - (actual_value * 0.05),cripto)
 
