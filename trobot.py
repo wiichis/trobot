@@ -1,3 +1,4 @@
+from calendar import month
 import requests
 import schedule
 import pandas as pd
@@ -28,13 +29,18 @@ def read():
     df = df[['BTC','ETH','XRP','SOL','LUNA','DOGE']]
 
 #Reporte Mensual
-def report():
-    cripto_price = f'--REPORTE MENSUAL--\n  MAX:\n{df.max()}\n\n    MIN:\n{df.min()}\n\n    MEAN:\n{df.mean()}'
-    bot_send_text(cripto_price)
+def report_month():
+    cripto_price_month = f'--🗓 REPORTE MENSUAL--\n\n    MAX:\n{df.max()}\n\n    MIN:\n{df.min()}\n\n    MEAN:\n{df.mean()}'
+    bot_send_text(cripto_price_month)
+
+#Alerta Reporte Diario
+def report_price_day():
+    report_day = f'--⏰ REPORTE DIARIO --\n\n    OPEN:\n{df.iloc[-144]}\n\n    CLOSE:\n{df.iloc[-1]}\n\n    MAX:\n{df.iloc[-144:].max()}\n\n    MIN:\n{df.iloc[-144:].min()}        '
+    bot_send_text(report_day)
 
 #Alertando cuando se rompe el techo o el piso
 def report_max_min(value_max_min,cripto_name,cripto_value):
-    btc_price_max_min = f'Alerta el valor {value_max_min} del {cripto_name} se acaba de romper el nuevo {value_max_min} es {cripto_value}'
+    btc_price_max_min = f'🚨Alerta🚨 el valor {value_max_min} de {cripto_name} se acaba de romper el nuevo {value_max_min} es ${round(cripto_value,3)}'
     bot_send_text(btc_price_max_min)
 
 #Obteniendo Datos de cambio de Techo o piso
@@ -42,32 +48,31 @@ def floor_ceiling():
     cripto_list = list(df)
     for cripto in cripto_list:
         if df.iloc[-1][cripto] == df[cripto].max():
-            report_max_min('maximo',cripto,df.iloc[-1][cripto])
+            report_max_min('máximo 📈',cripto,df.iloc[-1][cripto])
         elif df.iloc[-1][cripto] == df[cripto].min():
-            report_max_min('minimo', cripto,df.iloc[-1][cripto]) 
+            report_max_min('minimo 📉', cripto,df.iloc[-1][cripto]) 
 
 
 #Alertando para comprar o vender FIAT
 def report_buy_sell(up_down,cripto_percent,cripto_name, cripto_value):
-    btc_price_buy_sell = f'Se reporta un movimiento importante {up_down} del {cripto_percent}% del valor del {cripto_name} el precio es {cripto_value}'
+    btc_price_buy_sell = f'Se reporta 📫 un movimiento importante  {up_down} de {round(cripto_percent,2)}% del valor del {cripto_name} el precio es ${round(cripto_value,3)}'
     bot_send_text(btc_price_buy_sell)
 
  #Obteniendo cambios o movimientos 
 def change_alert():
-    pd.options.display.float_format = '${:,.2f}'.format #ver si se arregla el formato
     cripto_list = list(df)
     for cripto in cripto_list:
-        cripto_percent = ((df.iloc[-1][cripto] / df.iloc[-3][cripto])*100) - 100
-        if cripto_percent < -0.1:
-            report_buy_sell('a la baja',cripto_percent,cripto, df.iloc[-1][cripto])
-        elif cripto_percent > 0.1:
-            report_buy_sell('al alza',cripto_percent,cripto, df.iloc[-1][cripto])
+        cripto_percent = (df.iloc[-1][cripto] / df.iloc[-4][cripto])
+        if cripto_percent < 0.993:
+            report_buy_sell('a la baja ⬇️ 🔴',cripto_percent,cripto, df.iloc[-1][cripto])
+        elif cripto_percent > 1.007:
+            report_buy_sell('al alza ⬆️ 🟢',cripto_percent,cripto, df.iloc[-1][cripto])
         return 
        
 
 #Alerta poner la orden de compra
 def report_order_value(order_value_text, order_value_money,cripto_name):
-    order_value_act = f'Se recomienda actualizar el valor de la orden de {order_value_text} del {cripto_name} a {locale.currency(order_value_money)} ahora mismo'
+    order_value_act = f'Se recomienda actualizar el valor de la orden de {order_value_text} de {cripto_name} a {locale.currency(order_value_money)} ahora mismo'
     bot_send_text(order_value_act)
  
 
@@ -76,39 +81,30 @@ def order_value():
     cripto_list = list(df)
     for cripto in cripto_list:
         actual_value = df.iloc[-1][cripto]
-        if actual_value < df.iloc[-1417][cripto].min():  #Actualizar a 2880
-            if actual_value + (actual_value * 0.05) < df.iloc[-1000][cripto].max(): #Actualizar a 1728
-                report_order_value('compra', actual_value + (actual_value * 0.05),cripto)
-        elif actual_value > df.iloc[-1417][cripto].max(): #Actualizar a 2880
-            if actual_value - (actual_value * 0.05) > df.iloc[-1000][cripto].min(): #Actualizar a 1728
-                report_order_value('venta', actual_value - (actual_value * 0.05),cripto)
+        min_value = df.iloc[-2730:-1][cripto].min() #Actualizar a 2880
+        max_value = df.iloc[-2730:-1][cripto].max() #Regresar a 1728 de ser posible
+        if actual_value < min_value:  
+            if actual_value + (actual_value * 0.05) < max_value:
+                report_order_value('compra 💵', actual_value + (actual_value * 0.05),cripto)
+        elif actual_value > max_value: 
+            if actual_value - (actual_value * 0.05) > min_value: 
+                report_order_value('venta 💸', actual_value - (actual_value * 0.05),cripto)
 
     
 def run_5min():
+    api.get_data()
     read()
     floor_ceiling()
     change_alert()
     order_value()
-
-def run():
-    report()
-   
-
-
-
-#Reporte Diario
-# def btc_price_day():
-#     run()
-#     price_list_day = price_list_filter[0:30]
-#     btc_report_day = f'Reporte Diario BTC\nAbrió con {locale.currency(price_list_day[20])}\nCerró con {locale.currency(price_list_day[0])}\nEl max fue {locale.currency(max(price_list_day))}\nEl min fue {locale.currency(min(price_list_day))}'
-#     bot_send_text(btc_report_day)
+    
 
 if __name__ == '__main__':
-    #schedule.every().day.at("18:00").do(btc_price_day)
-    #schedule.every(280).minutes.do(report)
+    schedule.every().day.at("06:00").do(report_price_day)
+    schedule.every().day.at("18:00").do(report_price_day)
+    schedule.every().day.at("12:00").do(report_month)
     schedule.every(5).minutes.do(run_5min)
-    schedule.every(60).minutes.do(run)
-    schedule.every(5).minutes.do(api.get_data)
+
     
 
     while True:
