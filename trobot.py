@@ -26,7 +26,7 @@ def read():
     pd.options.display.float_format = '${:,.2f}'.format
     global df
     df = pd.read_csv('./archivos/cripto_price.csv')
-    df = df[['BTC','ETH','XRP','SOL','LUNA','DOGE']]
+    df = df[['BTC','ETH','XRP','SOL','LUNA','AVAX']]
 
 #Reporte Mensual
 def report_month():
@@ -55,20 +55,24 @@ def floor_ceiling():
 
 #Alertando para comprar o vender FIAT
 def report_buy_sell(up_down,cripto_percent,cripto_name, cripto_value):
-    btc_price_buy_sell = f'Se reporta 📫 un movimiento importante  {up_down} de {round(cripto_percent,2)}% del valor del {cripto_name} el precio es ${round(cripto_value,3)}'
+    btc_price_buy_sell = f'Se reporta 📫 un movimiento importante  {up_down} de {cripto_percent}% del valor del {cripto_name} el precio es ${round(cripto_value,3)}'
     bot_send_text(btc_price_buy_sell)
+
 
  #Obteniendo cambios o movimientos 
 def change_alert():
     cripto_list = list(df)
     for cripto in cripto_list:
-        cripto_percent = (df.iloc[-1][cripto] / df.iloc[-4][cripto])
-        if cripto_percent < 0.993:
-            report_buy_sell('a la baja ⬇️ 🔴',cripto_percent,cripto, df.iloc[-1][cripto])
-        elif cripto_percent > 1.007:
-            report_buy_sell('al alza ⬆️ 🟢',cripto_percent,cripto, df.iloc[-1][cripto])
-        return 
-       
+        cripto_dif = df.iloc[-1][cripto] - df.iloc[-2][cripto]
+        cripto_abs = abs(cripto_dif)
+        cripto_percent = round(cripto_abs / df.iloc[-1][cripto],3)
+        if cripto_dif < 0 :
+            if cripto_abs > df.iloc[-1][cripto] * 0.005:
+                report_buy_sell('a la baja ⬇️ 🔴',cripto_percent,cripto, df.iloc[-1][cripto])
+        elif cripto_percent > 0:
+            if cripto_abs > df.iloc[-1][cripto] * 0.005:
+                report_buy_sell('al alza ⬆️ 🟢',cripto_percent,cripto, df.iloc[-1][cripto])
+        
 
 #Alerta poner la orden de compra
 def report_order_value(order_value_text, order_value_money,cripto_name):
@@ -81,8 +85,8 @@ def order_value():
     cripto_list = list(df)
     for cripto in cripto_list:
         actual_value = df.iloc[-1][cripto]
-        min_value = df.iloc[-2730:-1][cripto].min() #Actualizar a 2880
-        max_value = df.iloc[-2730:-1][cripto].max() #Regresar a 1728 de ser posible
+        min_value = df.iloc[-2880:-1][cripto].min() #Actualizar a 2880
+        max_value = df.iloc[-2880:-1][cripto].max() #Regresar a 1728 de ser posible
         if actual_value < min_value:  
             if actual_value + (actual_value * 0.05) < max_value:
                 report_order_value('compra 💵', actual_value + (actual_value * 0.05),cripto)
