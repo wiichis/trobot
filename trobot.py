@@ -33,6 +33,11 @@ def report_month():
     cripto_price_month = f'--🗓 REPORTE MENSUAL--\n\n    MAX:\n{df.max()}\n\n    MIN:\n{df.min()}\n\n    MEAN:\n{df.mean()}'
     bot_send_text(cripto_price_month)
 
+#Reporte 10 Dias
+def report_10_days():
+    cripto_price_month = f'--📮 REPORTE 🔟Días--\n\n    MAX:\n{df.iloc[-2880:].max()}\n\n    MIN:\n{df.iloc[-2880:].min()}\n\n    MEAN:\n{df.iloc[-2880:].mean()}'
+    bot_send_text(cripto_price_month)
+
 #Alerta Reporte Diario
 def report_price_day():
     report_day = f'--⏰ REPORTE DIARIO --\n\n    OPEN:\n{df.iloc[-144]}\n\n    CLOSE:\n{df.iloc[-1]}\n\n    MAX:\n{df.iloc[-144:].max()}\n\n    MIN:\n{df.iloc[-144:].min()}        '
@@ -67,10 +72,10 @@ def change_alert():
         cripto_abs = abs(cripto_dif)
         cripto_percent = round(cripto_abs / df.iloc[-1][cripto],3)
         if cripto_dif < 0 :
-            if cripto_abs > df.iloc[-1][cripto] * 0.005:
+            if cripto_abs > df.iloc[-1][cripto] * 0.007:
                 report_buy_sell('a la baja ⬇️ 🔴',cripto_percent,cripto, df.iloc[-1][cripto])
         elif cripto_percent > 0:
-            if cripto_abs > df.iloc[-1][cripto] * 0.005:
+            if cripto_abs > df.iloc[-1][cripto] * 0.007:
                 report_buy_sell('al alza ⬆️ 🟢',cripto_percent,cripto, df.iloc[-1][cripto])
         
 
@@ -106,6 +111,7 @@ def run_5min():
 if __name__ == '__main__':
     schedule.every().day.at("06:00").do(report_price_day)
     schedule.every().day.at("18:00").do(report_price_day)
+    schedule.every().day.at("22:00").do(report_10_days)
     schedule.every().day.at("12:00").do(report_month)
     schedule.every(5).minutes.do(run_5min)
 
