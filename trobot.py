@@ -91,14 +91,32 @@ def order_value():
     cripto_list = list(df)
     for cripto in cripto_list:
         actual_value = df.iloc[-1][cripto]
-        min_value = df.iloc[-2880:-1][cripto].min() #Actualizar a 2880
-        max_value = df.iloc[-2880:-1][cripto].max() #Regresar a 1728 de ser posible2
+        min_value = df.iloc[-2880:-1][cripto].min() 
+        min_value_20 = df.iloc[-5760:-1][cripto].min()
+        min_value_30 = df.iloc[-8640:-1][cripto].min()
+
+        max_value = df.iloc[-2880:-1][cripto].max()
+        max_value_20 = df.iloc[-5760:-1][cripto].max()
+        max_value_30 = df.iloc[-8640:-1][cripto].max()
+
+        #Calculando el porcentaje en base a la data del mes.
+        per = 0.05
+
+        if actual_value < min_value_20:
+            per = 0.04
+            if actual_value < min_value_30:
+                per = 0.03
+        elif actual_value > max_value_20:
+            per = 0.04
+            if actual_value > max_value_30:
+                per = 0.03
+
         if actual_value < min_value:  
             if actual_value + (actual_value * 0.05) < max_value:
-                report_order_value('compra 💵', actual_value + (actual_value * 0.05),cripto)
+                report_order_value('compra 💵', actual_value + (actual_value * per),cripto)
         elif actual_value > max_value: 
             if actual_value - (actual_value * 0.05) > min_value: 
-                report_order_value('venta 💸', actual_value - (actual_value * 0.05),cripto)
+                report_order_value('venta 💸', actual_value - (actual_value * per),cripto)
 
     
 def run_5min():
