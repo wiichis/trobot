@@ -81,8 +81,8 @@ def change_alert():
         
 
 #Alerta poner la orden de compra
-def report_order_value(order_value_text, order_value_money,cripto_name):
-    order_value_act = f'Se recomienda actualizar el valor de la orden de {order_value_text} de {cripto_name} a {locale.currency(order_value_money)} ahora mismo'
+def report_order_value(order_value_text, order_value_money,cripto_name,per):
+    order_value_act = f'Se recomienda actualizar el valor de la orden de {order_value_text} con {per} de {cripto_name} a {locale.currency(order_value_money)} ahora mismo'
     bot_send_text(order_value_act)
  
 
@@ -113,10 +113,10 @@ def order_value():
 
         if actual_value < min_value:  
             if actual_value + (actual_value * 0.05) < max_value:
-                report_order_value('compra 💵', actual_value + (actual_value * per),cripto)
+                report_order_value('compra 💵', actual_value + (actual_value * per),cripto,per)
         elif actual_value > max_value: 
             if actual_value - (actual_value * 0.05) > min_value: 
-                report_order_value('venta 💸', actual_value - (actual_value * per),cripto)
+                report_order_value('venta 💸', actual_value - (actual_value * per),cripto,per)
 
     
 def run_5min():
