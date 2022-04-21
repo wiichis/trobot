@@ -129,13 +129,13 @@ def order_value_3_days():
     cripto_list = list(df)
     for cripto in cripto_list:
         actual_value = df.iloc[-1][cripto]
-        min_value = df.iloc[-2880:-1][cripto].min() 
-        min_value_6 = df.iloc[-5760:-1][cripto].min()
-        min_value_9 = df.iloc[-8640:-1][cripto].min()
+        min_value = df.iloc[-864:-1][cripto].min() 
+        min_value_6 = df.iloc[-1728:-1][cripto].min()
+        min_value_9 = df.iloc[-2592:-1][cripto].min()
 
-        max_value = df.iloc[-2880:-1][cripto].max()
-        max_value_6 = df.iloc[-5760:-1][cripto].max()
-        max_value_9 = df.iloc[-8640:-1][cripto].max()
+        max_value = df.iloc[-864:-1][cripto].max()
+        max_value_6 = df.iloc[-1728:-1][cripto].max()
+        max_value_9 = df.iloc[-2592:-1][cripto].max()
 
         #Calculando el porcentaje en base a la data de 9 días
         per = 0.04
