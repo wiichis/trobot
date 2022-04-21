@@ -26,7 +26,7 @@ def read():
     pd.options.display.float_format = '${:,.2f}'.format
     global df
     df = pd.read_csv('./archivos/cripto_price.csv')
-    df = df[['BTC','ETH','XRP','SOL','LUNA','AVAX']]
+    df = df[['BTC','ETH','BNB','ADA','XRP','SOL','LUNA','AVAX']]
 
 #Reporte Mensual
 def report_month():
@@ -73,20 +73,20 @@ def change_alert():
         cripto_abs = abs(cripto_dif)
         cripto_percent = round(cripto_abs / c_mean_4h,3)
         if cripto_dif < 0 :
-            if cripto_abs > c_mean_4h * 0.02:
+            if cripto_abs > c_mean_4h * 0.025:
                 report_buy_sell('a la baja ⬇️ 🔴',cripto_percent,cripto, df.iloc[-1][cripto],c_mean_4h)
         elif cripto_percent > 0:
-            if cripto_abs > c_mean_4h * 0.02:
+            if cripto_abs > c_mean_4h * 0.025:
                 report_buy_sell('al alza ⬆️ 🟢',cripto_percent,cripto, df.iloc[-1][cripto],c_mean_4h)
         
 
-#Alerta poner la orden de compra
+#Alerta poner la orden de compra 10 Dias
 def report_order_value(order_value_text, order_value_money,cripto_name,per):
-    order_value_act = f'Se recomienda actualizar el valor de la orden de {order_value_text} con {per} de {cripto_name} a {locale.currency(order_value_money)} ahora mismo'
+    order_value_act = f'🤖 🔟 recomienda actualizar el valor de la orden de {order_value_text} con {per} de {cripto_name} a {locale.currency(order_value_money)} ahora mismo'
     bot_send_text(order_value_act)
  
 
-#Obteniendo valor actualizar orden de compra
+#Obteniendo valor actualizar orden de compra 10 Dias
 def order_value():
     cripto_list = list(df)
     for cripto in cripto_list:
@@ -118,12 +118,53 @@ def order_value():
             if actual_value - (actual_value * 0.05) > min_value: 
                 report_order_value('venta 💸', actual_value - (actual_value * per),cripto,per)
 
+
+#Alerta poner la orden de compra 3 Dias
+def report_order_value_3_days(order_value_text, order_value_money,cripto_name,per):
+    order_value_act = f'🤖 3️⃣ Días recomienda actualizar el valor de la orden de {order_value_text} con {per} de {cripto_name} a {locale.currency(order_value_money)} ahora mismo'
+    bot_send_text(order_value_act)
+
+#Obteniendo valor actualizar orden de compra 3 Dias
+def order_value_3_days():
+    cripto_list = list(df)
+    for cripto in cripto_list:
+        actual_value = df.iloc[-1][cripto]
+        min_value = df.iloc[-2880:-1][cripto].min() 
+        min_value_6 = df.iloc[-5760:-1][cripto].min()
+        min_value_9 = df.iloc[-8640:-1][cripto].min()
+
+        max_value = df.iloc[-2880:-1][cripto].max()
+        max_value_6 = df.iloc[-5760:-1][cripto].max()
+        max_value_9 = df.iloc[-8640:-1][cripto].max()
+
+        #Calculando el porcentaje en base a la data de 9 días
+        per = 0.04
+
+        if actual_value < min_value_6:
+            per = 0.03
+            if actual_value < min_value_9:
+                per = 0.02
+        elif actual_value > max_value_6:
+            per = 0.03
+            if actual_value > max_value_9:
+                per = 0.02
+
+        if actual_value < min_value:  
+            if actual_value + (actual_value * 0.05) < max_value:
+                report_order_value_3_days('compra 💵', actual_value + (actual_value * per),cripto,per)
+        elif actual_value > max_value: 
+            if actual_value - (actual_value * 0.05) > min_value: 
+                report_order_value_3_days('venta 💸', actual_value - (actual_value * per),cripto,per)
+
+
+
     
 def run_5min():
     api.get_data()
     read()
     floor_ceiling()
     order_value()
+    order_value_3_days()
 
 def run_10min():
     change_alert()
