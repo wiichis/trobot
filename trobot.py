@@ -3,15 +3,11 @@ import requests
 import schedule
 import pandas as pd
 import numpy as np
-import locale #Formato Monedas
 import credentials
 import api
 
 
-#Configurando Dolares
-locale.setlocale(locale.LC_ALL,'en_US.UTF-8')
-
-#Fucncion Enviar Mensajes
+#Funcion Enviar Mensajes
 def bot_send_text(bot_message):
 
     bot_token = credentials.token
@@ -60,7 +56,7 @@ def floor_ceiling():
 
 #Alertando para comprar o vender 
 def report_buy_sell(up_down,cripto_percent,cripto_name, cripto_value,c_mean_4h):
-    btc_price_buy_sell = f'Se reporta 📫 un movimiento importante  {up_down} de {cripto_percent}% del valor de {cripto_name} el precio es ${round(cripto_value,3)} vs el promedio de las últimas 4 horas ${round(c_mean_4h,3)}'
+    btc_price_buy_sell = f'Se reporta 📫 un movimiento importante  {up_down} de {cripto_percent * 100}% del valor de {cripto_name} el precio es ${round(cripto_value,3)} vs el promedio de las últimas 4 horas ${round(c_mean_4h,3)}'
     bot_send_text(btc_price_buy_sell)
 
 
@@ -82,7 +78,7 @@ def change_alert():
 
 #Alerta poner la orden de compra 10 Dias
 def report_order_value(order_value_text, order_value_money,cripto_name,per):
-    order_value_act = f'🤖 🔟 recomienda actualizar el valor de la orden de {order_value_text} con {per} de {cripto_name} a {locale.currency(order_value_money)} ahora mismo'
+    order_value_act = f'🤖 🔟 recomienda actualizar el valor de la orden de {order_value_text} con {per * 100}% de {cripto_name} a ${round(order_value_money,3)} ahora mismo'
     bot_send_text(order_value_act)
  
 
@@ -121,7 +117,7 @@ def order_value():
 
 #Alerta poner la orden de compra 3 Dias
 def report_order_value_3_days(order_value_text, order_value_money,cripto_name,per):
-    order_value_act = f'🤖 3️⃣ Días recomienda actualizar el valor de la orden de {order_value_text} con {per} de {cripto_name} a {locale.currency(order_value_money)} ahora mismo'
+    order_value_act = f'🤖 3️⃣ Días recomienda actualizar el valor de la orden de {order_value_text} con {per * 100}% de {cripto_name} a {locale.currency(order_value_money)} ahora mismo'
     bot_send_text(order_value_act)
 
 #Obteniendo valor actualizar orden de compra 3 Dias
