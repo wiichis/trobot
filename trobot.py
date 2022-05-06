@@ -117,7 +117,7 @@ def order_value():
 
 #Alerta poner la orden de compra 3 Dias
 def report_order_value_3_days(order_value_text, order_value_money,cripto_name,per):
-    order_value_act = f'🤖 3️⃣ Días recomienda actualizar el valor de la orden de {order_value_text} con {per * 100}% de {cripto_name} a {locale.currency(order_value_money)} ahora mismo'
+    order_value_act = f'🤖 3️⃣ Días recomienda actualizar el valor de la orden de {order_value_text} con {per * 100}% de {cripto_name} a ${round(order_value_money,3)} ahora mismo'
     bot_send_text(order_value_act)
 
 #Obteniendo valor actualizar orden de compra 3 Dias
