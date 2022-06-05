@@ -37,8 +37,8 @@ def get_data():
     #Pasando el diccionario a un dataframe y guardadno en un archivo
     df = pd.DataFrame([price_now])
     df_file = pd.read_csv('./archivos/cripto_price.csv')
-    df_new = pd.concat([df_file.reset_index(drop=True),df.tail(1).reset_index(drop=True)],axis=0)
-    df_month = df_new.iloc[-8640:]
+    df_new = pd.concat([df_file,df],ignore_index=True)
+    df_month = df_new.iloc[-17280:]
     df_month.to_csv('./archivos/cripto_price.csv',index = False)
 
   except (ConnectionError, Timeout, TooManyRedirects) as e:

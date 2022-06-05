@@ -34,6 +34,12 @@ def report_10_days():
     cripto_price_month = f'--📮 REPORTE 🔟 Días--\n\n    MAX:\n{df.iloc[-2880:].max()}\n\n    MIN:\n{df.iloc[-2880:].min()}\n\n    MEAN:\n{df.iloc[-2880:].mean()}'
     bot_send_text(cripto_price_month)
 
+#Reporte 3 Dias
+def report_3_days():
+    cripto_price_month = f'--📮 REPORTE 3️⃣ Días--\n\n    MAX:\n{df.iloc[-864:].max()}\n\n    MIN:\n{df.iloc[-864:].min()}\n\n    MEAN:\n{df.iloc[-864:].mean()}'
+    bot_send_text(cripto_price_month)
+
+
 #Alerta Reporte Diario
 def report_price_day():
     report_day = f'--⏰ REPORTE DIARIO --\n\n    OPEN:\n{df.iloc[-144]}\n\n    CLOSE:\n{df.iloc[-1]}\n\n    MAX:\n{df.iloc[-144:].max()}\n\n    MIN:\n{df.iloc[-144:].min()}        '
@@ -167,11 +173,12 @@ def run_10min():
     
 
 if __name__ == '__main__':
-    schedule.every().day.at("06:00").do(report_price_day)
-    schedule.every().day.at("18:00").do(report_price_day)
-    schedule.every().day.at("15:00").do(report_10_days)
-    schedule.every().day.at("12:00").do(report_month)
-    schedule.every(5).minutes.do(run_5min)
+    schedule.every().day.at("11:00").do(report_price_day)
+    schedule.every().day.at("23:00").do(report_price_day)
+    schedule.every().day.at("14:00").do(report_month)
+    schedule.every().day.at("20:00").do(report_10_days)
+    schedule.every().day.at("02:00").do(report_3_days)
+    schedule.every(1).minutes.do(run_5min)
     schedule.every(10).minutes.do(run_10min)
 
     
