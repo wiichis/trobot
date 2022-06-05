@@ -178,7 +178,7 @@ if __name__ == '__main__':
     schedule.every().day.at("14:00").do(report_month)
     schedule.every().day.at("20:00").do(report_10_days)
     schedule.every().day.at("02:00").do(report_3_days)
-    schedule.every(1).minutes.do(run_5min)
+    schedule.every(5).minutes.do(run_5min)
     schedule.every(10).minutes.do(run_10min)
 
     
