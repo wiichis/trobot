@@ -26,7 +26,7 @@ def read():
 
 #Reporte Mensual
 def report_month():
-    cripto_price_month = f'--🗓 REPORTE MENSUAL--\n\n    MAX:\n{df.iloc[-8640:].max()}\n\n    MIN:\n{df.iloc[-8640].min()}\n\n    MEAN:\n{df.iloc[-8640].mean()}'
+    cripto_price_month = f'--🗓 REPORTE MENSUAL--\n\n    MAX:\n{df.iloc[-8640:].max()}\n\n    MIN:\n{df.iloc[-8640:].min()}\n\n    MEAN:\n{df.iloc[-8640:].mean()}'
     bot_send_text(cripto_price_month)
 
 #Reporte 15 Dias
