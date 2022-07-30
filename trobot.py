@@ -50,18 +50,18 @@ def report_price_day():
     report_day = f'--⏰ REPORTE DIARIO --\n\n    OPEN:\n{df.iloc[-144]}\n\n    CLOSE:\n{df.iloc[-1]}\n\n    MAX:\n{df.iloc[-144:].max()}\n\n    MIN:\n{df.iloc[-144:].min()}        '
     bot_send_text(report_day)
 
-#Alertando cuando se rompe el techo o el piso
+#Alertando cuando se rompe el techo o el piso por mes
 def report_max_min(value_max_min,cripto_name,cripto_value):
     btc_price_max_min = f'🚨Alerta🚨 el valor {value_max_min} de {cripto_name} se acaba de romper el nuevo {value_max_min} es ${round(cripto_value,3)}'
     bot_send_text(btc_price_max_min)
 
-#Obteniendo Datos de cambio de Techo o piso
+#Obteniendo Datos de cambio de Techo o piso por mes
 def floor_ceiling():
     cripto_list = list(df)
     for cripto in cripto_list:
-        if df.iloc[-1][cripto] == df[cripto].max():
+        if df.iloc[-1][cripto] == df.iloc[-8640:-1][cripto].max():
             report_max_min('máximo 📈',cripto,df.iloc[-1][cripto])
-        elif df.iloc[-1][cripto] == df[cripto].min():
+        elif df.iloc[-1][cripto] == df.iloc[-8640:-1][cripto].min():
             report_max_min('minimo 📉', cripto,df.iloc[-1][cripto]) 
 
 
