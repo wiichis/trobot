@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import credentials
 import api
+import give_me_tweets
 
 
 #Funcion Enviar Mensajes
@@ -95,12 +96,13 @@ def change_alert():
         cripto_abs = abs(cripto_dif)
         cripto_percent = round(cripto_abs / c_mean_4h,3)
         if cripto_dif < 0 :
-            if cripto_abs > c_mean_4h * 0.025:
+            if cripto_abs > c_mean_4h * 0.027:
                 report_buy_sell('a la baja ⬇️ 🔴',cripto_percent,cripto, df.iloc[-1][cripto],c_mean_4h)
+                give_me_tweets.get_tweets(cripto)
         elif cripto_percent > 0:
-            if cripto_abs > c_mean_4h * 0.025:
+            if cripto_abs > c_mean_4h * 0.027:
                 report_buy_sell('al alza ⬆️ 🟢',cripto_percent,cripto, df.iloc[-1][cripto],c_mean_4h)
-        
+                give_me_tweets.get_tweets(cripto)
 
 #Alerta poner la orden de compra 5 Dias
 def report_order_value_5_days(order_value_text, order_value_money,cripto_name,per):
@@ -165,8 +167,8 @@ if __name__ == '__main__':
     schedule.every().day.at("20:00").do(report_10_days)
     schedule.every().day.at("17:00").do(report_5_days)
     schedule.every().day.at("02:00").do(report_15_days)
-    schedule.every(5).minutes.do(run_5min)
-    schedule.every(10).minutes.do(run_10min)
+    schedule.every(1).minutes.do(run_5min)
+    schedule.every(2).minutes.do(run_10min)
 
     
 
