@@ -87,6 +87,11 @@ def report_buy_sell(up_down,cripto_percent,cripto_name, cripto_value,c_mean_4h):
     btc_price_buy_sell = f'Se reporta 📫 un movimiento importante  {up_down} de {cripto_percent * 100}% del valor de {cripto_name} el precio es ${round(cripto_value,3)} vs el promedio de las últimas 4 horas ${round(c_mean_4h,3)}'
     bot_send_text(btc_price_buy_sell)
 
+#Enviando Tuits
+def send_tuits(cripto,tuits):
+    send_tuits_liks_rts = f'Noticias Tuits  📡  📇 {cripto}       {tuits}'
+    bot_send_text(send_tuits_liks_rts)
+
  #Obteniendo cambios o movimientos 
 def change_alert():
     cripto_list = list(df)
@@ -98,11 +103,13 @@ def change_alert():
         if cripto_dif < 0 :
             if cripto_abs > c_mean_4h * 0.027:
                 report_buy_sell('a la baja ⬇️ 🔴',cripto_percent,cripto, df.iloc[-1][cripto],c_mean_4h)
-                give_me_tweets.get_tweets(cripto)
+                send_tuits(cripto, give_me_tweets.get_tweets(cripto))
+                print(give_me_tweets.get_tweets(cripto))
         elif cripto_percent > 0:
             if cripto_abs > c_mean_4h * 0.027:
                 report_buy_sell('al alza ⬆️ 🟢',cripto_percent,cripto, df.iloc[-1][cripto],c_mean_4h)
-                give_me_tweets.get_tweets(cripto)
+                send_tuits(cripto, give_me_tweets.get_tweets(cripto))
+                print(give_me_tweets.get_tweets(cripto))
 
 #Alerta poner la orden de compra 5 Dias
 def report_order_value_5_days(order_value_text, order_value_money,cripto_name,per):
