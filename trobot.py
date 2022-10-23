@@ -89,7 +89,7 @@ def report_buy_sell(up_down,cripto_percent,cripto_name, cripto_value,c_mean_4h):
 
 #Enviando Tuits
 def send_tuits(cripto,tuits):
-    send_tuits_liks_rts = f'Noticias Tuits  📡  📇 {cripto}       {tuits}'
+    send_tuits_liks_rts = f'Noticias Tuits  📡  📇 {cripto} \n {tuits}'
     bot_send_text(send_tuits_liks_rts)
 
  #Obteniendo cambios o movimientos 
@@ -174,8 +174,8 @@ if __name__ == '__main__':
     schedule.every().day.at("20:00").do(report_10_days)
     schedule.every().day.at("17:00").do(report_5_days)
     schedule.every().day.at("02:00").do(report_15_days)
-    schedule.every(1).minutes.do(run_5min)
-    schedule.every(2).minutes.do(run_10min)
+    schedule.every(5).minutes.do(run_5min)
+    schedule.every(10).minutes.do(run_10min)
 
     
 
