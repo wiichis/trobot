@@ -18,7 +18,7 @@ def get_tweets(hastag):
                                q=hastag, #-filter:retweets
                                lang="es",
                                tweet_mode="extended",
-                               result_type='mixed').items(750): #Cantidad de Tuits por busqueda
+                               result_type='recent').items(750): #Cantidad de Tuits por busqueda
 
         # Agregamos el texto, fecha, likes, retweets y hashtags al array
             tuits_list.append([tweet.full_text,
