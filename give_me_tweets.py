@@ -13,12 +13,14 @@ api = tweepy.API(auth, wait_on_rate_limit=True)
 def get_tweets(hastag):
     tuits_list = []
 
-        # Usamos el Cursor dentro de un for
+    filter_hastag = "#" + hastag + " -filter:retweets"
+
+    # Usamos el Cursor dentro de un for
     for tweet in tweepy.Cursor(api.search_tweets,
-                               q=hastag, #-filter:retweets
+                               q= filter_hastag,
                                lang="es",
                                tweet_mode="extended",
-                               result_type='recent').items(750): #Cantidad de Tuits por busqueda
+                               result_type='recent').items(500): #Cantidad de Tuits por busqueda
 
         # Agregamos el texto, fecha, likes, retweets y hashtags al array
             tuits_list.append([tweet.full_text,
@@ -33,13 +35,9 @@ def get_tweets(hastag):
 
     likes = tuits_list[['Text','User','Hashtags','Likes']]
     max_likes = likes.iloc[1:750].max()
-    #print(max_likes["Text"])
-
-    rts = tuits_list[['Text','User','Hashtags','Retweets']]
-    max_rts = rts.iloc[1:750].max()
-
-
-    return(max_likes["Text"], max_rts["Text"])
+    max_likes_ok = max_likes.replace('\n','')
+   
+    return(max_likes_ok["Text"])
 
 
 
