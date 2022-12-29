@@ -88,8 +88,8 @@ def report_buy_sell(up_down,cripto_percent,cripto_name, cripto_value,c_mean_4h):
     bot_send_text(btc_price_buy_sell)
 
 #Enviando Tuits
-def send_tuits(cripto,tuits):
-    send_tuits_liks_rts = f'Noticias Tuits  📡  📇 {cripto} \n {tuits}'
+def send_tuits(cripto,text, user, likes):
+    send_tuits_liks_rts = f'Noticias Tuits  📡  📇 {cripto} \n 🐦Tuit: {text} \n \n 🥸 User: {user} \n 💚 Likes: {likes}'
     bot_send_text(send_tuits_liks_rts)
 
  #Obteniendo cambios o movimientos 
@@ -103,16 +103,14 @@ def change_alert():
         if cripto_dif < 0 :
             if cripto_abs > c_mean_4h * 0.027:
                 report_buy_sell('a la baja ⬇️ 🔴',cripto_percent,cripto, df.iloc[-1][cripto],c_mean_4h)
-                tuit_text = give_me_tweets.get_tweets(cripto)
-                tuit_text = tuit_text.replace('#', '')
-                send_tuits(cripto, str(tuit_text))
+                text, user, likes = give_me_tweets.get_tweets(cripto)
+                send_tuits(cripto, text, user, likes)
                 
         elif cripto_percent > 0:
             if cripto_abs > c_mean_4h * 0.027:
                 report_buy_sell('al alza ⬆️ 🟢',cripto_percent,cripto, df.iloc[-1][cripto],c_mean_4h)
-                tuit_text = give_me_tweets.get_tweets(cripto)
-                tuit_text = tuit_text.replace('#', '')
-                send_tuits(cripto, str(tuit_text))                
+                text, user, likes = give_me_tweets.get_tweets(cripto)
+                send_tuits(cripto, text, user, likes)                
 
 #Alerta poner la orden de compra 5 Dias
 def report_order_value_5_days(order_value_text, order_value_money,cripto_name,per):
@@ -177,8 +175,8 @@ if __name__ == '__main__':
     schedule.every().day.at("20:00").do(report_10_days)
     schedule.every().day.at("17:00").do(report_5_days)
     schedule.every().day.at("02:00").do(report_15_days)
-    schedule.every(5).minutes.do(run_5min)
-    schedule.every(10).minutes.do(run_10min)
+    schedule.every(1).minutes.do(run_5min)
+    schedule.every(2).minutes.do(run_10min)
 
     
 

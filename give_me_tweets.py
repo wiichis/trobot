@@ -35,11 +35,12 @@ def get_tweets(hastag):
 
     likes = tuits_list[['Text','User','Hashtags','Likes']]
     max_likes = likes.iloc[1:750].max()
-    max_likes_ok = max_likes.replace('\n','')
-   
-    return(max_likes_ok["Text"])
-
-
+    max_likes['Text'] = max_likes['Text'].replace('#'," ").replace('\n',"")
+    text = max_likes['Text']
+    user = max_likes['User']
+    likes = max_likes['Likes']
+      
+    return text, user, likes
 
 
 
