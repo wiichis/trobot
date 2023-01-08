@@ -8,11 +8,16 @@ import credentials
 import pandas as pd
 
 
+# Optimism op 103, waves 133, xrp 6, xlm 26, ewt 173, doge 8, ldo 37, mask 129, matic 10, dydx 188,
+# eth 2, btc 1
+ 
+
+
 def get_data():
   url = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest'
   parameters = {
     'start':'1',
-    'limit':'20',
+    'limit':'200',
     'convert':'USD'
   }
   headers = {
@@ -31,8 +36,10 @@ def get_data():
     price_now = {}
     for entry in data['data']:
         symbol =entry['symbol']
-        quote = entry['quote']['USD']['price']
-        price_now.setdefault(symbol, quote)
+        price = entry['quote']['USD']['price']
+        volume = entry['quote']['USD']['volume_24h']
+        price_now[symbol] = {'price': price,'volume':volume}
+        
     
     #Pasando el diccionario a un dataframe y guardadno en un archivo
     df = pd.DataFrame([price_now])
@@ -44,5 +51,6 @@ def get_data():
   except (ConnectionError, Timeout, TooManyRedirects) as e:
     print(e)
     
+
 
 

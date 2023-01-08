@@ -160,9 +160,9 @@ def order_value_5_days():
 def run_5min():
     api.get_data()
     read()
-    floor_ceiling_month()
-    floor_ceiling_year()
-    order_value_5_days()
+    #floor_ceiling_month()
+    #floor_ceiling_year()
+    #order_value_5_days()
 
 def run_10min():
     change_alert()
@@ -175,7 +175,7 @@ if __name__ == '__main__':
     schedule.every().day.at("20:00").do(report_10_days)
     schedule.every().day.at("17:00").do(report_5_days)
     schedule.every().day.at("02:00").do(report_15_days)
-    schedule.every(5).minutes.do(run_5min)
+    schedule.every(0.2).minutes.do(run_5min) #4.6
     schedule.every(10).minutes.do(run_10min)
 
     
