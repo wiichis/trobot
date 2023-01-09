@@ -11,8 +11,6 @@ import pandas as pd
 # Optimism op 103, waves 133, xrp 6, xlm 26, ewt 173, doge 8, ldo 37, mask 129, matic 10, dydx 188,
 # eth 2, btc 1
  
-
-
 def get_data():
   url = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest'
   parameters = {
@@ -28,6 +26,8 @@ def get_data():
   session = Session()
   session.headers.update(headers)
 
+  currencies = ['OP', 'WAVES','XRP','XLM','EWT','DOGE','LDO','MASK','MATIC','DYDX','ETH','BTC']
+
   try:
     response = session.get(url, params=parameters)
     data = json.loads(response.text)
@@ -40,6 +40,7 @@ def get_data():
         volume = entry['quote']['USD']['volume_24h']
         price_now[symbol] = {'price': price,'volume':volume}
         
+    price_now = {clave: valor for clave, valor in price_now.items() if valor in currencies }    
     
     #Pasando el diccionario a un dataframe y guardadno en un archivo
     df = pd.DataFrame([price_now])
