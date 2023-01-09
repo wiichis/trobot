@@ -15,7 +15,7 @@ def get_data():
   url = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest'
   parameters = {
     'start':'1',
-    'limit':'200',
+    'limit':'250',
     'convert':'USD'
   }
   headers = {
@@ -26,7 +26,7 @@ def get_data():
   session = Session()
   session.headers.update(headers)
 
-  currencies = ['OP', 'WAVES','XRP','XLM','EWT','DOGE','LDO','MASK','MATIC','DYDX','ETH','BTC']
+  currencies = ['OP', 'WAVES','XRP','XLM','EWT','DOGE','LDO','MASK','MATIC','DYDX','ETH','BTC','BNB','ADA','SOL','DOT','AVAX']
 
   try:
     response = session.get(url, params=parameters)
@@ -36,11 +36,11 @@ def get_data():
     price_now = {}
     for entry in data['data']:
         symbol =entry['symbol']
-        price = entry['quote']['USD']['price']
-        volume = entry['quote']['USD']['volume_24h']
-        price_now[symbol] = {'price': price,'volume':volume}
+        if symbol in currencies:
+          price = entry['quote']['USD']['price']
+          volume = entry['quote']['USD']['volume_24h']
+          price_now[symbol] = {'price': price,'volume':volume}
         
-    price_now = {clave: valor for clave, valor in price_now.items() if valor in currencies }    
     
     #Pasando el diccionario a un dataframe y guardadno en un archivo
     df = pd.DataFrame([price_now])
