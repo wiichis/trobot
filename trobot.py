@@ -23,8 +23,7 @@ def read():
     pd.options.display.float_format = '${:,.2f}'.format
     global df
     df = pd.read_csv('./archivos/cripto_price.csv')
-    df = df[['BTC','ETH','BNB','ADA','XRP','SOL','DOT','AVAX']]
-
+    
 
 #Reporte Mensual
 def report_month():

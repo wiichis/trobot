@@ -15,7 +15,7 @@ def get_data():
   url = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest'
   parameters = {
     'start':'1',
-    'limit':'250',
+    'limit':'200',
     'convert':'USD'
   }
   headers = {
@@ -26,24 +26,27 @@ def get_data():
   session = Session()
   session.headers.update(headers)
 
-  currencies = ['OP', 'WAVES','XRP','XLM','EWT','DOGE','LDO','MASK','MATIC','DYDX','ETH','BTC','BNB','ADA','SOL','DOT','AVAX']
+  currencies = ['OP','WAVES','XRP','XLM','EWT','DOGE','LDO','MASK','MATIC','DYDX','ETH','BTC',
+                'BNB','ADA','SOL','DOT','AVAX']
 
   try:
     response = session.get(url, params=parameters)
     data = json.loads(response.text)
 
-  #Obteniendo los campos buscados y guardando en un diccionario
+  #Obteniendo los campos buscados y guardando en un diccionario, tambien filtramos las currencies que necesitamos
     price_now = {}
     for entry in data['data']:
         symbol =entry['symbol']
         if symbol in currencies:
           price = entry['quote']['USD']['price']
           volume = entry['quote']['USD']['volume_24h']
-          price_now[symbol] = {'price': price,'volume':volume}
+          date = entry['quote']['USD']['last_updated']
+          price_now[symbol] = {'symbol':symbol,'price': price,'volume':volume, 'date':date}
         
     
     #Pasando el diccionario a un dataframe y guardadno en un archivo
-    df = pd.DataFrame([price_now])
+    df = pd.DataFrame(price_now)
+    df = df.transpose()
     df_file = pd.read_csv('./archivos/cripto_price.csv')
     df_new = pd.concat([df_file,df],ignore_index=True)
     df_month = df_new.iloc[-105120:]
