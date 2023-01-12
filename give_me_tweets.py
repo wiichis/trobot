@@ -20,7 +20,7 @@ def get_tweets(hastag):
                                q= filter_hastag,
                                lang="es",
                                tweet_mode="extended",
-                               result_type='recent').items(100): #Cantidad de Tuits por busqueda
+                               result_type='recent').items(50): #Cantidad de Tuits por busqueda
 
         # Agregamos el texto, fecha, likes, retweets y hashtags al array
             tuits_list.append([tweet.full_text,
@@ -34,7 +34,7 @@ def get_tweets(hastag):
     tuits_list = pd.DataFrame(tuits_list, columns=["Text", "User", "Created at", "Likes", "Retweets", "Hashtags"])
 
     likes = tuits_list[['Text','User','Hashtags','Likes']]
-    max_likes = likes.iloc[1:750].max()
+    max_likes = likes.iloc[1:50].max()
     max_likes['Text'] = max_likes['Text'].replace('#'," ").replace('\n',"")
     text = max_likes['Text']
     user = max_likes['User']

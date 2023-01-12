@@ -8,8 +8,11 @@ import credentials
 import pandas as pd
 
 
-# Optimism op 103, waves 133, xrp 6, xlm 26, ewt 173, doge 8, ldo 37, mask 129, matic 10, dydx 188,
-# eth 2, btc 1
+def currencies_list():
+  currencies = ['OP','WAVES','XRP','XLM','EWT','DOGE','LDO','MASK','MATIC','DYDX','ETH','BTC',
+                'BNB','ADA','SOL','DOT','AVAX']
+  return currencies
+
  
 def get_data():
   url = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest'
@@ -26,8 +29,8 @@ def get_data():
   session = Session()
   session.headers.update(headers)
 
-  currencies = ['OP','WAVES','XRP','XLM','EWT','DOGE','LDO','MASK','MATIC','DYDX','ETH','BTC',
-                'BNB','ADA','SOL','DOT','AVAX']
+  #Importando listado de currencies
+  currencies = currencies_list()
 
   try:
     response = session.get(url, params=parameters)
@@ -49,7 +52,7 @@ def get_data():
     df = df.transpose()
     df_file = pd.read_csv('./archivos/cripto_price.csv')
     df_new = pd.concat([df_file,df],ignore_index=True)
-    df_month = df_new.iloc[-105120:]
+    df_month = df_new.iloc[-570000:] #Tres Meses
     df_month.to_csv('./archivos/cripto_price.csv',index = False)
 
   except (ConnectionError, Timeout, TooManyRedirects) as e:
