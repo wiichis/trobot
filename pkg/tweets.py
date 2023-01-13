@@ -1,11 +1,11 @@
 from numpy import result_type
 import pandas as pd
-import credentials
+import pkg
 import tweepy
 
 
-auth = tweepy.OAuthHandler(credentials.API_Key, credentials.API_Secret_Key)
-auth.set_access_token(credentials.Acces_token, credentials.Acces_token_secret)
+auth = tweepy.OAuthHandler(pkg.credentials.API_Key, pkg.credentials.API_Secret_Key)
+auth.set_access_token(pkg.credentials.Acces_token, pkg.credentials.Acces_token_secret)
 
 api = tweepy.API(auth, wait_on_rate_limit=True)
 

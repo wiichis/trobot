@@ -4,7 +4,7 @@ from urllib import request
 from requests import Request, Session
 from requests.exceptions import ConnectionError, Timeout, TooManyRedirects
 import json
-import credentials
+import pkg
 import pandas as pd
 
 
@@ -23,7 +23,7 @@ def get_data():
   }
   headers = {
     'Accepts': 'application/json',
-    'X-CMC_PRO_API_KEY': credentials.key,
+    'X-CMC_PRO_API_KEY': pkg.credentials.key,
   }
 
   session = Session()

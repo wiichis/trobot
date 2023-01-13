@@ -1,20 +1,14 @@
 from calendar import month
 import requests
 import schedule
-import pandas as pd
-import numpy as np
-import credentials
-import api
-import give_me_tweets
-import indicadores
-
+import pkg
 
 #Funcion Enviar Mensajes
 def bot_send_text(bot_message):
 
-    bot_token = credentials.token
-    bot_chatID = credentials.chatID
-    send_text = credentials.send + bot_message
+    bot_token = pkg.credentials.token
+    bot_chatID = pkg.credentials.chatID
+    send_text = pkg.credentials.send + bot_message
     response = requests.get(send_text)
 
     return response
@@ -26,9 +20,9 @@ def send_tuits(cripto,text, user, likes):
 
 #Indicador EMA
 def ema():
-    currencies = api.currencies_list()
+    currencies = pkg.api.currencies_list()
     for currencie in currencies:
-        status, price = indicadores.entry_alert(currencie)
+        status, price = pkg.indicadores.entry_alert(currencie)
         if status == True:
             stop_lose = price * 0.99
             profit = price * 1.03
@@ -36,12 +30,12 @@ def ema():
             bot_send_text(enter_alert)
 
             #Tuits
-            text, user, likes = give_me_tweets.get_tweets(currencie)
+            text, user, likes = pkg.tweets.get_tweets(currencie)
             send_tuits(currencie, text, user, likes)                
 
     
 def run_5min():
-    api.get_data()
+    pkg.api.get_data()
     ema()
 
 if __name__ == '__main__':
