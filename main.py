@@ -22,24 +22,24 @@ def send_tuits(cripto,text, user, likes):
 def ema():
     currencies = pkg.api.currencies_list()
     for currencie in currencies:
-        status, price = pkg.indicadores.entry_alert(currencie)
-        if status == True:
-            stop_lose = price * 0.99
-            profit = price * 1.03
-            enter_alert = f'🤖🚨 Alerta de Entrada \n 🚧 {currencie} setear Stop Loss en {stop_lose} y Recogida de Ganancia en {profit}'
-            bot_send_text(enter_alert)
+        try:
+            stop_lose, profit, tipo = pkg.indicadores.ema_alert(currencie)  
+                            
+            alert = f'🤖🚨 {tipo} \n 🚧 {currencie} setear: \n Stop Loss en {stop_lose} \n Recogida de Ganancia en {profit}'
+            bot_send_text(alert)
 
             #Tuits
             text, user, likes = pkg.tweets.get_tweets(currencie)
             send_tuits(currencie, text, user, likes)                
-
+        except:
+            continue
     
 def run_5min():
     pkg.api.get_data()
     ema()
 
 if __name__ == '__main__':
-    schedule.every(0.2).minutes.do(run_5min) #4.6
+    schedule.every(5).minutes.do(run_5min) #4.6
    
     while True:
         schedule.run_pending()

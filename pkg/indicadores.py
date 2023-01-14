@@ -23,28 +23,38 @@ def emas_indicator():
         results.append(group)
 
     df_results = pd.concat(results)
-    cruce_emas = df_results.groupby('symbol').agg({'EMA50': 'last', 'EMA21': 'last', 'price': 'last'}).reset_index()
+    cruce_emas = df_results.groupby('symbol').tail(2).reset_index()
     
     return cruce_emas
 
 
-def entry_alert(currencie):
+def ema_alert(currencie):
     cruce_emas = emas_indicator()
     df_filterd = cruce_emas[cruce_emas['symbol'] ==  currencie]
-    ema50 = df_filterd['EMA50'].values
-    ema21 = df_filterd['EMA21'].values
-    price = df_filterd['price'].values
+    ema50 = df_filterd['EMA50'].iloc[0]
+    ema50_last = df_filterd['EMA50'].iloc[1]
+    ema21 = df_filterd['EMA21'].iloc[0]
+    ema21_last = df_filterd['EMA21'].iloc[1]
+    price = df_filterd['price'].iloc[0]
+    price_last = df_filterd['price'].iloc[1]
     
-    if ema50 < ema21:
-        return True, price
-    else:
-        return False, price
-  
+    if ema50_last < ema21_last:
+        if ema50 > ema21:
+            stop_lose = price_last * 0.99
+            profit = price_last * 1.03
+            tipo = 'Alerta de Entrada:'
+            print(stop_lose, profit, tipo)
+            return stop_lose, profit, tipo
+    elif ema50_last > ema21_last:
+        if ema50 < ema21:
+            stop_lose = price_last * 1.01
+            profit = price_last * 0.97
+            tipo = 'Alerta de Short:'
+            print(stop_lose, profit, tipo)
+            return stop_lose, profit, tipo
+           
+#prueba = emas_indicator()
+prueba1 = ema_alert('XLM')
 
- 
-# prueba = emas_indicator()
-# prueba1 = entry_alert('BNB')
-
-
-# print(prueba)
-# print(prueba1)
+#print(prueba)
+print(prueba1)
