@@ -1,5 +1,5 @@
 import pandas as pd
-import numpy as np
+import talib
 
 
 
@@ -7,21 +7,23 @@ import numpy as np
 def emas_indicator():
     df = pd.read_csv('./archivos/cripto_price.csv')
     df_month = df.iloc[-190000:] #Un Mes
+
+    #Convertir date en un datetime
+    df_month['date'] = pd.to_datetime(df_month['date'])
+
+    # Establecer la columna 'date' como el índice del DataFrame
+    df_month.set_index('date', inplace=True)
     grouped = df_month.groupby("symbol")
 
     results = []
+
     for symbol, group in grouped:
-        #Utiliza el método rolling() para calcular la media móvil exponencial de 50 períodos:
-        group["EMA50"] = group["price"].rolling(window=50).mean()
-
-        #Utiliza el método rolling() para calcular la media móvil exponencial de 21 períodos:
-        group["EMA21"] = group["price"].rolling(window=21).mean()
-
-        group['Upper'] = group['EMA21'] + (group['EMA21'] - group['EMA50'])
-        group['Lower'] = group['EMA21'] - (group['EMA21'] - group['EMA50'])
-
+        # Calcular el EMA de período 50 y el EMA de período 21
+        group["EMA50"] = talib.EMA(group["price"], timeperiod=50)
+        group["EMA21"] = talib.EMA(group["price"], timeperiod=21)
+        # Guardar los resultados en un diccionario
         results.append(group)
-
+    
     df_results = pd.concat(results)
     cruce_emas = df_results.groupby('symbol').tail(2).reset_index()
     
@@ -51,8 +53,3 @@ def ema_alert(currencie):
             tipo = 'Alerta de Short:'
             return stop_lose, profit, tipo
            
-#prueba = emas_indicator()
-prueba1 = ema_alert('XLM')
-
-#print(prueba)
-print(prueba1)
