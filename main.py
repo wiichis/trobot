@@ -39,7 +39,7 @@ def run_5min():
     ema()
 
 if __name__ == '__main__':
-    schedule.every(4.6).minutes.do(run_5min) #4.6
+    schedule.every(1).minutes.do(run_5min) #4.6
    
     while True:
         schedule.run_pending()
