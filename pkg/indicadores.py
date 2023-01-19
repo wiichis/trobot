@@ -44,12 +44,12 @@ def ema_alert(currencie):
         if ema50 > ema21:
             stop_lose = price_last * 0.99
             profit = price_last * 1.03
-            tipo = 'Alerta de Entrada:'
-            return stop_lose, profit, tipo
+            tipo = 'LONG:'
+            return price_last, stop_lose, profit, tipo
     elif ema50_last > ema21_last:
         if ema50 < ema21:
             stop_lose = price_last * 1.01
             profit = price_last * 0.97
-            tipo = 'Alerta de Short:'
-            return stop_lose, profit, tipo
+            tipo = 'SHORT:'
+            return price_last, stop_lose, profit, tipo
            

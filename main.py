@@ -23,9 +23,9 @@ def ema():
     currencies = pkg.api.currencies_list()
     for currencie in currencies:
         try:
-            stop_lose, profit, tipo = pkg.indicadores.ema_alert(currencie)  
+            price_last, stop_lose, profit, tipo = pkg.indicadores.ema_alert(currencie)  
                             
-            alert = f' 🚨 🤖 🚨 \n*{tipo}* \n 🚧 *{currencie}* Setear: \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
+            alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 El precio de *{currencie}* es *{price_last}* \n Setear: \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
             bot_send_text(alert)
 
             #Tuits
