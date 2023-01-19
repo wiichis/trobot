@@ -25,7 +25,7 @@ def ema():
         try:
             price_last, stop_lose, profit, tipo = pkg.indicadores.ema_alert(currencie)  
                             
-            alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last),3} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
+            alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
             bot_send_text(alert)
 
             #Tuits
