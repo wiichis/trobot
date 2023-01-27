@@ -33,13 +33,24 @@ def ema():
             send_tuits(currencie, text, user, likes)                
         except:
             continue
+
+def monkey_result():
+    total_result, final_usd_total = pkg.monkey.monkey_result()
+    monkey_USD = f'*==RESULTADOS==* \n Resultado ultima hora = *{round(total_result),2}* \n total dinero *{round(final_usd_total),2}*'
+    bot_send_text(monkey_USD)
     
-def run_5min():
+def run():
     pkg.api.get_data()
+    pkg.monkey.saving_operations()
+    pkg.monkey.trading_result()
     ema()
 
 if __name__ == '__main__':
-    schedule.every(1).minutes.do(run_5min) #4.6
+    schedule.every(5).minutes.do(run) 
+
+    hours = list(map(lambda x: x if x > 9 else "0"+str(x), range(6,24)))
+    for hour in hours:
+        schedule.every().day.at(f"{hour}:00").do(monkey_result)
    
     while True:
         schedule.run_pending()
