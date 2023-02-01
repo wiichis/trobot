@@ -29,14 +29,14 @@ def ema():
             bot_send_text(alert)
 
             #Tuits
-            text, user, likes = pkg.tweets.get_tweets(currencie)
-            send_tuits(currencie, text, user, likes)                
+            # text, user, likes = pkg.tweets.get_tweets(currencie)
+            # send_tuits(currencie, text, user, likes)                
         except:
             continue
 
 def monkey_result():
-    total_result, final_usd_total = pkg.monkey.monkey_result()
-    monkey_USD = f'*==RESULTADOS==* \n Resultado ultima hora = *{round(total_result),2}* \n total dinero *{round(final_usd_total),2}*'
+    total_result, total_USD_trade, final_usd_total = pkg.monkey.monkey_result()
+    monkey_USD = f'*==RESULTADOS==* \n Resultados Trade: *{total_result}* \n Total Trade: *{total_USD_trade}* \n Total Dinero: *{final_usd_total}*'
     bot_send_text(monkey_USD)
     
 def run():
@@ -46,7 +46,7 @@ def run():
     ema()
 
 if __name__ == '__main__':
-    schedule.every(5).minutes.do(run) 
+    schedule.every(4).minutes.do(run) 
 
     hours = list(map(lambda x: x if x > 9 else "0"+str(x), range(6,24)))
     for hour in hours:

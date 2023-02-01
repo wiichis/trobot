@@ -7,13 +7,13 @@ def saving_operations():
     date = datetime.now()
     df = pd.read_csv('./archivos/monkey_register.csv')
     #Limpieza y orden
-    df.drop_duplicates(subset=['date', 'symbol'], keep='last', inplace=True)
+    df.drop_duplicates(subset=['date', 'symbol', 'price'], keep='last', inplace=True)
     df.sort_values('date', inplace=True)
     df.to_csv('./archivos/monkey_register.csv', index=False)
 
     #Calculado el total de dinero
-    total_mokey = df['USD_Total'].sum() + df['result'].sum() - df['USD_Trade'].sum()
-    trade = total_mokey / 10
+    total_monkey = df['USD_Total'].sum() + df['result_USD'].sum() - df['USD_Trade'].sum()
+    trade = total_monkey / 10
 
     for currencie in currencies:
         try:
@@ -23,15 +23,22 @@ def saving_operations():
                         
             #Guardando las operaciones  
             if tipo == '=== Alerta de LONG ===':
-                print('entrada long')
-                status = 'open'
-                df.loc[len(df)] = [date, currencie, price_last, 'LONG', currency_amount, stop_lose, profit, status, 0, trade, 0]
-                df.to_csv('./archivos/monkey_register.csv', index=False)
+                #Consulta para evitar que se abra otra orden cuando ya exite una abierta
+                query = f"symbol == '{currencie}' and status == 'open'"
+                if df.query(query).empty:
+                    print('entrada long')
+                    status = 'open'
+                    df.loc[len(df)] = [date, currencie, price_last, 'LONG', currency_amount, stop_lose, profit, status,'espera',0, trade, 0]
+                    df.to_csv('./archivos/monkey_register.csv', index=False)
+
             elif tipo == '=== Alerta de SHORT ===':
-                print('entrada short')
-                status = 'open'
-                df.loc[len(df)] = [date, currencie, price_last, 'SHORT', currency_amount, stop_lose, profit, status, 0, trade, 0]
-                df.to_csv('./archivos/monkey_register.csv', index=False)
+                #Consulta para evitar que se abra otra orden cuando ya exite una abierta
+                query = f"symbol == '{currencie}' and status == 'open'"
+                if df.query(query).empty:
+                    print('entrada short')
+                    status = 'open'
+                    df.loc[len(df)] = [date, currencie, price_last, 'SHORT', currency_amount, stop_lose, profit, status,'espera',0, trade, 0]
+                    df.to_csv('./archivos/monkey_register.csv', index=False)
         except:
             continue
 
@@ -56,32 +63,44 @@ def trading_result():
                     if price_last > df_open['profit'].item():
                         print('esto es long')
                         df_open['status'] = 'close'
-                        df_open['result'] = (df_open['profit'] * df_open['currency_amount']) - df_open['USD_Trade']
-                        df_open['USD_Total'] += df_open['result'] + df_open['USD_Trade']
-                        df_open.to_csv('./archivos/monkey_register.csv', index=False, mode='a', header=False)
+                        df_open['result'] = 'ganancia'
+                        df_open['result_USD'] = (df_open['profit'] * df_open['currency_amount']) - df_open['USD_Trade']
+                        df_open['USD_Total'] += df_open['result_USD'] + df_open['USD_Trade']
+                        df_open['USD_Trade'] = 0
+                        df = pd.concat([df, df_open])
+                        df.to_csv('./archivos/monkey_register.csv', index=False)
                         #Perdida en Long
                     elif price_last < df_open['stop_lose'].item():
                         print('esto es long perdida')
                         df_open['status'] = 'close'
-                        df_open['result'] = (df_open['stop_lose'] * df_open['currency_amount']) - df_open['USD_Trade']
-                        df_open['USD_Total'] += df_open['result'] + df_open['USD_Trade']
-                        df_open.to_csv('./archivos/monkey_register.csv', index=False, mode='a', header=False)
+                        df_open['result'] = 'perdida'
+                        df_open['result_USD'] = df_open['USD_Trade'] - (df_open['stop_lose'] * df_open['currency_amount'])
+                        df_open['USD_Total'] += df_open['result_USD'] + df_open['USD_Trade']
+                        df_open['USD_Trade'] = 0
+                        df = pd.concat([df, df_open])
+                        df.to_csv('./archivos/monkey_register.csv', index=False)
             elif df_open['tipo'].iloc[0] == 'SHORT':
                     print('regla 2')
                     #Ganancia en Short
                     if price_last < df_open['profit'].item():
                         print('esto es short')
                         df_open['status'] = 'close'
-                        df_open['result'] = (df_open['profit'] * df_open['currency_amount']) - df_open['USD_Trade']
-                        df_open['USD_Total'] += df_open['result'] + df_open['USD_Trade']
-                        df_open.to_csv('./archivos/monkey_register.csv', index=False, mode='a', header=False)
+                        df_open['result'] = 'ganancia'
+                        df_open['result_USD'] = (df_open['profit'] * df_open['currency_amount']) - df_open['USD_Trade']
+                        df_open['USD_Total'] += df_open['result_USD'] + df_open['USD_Trade']
+                        df_open['USD_Trade'] = 0
+                        df = pd.concat([df, df_open])
+                        df.to_csv('./archivos/monkey_register.csv', index=False)
                         #Perdida en Short
                     elif price_last > df_open['stop_lose'].item():
                         print('esto es short perdida')
                         df_open['status'] = 'close'
-                        df_open['result'] = (df_open['stop_lose'] * df_open['currency_amount']) - df_open['USD_Trade']
-                        df_open['USD_Total'] += df_open['result'] + df_open['USD_Trade']
-                        df_open.to_csv('./archivos/monkey_register.csv', index=False, mode='a', header=False)
+                        df_open['result'] = 'perdida'
+                        df_open['result_USD'] = df_open['USD_Trade'] - (df_open['stop_lose'] * df_open['currency_amount'])
+                        df_open['USD_Total'] += df_open['result_USD'] + df_open['USD_Trade']
+                        df_open['USD_Trade'] = 0
+                        df = pd.concat([df, df_open])
+                        df.to_csv('./archivos/monkey_register.csv', index=False)
         except:
             continue
     
@@ -89,11 +108,12 @@ def trading_result():
 def monkey_result():
     df = pd.read_csv('./archivos/monkey_register.csv')
     # Sumando la columna resultados
-    total_result = df["result"].sum()
+    total_result = df["result_USD"].sum().astype(float)
+    print(total_result)
     # get the last value of the "USD_Total" column
-    final_usd_total = df['USD_Total'].sum() + df['result'].sum() - df['USD_Trade'].sum()
+    total_USD_trade = df["USD_Trade"].sum().astype(float)
+    final_usd_total = (df['USD_Total'].sum() + df['result_USD'].sum() - df['USD_Trade'].sum()).astype(float)
+        
     # return the results
-    return total_result, final_usd_total
-
-
+    return total_result, total_USD_trade, final_usd_total
 
