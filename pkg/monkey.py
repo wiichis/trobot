@@ -1,6 +1,23 @@
 import pkg
 import pandas as pd
 from datetime import datetime
+import requests
+
+#Funcion Enviar Mensajes
+def bot_send_text(bot_message):
+
+    bot_token = pkg.credentials.token
+    bot_chatID = pkg.credentials.chatID
+    send_text = pkg.credentials.send + bot_message
+    response = requests.get(send_text)
+
+    return response
+
+#Enviando Tuits
+def send_tuits(cripto,text, user, likes):
+    send_tuits_liks = f'📡 *Noticias Tuits* 📇 *{cripto}:* \n 🐦*Tuit*: {text} \n \n 🥸 *User:* {user} \n 💚 *Likes:* {likes}'
+    bot_send_text(send_tuits_liks)
+
 
 def saving_operations():
     currencies = pkg.api.currencies_list()
@@ -35,6 +52,14 @@ def saving_operations():
                     df.loc[len(df)] = [date, currencie, price_last, 'LONG', currency_amount, stop_lose, profit, status,'espera',0, trade, total_usd]
                     df.to_csv('./archivos/monkey_register.csv', index=False)
 
+                    #Enviando Mensajes
+                    alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
+                    bot_send_text(alert)
+
+                    #Enviando Tuits
+                    text, user, likes = pkg.tweets.get_tweets(currencie)
+                    send_tuits(currencie, text, user, likes)  
+
             elif tipo == '=== Alerta de SHORT ===':
                 #Consulta para evitar que se abra otra orden cuando ya exite una abierta
                 count = df[df['symbol']== currencie]['symbol'].count()
@@ -43,6 +68,14 @@ def saving_operations():
                     status = 'open'
                     df.loc[len(df)] = [date, currencie, price_last, 'SHORT', currency_amount, stop_lose, profit, status,'espera',0, trade, total_usd]
                     df.to_csv('./archivos/monkey_register.csv', index=False)
+
+                    #Enviando Mensajes
+                    alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
+                    bot_send_text(alert)
+
+                    #Enviando Tuits
+                    text, user, likes = pkg.tweets.get_tweets(currencie)
+                    send_tuits(currencie, text, user, likes)  
         except:
             continue
 

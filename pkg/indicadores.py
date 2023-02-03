@@ -2,7 +2,6 @@ import pandas as pd
 import talib
 
 
-
 def emas_indicator():
     # Importar datos de precios
     df = pd.read_csv('./archivos/cripto_price.csv')
