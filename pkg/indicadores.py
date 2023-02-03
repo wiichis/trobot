@@ -45,7 +45,6 @@ def ema_alert(currencie):
     if ema50_mean < ema21_mean:
         #if ema50 > ema21:
             if rsi_last < 30:
-                print('Long',currencie, rsi_last, price_last)
                 stop_lose = price_last * 0.99
                 profit = price_last * 1.03
                 tipo = '=== Alerta de LONG ==='
@@ -53,7 +52,6 @@ def ema_alert(currencie):
     elif ema50_mean > ema21_mean:
         #if ema50 < ema21:
             if rsi_last > 70:
-                print('Short',currencie, rsi_last, price_last)
                 stop_lose = price_last * 1.01
                 profit = price_last * 0.97
                 tipo = '=== Alerta de SHORT ==='

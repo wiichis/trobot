@@ -46,7 +46,7 @@ def run():
     ema()
 
 if __name__ == '__main__':
-    schedule.every(4).minutes.do(run) 
+    schedule.every(2).minutes.do(run) 
 
     hours = list(map(lambda x: x if x > 9 else "0"+str(x), range(6,24)))
     for hour in hours:
