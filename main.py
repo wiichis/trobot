@@ -16,7 +16,7 @@ def run():
 if __name__ == '__main__':
     schedule.every(2).minutes.do(run) 
 
-    hours = list(map(lambda x: x if x > 9 else "0"+str(x), range(6,24)))
+    hours = list(map(lambda x: x if x > 9 else "0"+str(x), range(1,24)))
     for hour in hours:
         schedule.every().day.at(f"{hour}:00").do(monkey_result)
    

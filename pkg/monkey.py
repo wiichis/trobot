@@ -33,49 +33,48 @@ def saving_operations():
         trade = 20
         total_usd = -20
 
+    #Comprobar si hay dinero en caja.
+    if total_monkey >= 20:
+        for currencie in currencies:
+            try:
+                price_last, stop_lose, profit, tipo = pkg.indicadores.ema_alert(currencie)
+                
+                currency_amount = trade / price_last
+                            
+                #Guardando las operaciones  
+                if tipo == '=== Alerta de LONG ===':
+                    #Consulta para evitar que se abra otra orden cuando ya exite una abierta
+                    count = df[df['symbol']== currencie]['symbol'].count()
+                    if count %2 == 0:
+                        status = 'open'
+                        df.loc[len(df)] = [date, currencie, price_last, 'LONG', currency_amount, stop_lose, profit, status,'espera',0, trade, total_usd]
+                        df.to_csv('./archivos/monkey_register.csv', index=False)
 
-    for currencie in currencies:
-        try:
-            price_last, stop_lose, profit, tipo = pkg.indicadores.ema_alert(currencie)
-            
-            currency_amount = trade / price_last
-                        
-            #Guardando las operaciones  
-            if tipo == '=== Alerta de LONG ===':
-                #Consulta para evitar que se abra otra orden cuando ya exite una abierta y tambien comprobar si hay dinero en caja.
-                count = df[df['symbol']== currencie]['symbol'].count()
-                if count %2 == 0 and total_monkey >= 20:
-                    print('entrada long')
-                    status = 'open'
-                    df.loc[len(df)] = [date, currencie, price_last, 'LONG', currency_amount, stop_lose, profit, status,'espera',0, trade, total_usd]
-                    df.to_csv('./archivos/monkey_register.csv', index=False)
+                        #Enviando Mensajes
+                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
+                        bot_send_text(alert)
 
-                    #Enviando Mensajes
-                    alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
-                    bot_send_text(alert)
+                        #Enviando Tuits
+                        text, user, likes = pkg.tweets.get_tweets(currencie)
+                        send_tuits(currencie, text, user, likes)  
 
-                    #Enviando Tuits
-                    text, user, likes = pkg.tweets.get_tweets(currencie)
-                    send_tuits(currencie, text, user, likes)  
+                elif tipo == '=== Alerta de SHORT ===':
+                    #Consulta para evitar que se abra otra orden cuando ya exite una abierta
+                    count = df[df['symbol']== currencie]['symbol'].count()
+                    if count %2 == 0:
+                        status = 'open'
+                        df.loc[len(df)] = [date, currencie, price_last, 'SHORT', currency_amount, stop_lose, profit, status,'espera',0, trade, total_usd]
+                        df.to_csv('./archivos/monkey_register.csv', index=False)
 
-            elif tipo == '=== Alerta de SHORT ===':
-                #Consulta para evitar que se abra otra orden cuando ya exite una abierta
-                count = df[df['symbol']== currencie]['symbol'].count()
-                if count %2 == 0:
-                    print('entrada short')
-                    status = 'open'
-                    df.loc[len(df)] = [date, currencie, price_last, 'SHORT', currency_amount, stop_lose, profit, status,'espera',0, trade, total_usd]
-                    df.to_csv('./archivos/monkey_register.csv', index=False)
+                        #Enviando Mensajes
+                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
+                        bot_send_text(alert)
 
-                    #Enviando Mensajes
-                    alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
-                    bot_send_text(alert)
-
-                    #Enviando Tuits
-                    text, user, likes = pkg.tweets.get_tweets(currencie)
-                    send_tuits(currencie, text, user, likes)  
-        except:
-            continue
+                        #Enviando Tuits
+                        text, user, likes = pkg.tweets.get_tweets(currencie)
+                        send_tuits(currencie, text, user, likes)  
+            except:
+                continue
 
 
 
@@ -96,10 +95,8 @@ def trading_result():
             if df_open['tipo'].iloc[0] == 'LONG':
                 count = df[df['symbol']== currencie]['symbol'].count()
                 if count %2 != 0:
-                    print('regla 1')
                     #Ganancia en Long
                     if price_last > df_open['profit'].item():
-                        print('esto es long')
                         df_open['date'] = date
                         df_open['status'] = 'close'
                         df_open['result'] = 'ganancia'
@@ -115,7 +112,6 @@ def trading_result():
 
                         #Perdida en Long
                     elif price_last < df_open['stop_lose'].item():
-                        print('esto es long perdida')
                         df_open['date'] = date
                         df_open['status'] = 'close'
                         df_open['result'] = 'perdida'
@@ -132,10 +128,8 @@ def trading_result():
             elif df_open['tipo'].iloc[0] == 'SHORT':
                 count = df[df['symbol']== currencie]['symbol'].count()
                 if count %2 != 0:
-                    print('regla 2')
                     #Ganancia en Short
                     if price_last < df_open['profit'].item():
-                        print('esto es short')
                         df_open['date'] = date
                         df_open['status'] = 'close'
                         df_open['result'] = 'ganancia'
@@ -151,7 +145,6 @@ def trading_result():
 
                         #Perdida en Short
                     elif price_last > df_open['stop_lose'].item():
-                        print('esto es short perdida')
                         df_open['date'] = date
                         df_open['status'] = 'close'
                         df_open['result'] = 'perdida'
