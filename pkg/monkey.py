@@ -33,9 +33,9 @@ def saving_operations():
         trade = 20
         total_usd = -20
 
-    #Comprobar si hay dinero en caja.
-    if total_monkey >= 20:
-        for currencie in currencies:
+    for currencie in currencies:
+        #Comprobar si hay dinero en caja.
+        if total_monkey >= 20:
             try:
                 price_last, stop_lose, profit, tipo = pkg.indicadores.ema_alert(currencie)
                 
