@@ -28,14 +28,14 @@ def saving_operations():
     df.to_csv('./archivos/monkey_register.csv', index=False)
 
     #Calculado el total de dinero
-    total_monkey = df['USD_Total'].sum()
-    if total_monkey >= 20:
-        trade = 20
-        total_usd = -20
-
     for currencie in currencies:
+        df = pd.read_csv('./archivos/monkey_register.csv')
         #Comprobar si hay dinero en caja.
+        total_monkey = df['USD_Total'].sum()
         if total_monkey >= 20:
+            trade = 20
+            total_usd = -20
+
             try:
                 price_last, stop_lose, profit, tipo = pkg.indicadores.ema_alert(currencie)
                 
@@ -75,7 +75,8 @@ def saving_operations():
                         send_tuits(currencie, text, user, likes)  
             except:
                 continue
-
+        else:
+            continue
 
 
 def trading_result():
@@ -115,7 +116,7 @@ def trading_result():
                         df_open['date'] = date
                         df_open['status'] = 'close'
                         df_open['result'] = 'perdida'
-                        df_open['result_USD'] = df_open['USD_Trade'] - (df_open['stop_lose'] * df_open['currency_amount'])
+                        df_open['result_USD'] = (df_open['profit'] * df_open['currency_amount']) - df_open['USD_Trade']
                         df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
                         df_open['USD_Trade'] = 0
                         df = pd.concat([df, df_open])
@@ -148,7 +149,7 @@ def trading_result():
                         df_open['date'] = date
                         df_open['status'] = 'close'
                         df_open['result'] = 'perdida'
-                        df_open['result_USD'] = df_open['USD_Trade'] - (df_open['stop_lose'] * df_open['currency_amount'])
+                        df_open['result_USD'] = (df_open['profit'] * df_open['currency_amount']) - df_open['USD_Trade']
                         df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
                         df_open['USD_Trade'] = 0
                         df = pd.concat([df, df_open])
