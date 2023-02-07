@@ -101,7 +101,7 @@ def trading_result():
                         df_open['date'] = date
                         df_open['status'] = 'close'
                         df_open['result'] = 'ganancia'
-                        df_open['result_USD'] = (df_open['profit'] * df_open['currency_amount']) - df_open['USD_Trade']
+                        df_open['result_USD'] = df_open['USD_Trade'] - (df_open['profit'] * df_open['currency_amount'])
                         df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
                         df_open['USD_Trade'] = 0
                         df = pd.concat([df, df_open])
@@ -116,7 +116,7 @@ def trading_result():
                         df_open['date'] = date
                         df_open['status'] = 'close'
                         df_open['result'] = 'perdida'
-                        df_open['result_USD'] = (df_open['profit'] * df_open['currency_amount']) - df_open['USD_Trade']
+                        df_open['result_USD'] = df_open['USD_Trade'] - (df_open['stop_lose'] * df_open['currency_amount'])
                         df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
                         df_open['USD_Trade'] = 0
                         df = pd.concat([df, df_open])
@@ -149,7 +149,7 @@ def trading_result():
                         df_open['date'] = date
                         df_open['status'] = 'close'
                         df_open['result'] = 'perdida'
-                        df_open['result_USD'] = (df_open['profit'] * df_open['currency_amount']) - df_open['USD_Trade']
+                        df_open['result_USD'] = (df_open['stop_lose'] * df_open['currency_amount']) - df_open['USD_Trade']
                         df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
                         df_open['USD_Trade'] = 0
                         df = pd.concat([df, df_open])
