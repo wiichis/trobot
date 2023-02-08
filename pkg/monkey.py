@@ -114,7 +114,7 @@ def trading_result():
                         df_open['date'] = date
                         df_open['status'] = 'close'
                         df_open['result'] = 'perdida'
-                        df_open['result_USD'] = - (df_open['stop_lose'] * df_open['currency_amount'])- df_open['USD_Trade'] 
+                        df_open['result_USD'] = - (df_open['stop_lose'] * df_open['currency_amount']) - df_open['USD_Trade'] 
                         df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
                         df_open['USD_Trade'] = 0
                         df = pd.concat([df, df_open])
@@ -154,7 +154,7 @@ def trading_result():
                         df.to_csv('./archivos/monkey_register.csv', index=False)
 
                         #Enviando Mensajes
-                        alert = f' 💵 🤖 💵 \n *Perdida SHORT* \n 🚧' + currencie
+                        alert = f' 💸 🤖 💸  \n *Perdida SHORT* \n 🚧' + currencie
                         bot_send_text(alert)
 
         except:
