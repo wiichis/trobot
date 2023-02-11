@@ -104,7 +104,6 @@ def trading_result():
             diference = date - date1
             diference = diference.iloc[0]
             minutes = diference.total_seconds() / 60
-            print(f'Eltiempo de la orden de {currencie} en minutos es {minutes} minutos')
         except IndexError:
             continue
 
