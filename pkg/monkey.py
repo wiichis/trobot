@@ -47,10 +47,6 @@ def saving_operations():
                     count = df[df['symbol']== currencie]['symbol'].count()
                     if count %2 == 0:
 
-                        #Creando Orden LONG
-                        pkg.bingx.placeOrder(currencie, 'Bid', price_last, 0.0004, 'Market', 'Open',profit,stop_lose)
-                        
-
                         status = 'open'
                         df.loc[len(df)] = [date, currencie, price_last, 'LONG', currency_amount, stop_lose, profit, status,'espera',0, trade, total_usd]
                         df.to_csv('./archivos/monkey_register.csv', index=False)
