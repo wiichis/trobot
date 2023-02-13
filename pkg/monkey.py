@@ -120,8 +120,8 @@ def trading_result():
                             df = pd.concat([df, df_open])
                             df.to_csv('./archivos/monkey_register.csv', index=False)
                         #Enviando Mensajes
-                        alert = f' 💵 🤖 💵 \n *Ganancia LONG* \n 🚧' + currencie
-                        bot_send_text(alert)
+                            alert = f' 💵 🤖 💵 \n *Ganancia LONG* \n 🚧' + currencie
+                            bot_send_text(alert)
 
                     #Perdida en Long
                         if price_last < df_open['stop_lose'].item():
