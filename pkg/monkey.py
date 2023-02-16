@@ -109,7 +109,7 @@ def trading_result():
                 count = df[df['symbol']== currencie]['symbol'].count()
                 if count %2 != 0:
                     #Ganancia en Long
-                    if minutes < 7:
+                    if minutes < 60:
                         if price_last > df_open['profit'].item():
                             df_open['date'] = date
                             df_open['status'] = 'close'
@@ -152,7 +152,7 @@ def trading_result():
                 count = df[df['symbol']== currencie]['symbol'].count()
                 if count %2 != 0:
                     #Ganancia en Short
-                    if minutes < 7:
+                    if minutes < 60:
                         if price_last < df_open['profit'].item():
                             df_open['date'] = date
                             df_open['status'] = 'close'
