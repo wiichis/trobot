@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from datetime import datetime
 import talib
 
@@ -6,32 +7,44 @@ import talib
 def emas_indicator():
     # Importar datos de precios
     df = pd.read_csv('./archivos/cripto_price.csv')
-    df_month = df.iloc[-19000:] #Un Mes
-    
-    #Convertir date en un datetime
-    df_month = df_month.copy()
-    df_month['date'] = pd.to_datetime(df_month['date'])
+    df = df.iloc[-5000:] 
    
     # Establecer la columna 'date' como el índice del DataFrame
-    df_month.set_index('date', inplace=True)
-    grouped = df_month.groupby('symbol')
+    df.set_index('date', inplace=True)
+    grouped = df.groupby('symbol')
 
     # Calcular el EMA de período 50 y el EMA de período 21 para cada grupo
     ema50 = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=50))
     ema21 = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=21))
-    df_month['ema50'] = ema50
-    df_month['ema21'] = ema21
+    df['ema50'] = ema50
+    df['ema21'] = ema21
 
     # Calcular el RSI de período 14 para cada grupo
     rsi = grouped['price'].transform(lambda x: talib.RSI(x, timeperiod=14))
-    df_month['rsi'] = rsi
+    df['rsi'] = rsi
+
+    # # Calcular Nadaraya-Watson Enveloper con Tablib
+    # ancho_banda = 5
+    # periodo = int(ancho_banda / 2)
+    # smoothing = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=periodo))
+
+    # # Restamos la media móvil a los datos originales
+    # residuos = grouped['price'] - smoothing
+
+    # # Calculamos el Nadaraya-Watson Envelope a partir de los residuos
+    # envelope = grouped['price'].transform(lambda x: talib.EMA(np.abs(residuos), timeperiod=periodo))
+    # envelope_superior = smoothing + ancho_banda * envelope
+    # envelope_inferior = smoothing - ancho_banda * envelope
+    # df['envelope_superior'] = envelope_superior
+    # df['envelope_inferior'] = envelope_inferior
 
     # Calcular la columna 'type' utilizando los valores de EMA y RSI para cada fila
-    df_month['type'] = 'NONE'
-    df_month.loc[(ema50 > ema21) & (rsi < 30), 'type'] = 'LONG'
-    df_month.loc[(ema50 < ema21) & (rsi > 70), 'type'] = 'SHORT'
+    df['type'] = 'NONE'
+    df.loc[(ema50 > ema21) & (rsi < 30), 'type'] = 'LONG'
+    df.loc[(ema50 < ema21) & (rsi > 70), 'type'] = 'SHORT'
+
             
-    cruce_emas = df_month.groupby('symbol').tail(20).reset_index()
+    cruce_emas = df.groupby('symbol').tail(20).reset_index()
     cruce_emas = cruce_emas.sort_values(['symbol', 'date'])
     cruce_emas.to_csv('./archivos/indicadores.csv', index=False)
 

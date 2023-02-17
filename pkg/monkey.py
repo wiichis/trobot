@@ -13,12 +13,6 @@ def bot_send_text(bot_message):
 
     return response
 
-#Enviando Tuits
-def send_tuits(cripto,text, user, likes):
-    send_tuits_liks = f'📡 *Noticias Tuits* 📇 *{cripto}:* \n 🐦*Tuit*: {text} \n \n 🥸 *User:* {user} \n 💚 *Likes:* {likes}'
-    bot_send_text(send_tuits_liks)
-
-
 def saving_operations():
     currencies = pkg.api.currencies_list()
     date = datetime.now()
@@ -54,11 +48,7 @@ def saving_operations():
                         #Enviando Mensajes
                         alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
                         bot_send_text(alert)
-
-                        #Enviando Tuits
-                        text, user, likes = pkg.tweets.get_tweets(currencie)
-                        send_tuits(currencie, text, user, likes)  
-
+ 
                 elif tipo == '=== Alerta de SHORT ===':
                     #Consulta para evitar que se abra otra orden cuando ya exite una abierta
                     count = df[df['symbol']== currencie]['symbol'].count()
@@ -71,9 +61,6 @@ def saving_operations():
                         alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
                         bot_send_text(alert)
 
-                        #Enviando Tuits
-                        text, user, likes = pkg.tweets.get_tweets(currencie)
-                        send_tuits(currencie, text, user, likes)  
             except:
                 continue
         else:
@@ -109,7 +96,7 @@ def trading_result():
                 count = df[df['symbol']== currencie]['symbol'].count()
                 if count %2 != 0:
                     #Ganancia en Long
-                    if minutes < 60:
+                    if minutes < 15:
                         if price_last > df_open['profit'].item():
                             df_open['date'] = date
                             df_open['status'] = 'close'
@@ -152,7 +139,7 @@ def trading_result():
                 count = df[df['symbol']== currencie]['symbol'].count()
                 if count %2 != 0:
                     #Ganancia en Short
-                    if minutes < 60:
+                    if minutes < 15:
                         if price_last < df_open['profit'].item():
                             df_open['date'] = date
                             df_open['status'] = 'close'

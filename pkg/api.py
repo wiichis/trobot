@@ -6,6 +6,7 @@ from requests.exceptions import ConnectionError, Timeout, TooManyRedirects
 import json
 import pkg
 import pandas as pd
+from datetime import datetime
 
 
 def currencies_list():
@@ -43,7 +44,7 @@ def get_data():
         if symbol in currencies:
           price = entry['quote']['USD']['price']
           volume = entry['quote']['USD']['volume_24h']
-          date = entry['quote']['USD']['last_updated']
+          date = datetime.now()
           price_now[symbol] = {'symbol':symbol,'price': price,'volume':volume, 'date':date}
         
     

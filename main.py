@@ -11,6 +11,7 @@ def monkey_result():
 def run():
     pkg.api.get_data()
     pkg.monkey.saving_operations()
+    pkg.indicadores.emas_indicator()
     pkg.monkey.trading_result()
 
 if __name__ == '__main__':
