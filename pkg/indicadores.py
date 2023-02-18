@@ -66,6 +66,5 @@ def ema_alert(currencie):
         profit = price_last * 0.97
         tipo = '=== Alerta de SHORT ==='
         return price_last, stop_lose, profit, tipo
-           
-
-
+    else:
+        pass
