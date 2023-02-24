@@ -10,8 +10,10 @@ def emas_indicator():
     df = df.iloc[-5000:] 
    
     # Establecer la columna 'date' como el índice del DataFrame
-    df.set_index('date', inplace=True)
+    #df.set_index('date', inplace=True) Este es causante de los errores
+
     grouped = df.groupby('symbol')
+ 
 
     # Calcular el EMA de período 50 y el EMA de período 21 para cada grupo
     ema50 = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=50))
@@ -23,26 +25,25 @@ def emas_indicator():
     rsi = grouped['price'].transform(lambda x: talib.RSI(x, timeperiod=14))
     df['rsi'] = rsi
 
-    # # Calcular Nadaraya-Watson Enveloper con Tablib
-    # ancho_banda = 5
-    # periodo = int(ancho_banda / 2)
-    # smoothing = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=periodo))
+     # Calcular la media móvil exponencial
+    ancho_banda = 5
+    periodo = int(ancho_banda / 2)
+    smoothing = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=periodo))
 
-    # # Restamos la media móvil a los datos originales
-    # residuos = grouped['price'] - smoothing
+    # Calcular los residuos
+    residuos = grouped['price'].transform(lambda x: x - x.mean())
 
-    # # Calculamos el Nadaraya-Watson Envelope a partir de los residuos
-    # envelope = grouped['price'].transform(lambda x: talib.EMA(np.abs(residuos), timeperiod=periodo))
-    # envelope_superior = smoothing + ancho_banda * envelope
-    # envelope_inferior = smoothing - ancho_banda * envelope
-    # df['envelope_superior'] = envelope_superior
-    # df['envelope_inferior'] = envelope_inferior
+    # Calcular el envelope
+    envelope_superior = smoothing + 2 * residuos
+    envelope_inferior = smoothing - 2 * residuos
+    price = df['price']
+    df['envelope_superior'] = envelope_superior
+    df['envelope_inferior'] = envelope_inferior
 
-    # Calcular la columna 'type' utilizando los valores de EMA y RSI para cada fila
+    #Calcular la columna 'type' utilizando los valores de EMA y RSI para cada fila
     df['type'] = 'NONE'
-    df.loc[(ema50 > ema21) & (rsi < 30), 'type'] = 'LONG'
-    df.loc[(ema50 < ema21) & (rsi > 70), 'type'] = 'SHORT'
-
+    df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price), 'type'] = 'LONG'
+    df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price), 'type'] = 'SHORT'
             
     cruce_emas = df.groupby('symbol').tail(20).reset_index()
     cruce_emas = cruce_emas.sort_values(['symbol', 'date'])
@@ -55,16 +56,20 @@ def ema_alert(currencie):
     df_filterd = cruce_emas[cruce_emas['symbol'] ==  currencie]
     price_last = df_filterd['price'].iloc[-1]
     type = df_filterd['type'].iloc[-1]
+    envelope_superior = df_filterd['envelope_superior'].iloc[-1]
+    envelope_inferior = df_filterd['envelope_inferior'].iloc[-1]
        
     if type == 'LONG':
         stop_lose = price_last * 0.99
         profit = price_last * 1.03
         tipo = '=== Alerta de LONG ==='
-        return price_last, stop_lose, profit, tipo
+        return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
     elif type == 'SHORT':
         stop_lose = price_last * 1.01
         profit = price_last * 0.97
         tipo = '=== Alerta de SHORT ==='
-        return price_last, stop_lose, profit, tipo
+        return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
     else:
         pass
+
+
