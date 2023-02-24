@@ -75,7 +75,11 @@ def trading_result():
         
     for currencie in currencies: 
         #Obteniendo el ultimo precio de la moneda a anlizar
-        df_open = df[(df['symbol'] == currencie) & (df['status'] == 'open')].tail(1) 
+        df_price = pd.read_csv('./archivos/cripto_price.csv')
+        df_open = df[(df['symbol'] == currencie) & (df['status'] == 'open')].tail(1)
+        df_price = df_price[(df_price['symbol'] == currencie)].tail(1)
+
+        price_last = df_price.iloc[-1]['price']
                   
         try:
             #Comparando Tiempo de la orden en minutos.
@@ -89,96 +93,91 @@ def trading_result():
 
         #Comparando Ganacias o perdidas
 
-        try:
-            #price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior = pkg.indicadores.ema_alert(currencie)
-        
-            if df_open['tipo'].iloc[0] == 'LONG':
-                count = df[df['symbol']== currencie]['symbol'].count()
-                if count %2 != 0:
-                    #Ganancia en Long
-                    if minutes < 15:
-                        if price_last > df_open['profit'].item():
-                            df_open['date'] = date
-                            df_open['status'] = 'close'
-                            df_open['result'] = 'ganancia'
-                            df_open['result_USD'] = (df_open['profit'] * df_open['currency_amount']) - df_open['USD_Trade']
-                            df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
-                            df_open['USD_Trade'] = 0
-                            df = pd.concat([df, df_open])
-                            df.to_csv('./archivos/monkey_register.csv', index=False)
+        if df_open['tipo'].iloc[0] == 'LONG':
+            count = df[df['symbol']== currencie]['symbol'].count()
+            if count %2 != 0:
+                #Ganancia en Long
+                if minutes < 15:
+                    if price_last > df_open['profit'].item():
+                        df_open['date'] = date
+                        df_open['status'] = 'close'
+                        df_open['result'] = 'ganancia'
+                        df_open['result_USD'] = (df_open['profit'] * df_open['currency_amount']) - df_open['USD_Trade']
+                        df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
+                        df_open['USD_Trade'] = 0
+                        df = pd.concat([df, df_open])
+                        df.to_csv('./archivos/monkey_register.csv', index=False)
+                    #Enviando Mensajes
+                        alert = f' 💵 🤖 💵 \n *Ganancia LONG* \n 🚧' + currencie
+                        bot_send_text(alert)
+
+                #Perdida en Long
+                    if price_last < df_open['stop_lose'].item():
+                        df_open['date'] = date
+                        df_open['status'] = 'close'
+                        df_open['result'] = 'perdida'
+                        df_open['result_USD'] = (df_open['stop_lose'] * df_open['currency_amount']) - df_open['USD_Trade'] 
+                        df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
+                        df_open['USD_Trade'] = 0
+                        df = pd.concat([df, df_open])
+                        df.to_csv('./archivos/monkey_register.csv', index=False)
+
                         #Enviando Mensajes
-                            alert = f' 💵 🤖 💵 \n *Ganancia LONG* \n 🚧' + currencie
-                            bot_send_text(alert)
+                        alert = f' 💸 🤖 💸 \n *Perdida LONG* \n 🚧' + currencie
+                        bot_send_text(alert)
+                elif price_last > df_open['price'].item() or price_last < df_open['stop_lose'].item():
+                    df_open['date'] = date
+                    df_open['status'] = 'close'
+                    df_open['result'] = 'tiempo excede'
+                    df_open['result_USD'] = (price_last * df_open['currency_amount']) - df_open['USD_Trade'] 
+                    df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
+                    df_open['USD_Trade'] = 0
+                    df = pd.concat([df, df_open])
+                    df.to_csv('./archivos/monkey_register.csv', index=False)
 
-                    #Perdida en Long
-                        if price_last < df_open['stop_lose'].item():
-                            df_open['date'] = date
-                            df_open['status'] = 'close'
-                            df_open['result'] = 'perdida'
-                            df_open['result_USD'] = (df_open['stop_lose'] * df_open['currency_amount']) - df_open['USD_Trade'] 
-                            df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
-                            df_open['USD_Trade'] = 0
-                            df = pd.concat([df, df_open])
-                            df.to_csv('./archivos/monkey_register.csv', index=False)
 
-                            #Enviando Mensajes
-                            alert = f' 💸 🤖 💸 \n *Perdida LONG* \n 🚧' + currencie
-                            bot_send_text(alert)
-                    elif price_last > df_open['price'].item() or price_last < df_open['stop_lose'].item():
+        elif df_open['tipo'].iloc[0] == 'SHORT':
+            count = df[df['symbol']== currencie]['symbol'].count()
+            if count %2 != 0:
+                #Ganancia en Short
+                if minutes < 15:
+                    if price_last < df_open['profit'].item():
                         df_open['date'] = date
                         df_open['status'] = 'close'
-                        df_open['result'] = 'tiempo excede'
-                        df_open['result_USD'] = (price_last * df_open['currency_amount']) - df_open['USD_Trade'] 
+                        df_open['result'] = 'ganancia'
+                        df_open['result_USD'] = df_open['USD_Trade'] - (df_open['profit'] * df_open['currency_amount']) 
                         df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
                         df_open['USD_Trade'] = 0
                         df = pd.concat([df, df_open])
                         df.to_csv('./archivos/monkey_register.csv', index=False)
 
+                        #Enviando Mensajes
+                        alert = f' 💵 🤖 💵 \n *Ganancia SHORT* \n 🚧' + currencie
+                        bot_send_text(alert)
 
-            elif df_open['tipo'].iloc[0] == 'SHORT':
-                count = df[df['symbol']== currencie]['symbol'].count()
-                if count %2 != 0:
-                    #Ganancia en Short
-                    if minutes < 15:
-                        if price_last < df_open['profit'].item():
-                            df_open['date'] = date
-                            df_open['status'] = 'close'
-                            df_open['result'] = 'ganancia'
-                            df_open['result_USD'] = df_open['USD_Trade'] - (df_open['profit'] * df_open['currency_amount']) 
-                            df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
-                            df_open['USD_Trade'] = 0
-                            df = pd.concat([df, df_open])
-                            df.to_csv('./archivos/monkey_register.csv', index=False)
-
-                            #Enviando Mensajes
-                            alert = f' 💵 🤖 💵 \n *Ganancia SHORT* \n 🚧' + currencie
-                            bot_send_text(alert)
-
-                        #Perdida en Short
-                        if price_last > df_open['stop_lose'].item():
-                            df_open['date'] = date
-                            df_open['status'] = 'close'
-                            df_open['result'] = 'perdida'
-                            df_open['result_USD'] = df_open['USD_Trade'] - (df_open['stop_lose'] * df_open['currency_amount'])
-                            df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
-                            df_open['USD_Trade'] = 0
-                            df = pd.concat([df, df_open])
-                            df.to_csv('./archivos/monkey_register.csv', index=False)
-
-                            #Enviando Mensajes
-                            alert = f' 💸 🤖 💸 \n *Perdida SHORT* \n 🚧' + currencie
-                            bot_send_text(alert)
-                    elif price_last < df_open['price'].item() or price_last > df_open['stop_lose'].item():
+                    #Perdida en Short
+                    if price_last > df_open['stop_lose'].item():
                         df_open['date'] = date
                         df_open['status'] = 'close'
-                        df_open['result'] = 'tiempo excede'
-                        df_open['result_USD'] = df_open['USD_Trade'] - (price_last * df_open['currency_amount'])
+                        df_open['result'] = 'perdida'
+                        df_open['result_USD'] = df_open['USD_Trade'] - (df_open['stop_lose'] * df_open['currency_amount'])
                         df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
                         df_open['USD_Trade'] = 0
                         df = pd.concat([df, df_open])
                         df.to_csv('./archivos/monkey_register.csv', index=False)
-        except:
-            continue
+
+                        #Enviando Mensajes
+                        alert = f' 💸 🤖 💸 \n *Perdida SHORT* \n 🚧' + currencie
+                        bot_send_text(alert)
+                elif price_last < df_open['price'].item() or price_last > df_open['stop_lose'].item():
+                    df_open['date'] = date
+                    df_open['status'] = 'close'
+                    df_open['result'] = 'tiempo excede'
+                    df_open['result_USD'] = df_open['USD_Trade'] - (price_last * df_open['currency_amount'])
+                    df_open['USD_Total'] = df_open['result_USD'] + df_open['USD_Trade']
+                    df_open['USD_Trade'] = 0
+                    df = pd.concat([df, df_open])
+                    df.to_csv('./archivos/monkey_register.csv', index=False)
 
 def monkey_result():
     df = pd.read_csv('./archivos/monkey_register.csv')
