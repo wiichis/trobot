@@ -125,7 +125,7 @@ def trading_result():
                         #Enviando Mensajes
                         alert = f' 💸 🤖 💸 \n *Perdida LONG* \n 🚧' + currencie
                         bot_send_text(alert)
-                elif price_last > df_open['price'].item() or price_last < df_open['stop_lose'].item():
+                elif price_last > df_open['price'].item()*0.005 or price_last < df_open['stop_lose'].item():
                     df_open['date'] = date
                     df_open['status'] = 'close'
                     df_open['result'] = 'tiempo excede'
@@ -169,7 +169,7 @@ def trading_result():
                         #Enviando Mensajes
                         alert = f' 💸 🤖 💸 \n *Perdida SHORT* \n 🚧' + currencie
                         bot_send_text(alert)
-                elif price_last < df_open['price'].item() or price_last > df_open['stop_lose'].item():
+                elif price_last < df_open['price'].item()*0.005 or price_last > df_open['stop_lose'].item():
                     df_open['date'] = date
                     df_open['status'] = 'close'
                     df_open['result'] = 'tiempo excede'
@@ -186,7 +186,7 @@ def monkey_result():
     print(total_result)
     # get the last value of the "USD_Total" column
     total_USD_trade = df["USD_Trade"].sum().astype(float)
-    final_usd_total = (df['USD_Total'].sum() + df['result_USD'].sum()).astype(float)
+    final_usd_total = df['USD_Total'].sum().astype(float)
         
     # return the results
     return total_result, total_USD_trade, final_usd_total

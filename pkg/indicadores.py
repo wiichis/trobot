@@ -61,12 +61,12 @@ def ema_alert(currencie):
        
     if type == 'LONG':
         stop_lose = price_last * 0.99
-        profit = price_last * 1.03
+        profit = price_last * 1.02
         tipo = '=== Alerta de LONG ==='
         return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
     elif type == 'SHORT':
         stop_lose = price_last * 1.01
-        profit = price_last * 0.97
+        profit = price_last * 0.98
         tipo = '=== Alerta de SHORT ==='
         return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
     else:
