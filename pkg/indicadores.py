@@ -9,12 +9,8 @@ def emas_indicator():
     df = pd.read_csv('./archivos/cripto_price.csv')
     df = df.iloc[-5000:] 
    
-    # Establecer la columna 'date' como el índice del DataFrame
-    #df.set_index('date', inplace=True) Este es causante de los errores
-
     grouped = df.groupby('symbol')
  
-
     # Calcular el EMA de período 50 y el EMA de período 21 para cada grupo
     ema50 = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=50))
     ema21 = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=21))
@@ -30,10 +26,10 @@ def emas_indicator():
     periodo = int(ancho_banda / 2)
     smoothing = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=periodo))
 
-    # Calcular los residuos
+        # Calcular los residuos
     residuos = grouped['price'].transform(lambda x: x - x.mean())
 
-    # Calcular el envelope
+        # Calcular el envelope
     envelope_superior = smoothing + 2 * residuos
     envelope_inferior = smoothing - 2 * residuos
     price = df['price']
@@ -60,16 +56,15 @@ def ema_alert(currencie):
     envelope_inferior = df_filterd['envelope_inferior'].iloc[-1]
        
     if type == 'LONG':
-        stop_lose = price_last * 0.99
-        profit = price_last * 1.02
+        stop_lose = price_last * 0.995
+        profit = price_last * 1.015
         tipo = '=== Alerta de LONG ==='
         return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
     elif type == 'SHORT':
-        stop_lose = price_last * 1.01
-        profit = price_last * 0.98
+        stop_lose = price_last * 1.005
+        profit = price_last * 0.985
         tipo = '=== Alerta de SHORT ==='
         return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
     else:
         pass
-
 

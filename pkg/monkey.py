@@ -125,7 +125,7 @@ def trading_result():
                         #Enviando Mensajes
                         alert = f' 💸 🤖 💸 \n *Perdida LONG* \n 🚧' + currencie
                         bot_send_text(alert)
-                elif price_last > df_open['price'].item()*1.005 or price_last < df_open['stop_lose'].item():
+                elif price_last > df_open['price'].item()*1.0025 or price_last < df_open['stop_lose'].item():
                     df_open['date'] = date
                     df_open['status'] = 'close'
                     df_open['result'] = 'tiempo excede'
@@ -169,7 +169,7 @@ def trading_result():
                         #Enviando Mensajes
                         alert = f' 💸 🤖 💸 \n *Perdida SHORT* \n 🚧' + currencie
                         bot_send_text(alert)
-                elif price_last < df_open['price'].item()*0.995 or price_last > df_open['stop_lose'].item():
+                elif price_last < df_open['price'].item()*0.9975 or price_last > df_open['stop_lose'].item():
                     df_open['date'] = date
                     df_open['status'] = 'close'
                     df_open['result'] = 'tiempo excede'
