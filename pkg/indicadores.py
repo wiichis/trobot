@@ -56,13 +56,13 @@ def ema_alert(currencie):
     envelope_inferior = df_filterd['envelope_inferior'].iloc[-1]
        
     if type == 'LONG':
-        stop_lose = price_last * 0.995
-        profit = price_last * 1.015
+        stop_lose = price_last * 0.9967
+        profit = price_last * 1.01
         tipo = '=== Alerta de LONG ==='
         return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
     elif type == 'SHORT':
-        stop_lose = price_last * 1.005
-        profit = price_last * 0.985
+        stop_lose = price_last * 1.0033
+        profit = price_last * 0.99
         tipo = '=== Alerta de SHORT ==='
         return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
     else:
