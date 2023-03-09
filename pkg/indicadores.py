@@ -4,13 +4,14 @@ from datetime import datetime
 import talib
 
 
+
 def emas_indicator():
     # Importar datos de precios
     df = pd.read_csv('./archivos/cripto_price.csv')
     df = df.iloc[-5000:] 
    
     grouped = df.groupby('symbol')
- 
+  
     # Calcular el EMA de período 50 y el EMA de período 21 para cada grupo
     ema50 = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=50))
     ema21 = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=21))
@@ -36,10 +37,22 @@ def emas_indicator():
     df['envelope_superior'] = envelope_superior
     df['envelope_inferior'] = envelope_inferior
 
+
+    #Calular la inclinacion de la tendencia
+   # Define una función lambda para calcular la pendiente
+    get_slope = lambda x: np.polyfit(range(len(x.iloc[-4::-5])), x.iloc[-4::-5], 1)[0]
+
+    # Calcula la pendiente para cada grupo
+    slope = grouped['price'].transform(get_slope)
+
+    # Agrega la pendiente como una nueva columna en el DataFrame
+    df['pendiente'] = slope
+   
+
     #Calcular la columna 'type' utilizando los valores de EMA y RSI para cada fila
     df['type'] = 'NONE'
-    df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price), 'type'] = 'LONG'
-    df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price), 'type'] = 'SHORT'
+    df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price) & slope > 0, 'type'] = 'LONG'
+    df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price) & slope < 0,'type'] = 'SHORT'
             
     cruce_emas = df.groupby('symbol').tail(20).reset_index()
     cruce_emas = cruce_emas.sort_values(['symbol', 'date'])
@@ -56,13 +69,13 @@ def ema_alert(currencie):
     envelope_inferior = df_filterd['envelope_inferior'].iloc[-1]
        
     if type == 'LONG':
-        stop_lose = price_last * 0.998
-        profit = price_last * 1.006
+        stop_lose = price_last * 0.9983
+        profit = price_last * 1.005
         tipo = '=== Alerta de LONG ==='
         return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
     elif type == 'SHORT':
-        stop_lose = price_last * 1.002
-        profit = price_last * 0.994
+        stop_lose = price_last * 1.0017
+        profit = price_last * 0.995
         tipo = '=== Alerta de SHORT ==='
         return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
     else:

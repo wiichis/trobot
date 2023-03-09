@@ -5,7 +5,7 @@ import pkg
 
 def monkey_result():
     total_result, total_USD_trade, final_usd_total = pkg.monkey.monkey_result()
-    monkey_USD = f'*==RESULTADOS==* \n Resultados Trade: *{total_result}* \n Total Trade: *{total_USD_trade}* \n Total Dinero: *{final_usd_total}*'
+    monkey_USD = f'*==RESULTADOS==* \n Resultados Trade: *{round(total_result,2)}* \n Total Trade: *{round(total_USD_trade,2)}* \n Total Dinero: *{round(final_usd_total,2)}*'
     pkg.monkey.bot_send_text(monkey_USD)
     
 def run():
