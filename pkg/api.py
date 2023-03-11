@@ -53,7 +53,7 @@ def get_data():
     df = df.transpose()
     df_file = pd.read_csv('./archivos/cripto_price.csv')
     df_new = pd.concat([df_file,df],ignore_index=True)
-    df_month = df_new.iloc[-190000:] #Tres Meses
+    df_month = df_new.iloc[-70000:] 
     df_month.to_csv('./archivos/cripto_price.csv',index = False)
 
   except (ConnectionError, Timeout, TooManyRedirects) as e:
