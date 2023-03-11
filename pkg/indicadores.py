@@ -45,16 +45,16 @@ def emas_indicator():
 
 
    # Define una función lambda para calcular la pendiente
-    get_slope = lambda x: np.polyfit(range(len(x.iloc[-4::-5])), x.iloc[-4::-5], 1)[0]
-    get_slope_20 = lambda x: np.polyfit(range(len(x.iloc[-20::-15])), x.iloc[-20::-15], 1)[0]
+    #get_slope = lambda x: np.polyfit(range(len(x.iloc[-4::-5])), x.iloc[-4::-5], 1)[0]
+    #get_slope_20 = lambda x: np.polyfit(range(len(x.iloc[-20::-15])), x.iloc[-20::-15], 1)[0]
 
     # Calcula la pendiente para cada grupo
-    slope = grouped['normalize_prices'].transform(get_slope)
-    slope_20 = grouped['normalize_prices'].transform(get_slope_20)
+    #slope = grouped['normalize_prices'].transform(get_slope)
+    #slope_20 = grouped['normalize_prices'].transform(get_slope_20)
 
     # Agrega la pendiente como una nueva columna en el DataFrame
-    df['pendiente'] = slope
-    df['pendiente_20'] = slope_20
+    #df['pendiente'] = slope
+   # df['pendiente_20'] = slope_20
 
     #Calcular la columna 'type' utilizando los valores de EMA y RSI para cada fila
     df['type'] = 'NONE'
