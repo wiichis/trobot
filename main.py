@@ -10,9 +10,12 @@ def monkey_result():
     
 def run():
     pkg.api.get_data()
-    pkg.monkey.saving_operations()
+    #pkg.monkey.saving_operations()
     pkg.indicadores.emas_indicator()
-    pkg.monkey.trading_result()
+    #pkg.monkey.trading_result()
+    print(pkg.monkey_bx.total_monkey())
+    print(pkg.monkey_bx.saving_operations())
+    
 
 if __name__ == '__main__':
     schedule.every(1).minutes.do(run) 

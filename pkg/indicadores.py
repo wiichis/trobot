@@ -40,8 +40,8 @@ def emas_indicator():
 
     #Calular la inclinacion de la tendencia
     #Normalizar los precios
-    normalize_prices = grouped['price'].transform(lambda x: (x - x.min()) / (x.max() - x.min()))* 9 + 1
-    df['normalize_prices'] = round(normalize_prices,2)
+    # normalize_prices = grouped['price'].transform(lambda x: (x - x.min()) / (x.max() - x.min()))* 9 + 1
+    # df['normalize_prices'] = round(normalize_prices,2)
 
 
    # Define una función lambda para calcular la pendiente
@@ -72,19 +72,17 @@ def ema_alert(currencie):
     df_filterd = cruce_emas[cruce_emas['symbol'] ==  currencie]
     price_last = df_filterd['price'].iloc[-1]
     type = df_filterd['type'].iloc[-1]
-    envelope_superior = df_filterd['envelope_superior'].iloc[-1]
-    envelope_inferior = df_filterd['envelope_inferior'].iloc[-1]
        
     if type == 'LONG':
         stop_lose = price_last * 0.9983
         profit = price_last * 1.005
         tipo = '=== Alerta de LONG ==='
-        return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
+        return price_last, stop_lose, profit, tipo
     elif type == 'SHORT':
         stop_lose = price_last * 1.0017
         profit = price_last * 0.995
         tipo = '=== Alerta de SHORT ==='
-        return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
+        return price_last, stop_lose, profit, tipo
     else:
         pass
 

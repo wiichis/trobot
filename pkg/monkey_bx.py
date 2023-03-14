@@ -14,6 +14,13 @@ def bot_send_text(bot_message):
 
     return response
 
+# Calucando El Valor de las inversiones
+def total_monkey():
+    monkey = pkg.bingx.getBalance()
+    monkey = json.loads(monkey)
+    balance = monkey['data']['account']['balance']
+    return balance
+
 def saving_operations():
     currencies = pkg.api.currencies_list()
     date = datetime.now()
@@ -22,12 +29,18 @@ def saving_operations():
     df.sort_values('date', inplace=True)
     df.to_csv('./archivos/monkey_register.csv', index=False)
 
+    for currencie in currencies:
+        total_money = total_monkey()
+        trade = 5
+        if total_money > trade:
+            try:
+                price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior = pkg.indicadores.ema_alert(currencie)
+                currency_amount = trade / price_last
+                if tipo == '=== Alerta de LONG ===':
+                    pkg.bingx.placeOrder(currencie + "-USDT", 'Bid', price_last, trade,'Market','Open', profit, stop_lose )
 
-# Calucando El Valor de las inversiones
-def total_monkey():
-    monkey = pkg.bingx.getBalance()
-    monkey = json.loads(monkey)
-    balance = monkey['data']['account']['balance']
-    return balance
-
-money = total_monkey()
+    
+            except:
+                continue
+        else:
+            continue
