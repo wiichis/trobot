@@ -27,14 +27,15 @@ def saving_operations():
 
         #Contantdo la cantidad de ordenes abiertas
         df_open = df[df['status'] == 'open']
-        contador = len(df_open)
+        df_close = df[df['status'] == 'close']
+        contador = len(df_open) - len(df_close)
 
         #Comprobar si hay dinero en caja.
         total_monkey = df['USD_Total'].sum()
-        trade = total_monkey / 12 - contador
+        trade = total_monkey / (12 - contador)
 
         if total_monkey >= trade:
-            total_usd = -trade
+            total_usd = trade * -1
 
             try:
                 price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior = pkg.indicadores.ema_alert(currencie)
