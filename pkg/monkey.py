@@ -24,11 +24,17 @@ def saving_operations():
     #Calculado el total de dinero
     for currencie in currencies:
         df = pd.read_csv('./archivos/monkey_register.csv')
+
+        #Contantdo la cantidad de ordenes abiertas
+        df_open = df[df['status'] == 'open']
+        contador = len(df_open)
+
         #Comprobar si hay dinero en caja.
         total_monkey = df['USD_Total'].sum()
-        if total_monkey >= 20:
-            trade = 20
-            total_usd = -20
+        trade = total_monkey / 12 - contador
+
+        if total_monkey >= trade:
+            total_usd = -trade
 
             try:
                 price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior = pkg.indicadores.ema_alert(currencie)
@@ -46,7 +52,7 @@ def saving_operations():
                         df.to_csv('./archivos/monkey_register.csv', index=False)
 
                         #Enviando Mensajes
-                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
+                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n *Trade: * {round(trade,2)}'
                         bot_send_text(alert)
  
                 elif tipo == '=== Alerta de SHORT ===':
@@ -58,7 +64,7 @@ def saving_operations():
                         df.to_csv('./archivos/monkey_register.csv', index=False)
 
                         #Enviando Mensajes
-                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}'
+                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n *Trade: * {round(trade,2)}'
                         bot_send_text(alert)
 
             except:
