@@ -10,8 +10,8 @@ from datetime import datetime
 
 
 def currencies_list():
-  currencies = ['OP','WAVES','XRP','XLM','EWT','DOGE','LDO','MASK','MATIC','DYDX','ETH','BTC',
-                'BNB','ADA','SOL','DOT','AVAX']
+  currencies = ['OP','WAVES','XRP','XLM','DOGE','LDO','MASK','MATIC','DYDX','ETH','BTC',
+                'BNB','ADA','SOL','DOT','AVAX','FIL','CFX','YFI','TXR']
   return currencies
 
  
