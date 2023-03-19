@@ -11,6 +11,7 @@ APIURL = "https://api-swap-rest.bingbon.pro"
 APIKEY = pkg.credentials.APIKEY
 SECRETKEY = pkg.credentials.SECRETKEY
 
+
 def genSignature(path, method, paramsMap):
     sortedKeys = sorted(paramsMap)
     paramsStr = "&".join(["%s=%s" % (x, paramsMap[x]) for x in sortedKeys])
@@ -45,7 +46,7 @@ def getPositions(symbol):
     url = "%s/api/v1/user/getPositions" % APIURL
     return post(url, paramsStr)
 
-def placeOrder(symbol, side, price, volume, tradeType, action):
+def placeOrder(symbol, side, price, volume, tradeType, action, takerProfitPrice, stopLossPrice):
     paramsMap = {
         "symbol": symbol,
         "apiKey": APIKEY,
@@ -55,6 +56,8 @@ def placeOrder(symbol, side, price, volume, tradeType, action):
         "tradeType": tradeType,
         "action": action,
         "timestamp": int(time.time()*1000),
+        "takerProfitPrice": takerProfitPrice,
+        "takerProfitPrice": stopLossPrice
     }
     sortedKeys = sorted(paramsMap)
     paramsStr = "&".join(["%s=%s" % (x, paramsMap[x]) for x in sortedKeys])

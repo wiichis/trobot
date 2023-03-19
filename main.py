@@ -14,8 +14,10 @@ def run():
     pkg.indicadores.emas_indicator()
     #pkg.monkey.trading_result()
     print(pkg.monkey_bx.total_monkey())
-    print(pkg.monkey_bx.saving_operations())
-    
+    #print(pkg.monkey_bx.saving_operations())
+    #print("placeOpenOrder:", pkg.bingx.placeOrder("BTC-USDT", "Bid", 0, 5, "Market", "Open",25800,24000))
+    print("getPositions:", pkg.bingx.getPositions("BTC-USDT"))
+    #print("placeCloseOrder:", pkg.bingx.placeOrder("BTC-USDT", "Ask", 0, 0.0004, "Market", "Close"))
 
 if __name__ == '__main__':
     schedule.every(1).minutes.do(run) 
