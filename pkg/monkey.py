@@ -38,8 +38,6 @@ def saving_operations():
         elif contador > 15:
             max_contador = 21
         
-        print(f'Contador: {contador}, Max Contador:  {max_contador}')
-
         #Comprobar si hay dinero en caja.
         total_monkey = df['USD_Total'].sum()
         trade = total_monkey / (max_contador - contador)
