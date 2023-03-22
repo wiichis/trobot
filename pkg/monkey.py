@@ -29,10 +29,20 @@ def saving_operations():
         df_open = df[df['status'] == 'open']
         df_close = df[df['status'] == 'close']
         contador = len(df_open) - len(df_close)
+        max_contador = 20
+
+        if contador <=10:
+            max_contador = 10
+        elif contador >10 and contador <=15:
+            max_contador = 15
+        elif contador > 15:
+            max_contador = 21
+        
+        print(f'Contador: {contador}, Max Contador:  {max_contador}')
 
         #Comprobar si hay dinero en caja.
         total_monkey = df['USD_Total'].sum()
-        trade = total_monkey / (12 - contador)
+        trade = total_monkey / (max_contador - contador)
 
         if total_monkey >= trade:
             total_usd = trade * -1
