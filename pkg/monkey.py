@@ -31,11 +31,11 @@ def saving_operations():
         contador = len(df_open) - len(df_close)
         max_contador = 20
 
-        if contador <=10:
-            max_contador = 10
-        elif contador >10 and contador <=15:
+        if contador <=15:
             max_contador = 15
-        elif contador > 15:
+        elif contador >15 and contador <=19:
+            max_contador = 20
+        elif contador > 19:
             max_contador = 21
         
         #Comprobar si hay dinero en caja.
