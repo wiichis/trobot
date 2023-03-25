@@ -61,7 +61,7 @@ def saving_operations():
                         df.to_csv('./archivos/monkey_register.csv', index=False)
 
                         #Enviando Mensajes
-                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n *Trade: * {round(trade,2)}'
+                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n *Trade: * {round(trade,2)} *Contador* {contador}'
                         bot_send_text(alert)
  
                 elif tipo == '=== Alerta de SHORT ===':
@@ -73,7 +73,7 @@ def saving_operations():
                         df.to_csv('./archivos/monkey_register.csv', index=False)
 
                         #Enviando Mensajes
-                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n *Trade: * {round(trade,2)}'
+                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n *Trade: * {round(trade,2)}*Contador* {contador}'
                         bot_send_text(alert)
 
             except:
