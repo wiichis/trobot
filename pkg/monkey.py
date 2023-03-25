@@ -31,12 +31,12 @@ def saving_operations():
         contador = len(df_open) - len(df_close)
         max_contador = 20
 
-        if contador <=15:
-            max_contador = 15
-        elif contador >15 and contador <=19:
-            max_contador = 20
-        elif contador > 19:
-            max_contador = 21
+        # if contador <=15:
+        #     max_contador = 15
+        # elif contador >15 and contador <=19:
+        #     max_contador = 20
+        # elif contador > 19:
+        max_contador = 21
         
         #Comprobar si hay dinero en caja.
         total_monkey = df['USD_Total'].sum()
@@ -61,7 +61,7 @@ def saving_operations():
                         df.to_csv('./archivos/monkey_register.csv', index=False)
 
                         #Enviando Mensajes
-                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n *Trade: * {round(trade,2)} *Contador* {contador}'
+                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n *Trade: * {round(trade,2)}\n *Contador* {contador}'
                         bot_send_text(alert)
  
                 elif tipo == '=== Alerta de SHORT ===':
@@ -73,7 +73,7 @@ def saving_operations():
                         df.to_csv('./archivos/monkey_register.csv', index=False)
 
                         #Enviando Mensajes
-                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n *Trade: * {round(trade,2)}*Contador* {contador}'
+                        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n *Trade: * {round(trade,2)}\n *Contador* {contador}'
                         bot_send_text(alert)
 
             except:
