@@ -14,13 +14,15 @@ def run():
     pkg.indicadores.emas_indicator()
     #pkg.monkey.trading_result()
     print(pkg.monkey_bx.total_monkey())
+    print(pkg.monkey_bx.total_positions("BTC-USDT"))
     #print(pkg.monkey_bx.saving_operations())
-    #print("placeOpenOrder:", pkg.bingx.placeOrder("BTC-USDT", "Bid", 0, 5, "Market", "Open",25800,24000))
+   #print("placeOpenOrder:", pkg.bingx.placeOrder("BTC-USDT", "Bid", 0, 0.002, "Market", "Open",29000,27500))
+    #print("placeOpenOrder:", pkg.bingx.placeOrder("BTC-USDT", "Bid", 0, 0.0004, "Market", "Open"))
     print("getPositions:", pkg.bingx.getPositions("BTC-USDT"))
     #print("placeCloseOrder:", pkg.bingx.placeOrder("BTC-USDT", "Ask", 0, 0.0004, "Market", "Close"))
 
 if __name__ == '__main__':
-    schedule.every(1).minutes.do(run) 
+    schedule.every(0.1).minutes.do(run) 
 
     hours = list(map(lambda x: x if x > 9 else "0"+str(x), range(1,24)))
     for hour in hours:

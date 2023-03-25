@@ -21,6 +21,13 @@ def total_monkey():
     balance = monkey['data']['account']['balance']
     return balance
 
+# Obteniendo las Posiciones
+def total_positions(currencie):
+    positions = pkg.bingx.getPositions(currencie)
+    positions = json.loads(positions)
+    symbol = positions['data']['positions'][0]['symbol'].split('-')[0]
+    return symbol
+
 def saving_operations():
     currencies = pkg.api.currencies_list()
     date = datetime.now()
