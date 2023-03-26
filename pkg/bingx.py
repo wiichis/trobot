@@ -46,7 +46,7 @@ def getPositions(symbol):
     url = "%s/api/v1/user/getPositions" % APIURL
     return post(url, paramsStr)
 
-def placeOrder(symbol, side, price, volume, tradeType, action):
+def placeOrder(symbol, side, price, volume, tradeType, action,takerProfitPrice,stopLossPrice):
     paramsMap = {
         "symbol": symbol,
         "apiKey": APIKEY,
@@ -56,14 +56,42 @@ def placeOrder(symbol, side, price, volume, tradeType, action):
         "tradeType": tradeType,
         "action": action,
         "timestamp": int(time.time()*1000),
-        #"takerProfitPrice": takerProfitPrice,
-        #"takerProfitPrice": stopLossPrice
+        "takerProfitPrice": takerProfitPrice,
+        "takerProfitPrice": stopLossPrice
     }
     sortedKeys = sorted(paramsMap)
     paramsStr = "&".join(["%s=%s" % (x, paramsMap[x]) for x in sortedKeys])
     paramsStr += "&sign=" + urllib.parse.quote(base64.b64encode(genSignature("/api/v1/user/trade", "POST", paramsMap)))
     url = "%s/api/v1/user/trade" % APIURL
     return post(url, paramsStr)
+
+def oneClickClosePosition(symbol,positionId):
+    paramsMap = {
+        "symbol": symbol,
+        "positionId": positionId,
+        "apiKey": APIKEY,
+        "timestamp": int(time.time()*1000),
+    }
+    sortedKeys = sorted(paramsMap)
+    paramsStr = "&".join(["%s=%s" % (x, paramsMap[x]) for x in sortedKeys])
+    paramsStr += "&sign=" + urllib.parse.quote(base64.b64encode(genSignature("/api/v1/user/oneClickClosePosition", "POST", paramsMap)))
+    url = "%s/api/v1/user/oneClickClosePosition" % APIURL
+    return post(url, paramsStr)
+
+def cancelOrder(symbol,orderId):
+    paramsMap = {
+        "symbol": symbol,
+        "positionId": orderId,
+        "apiKey": APIKEY,
+        "timestamp": int(time.time()*1000),
+    }
+    sortedKeys = sorted(paramsMap)
+    paramsStr = "&".join(["%s=%s" % (x, paramsMap[x]) for x in sortedKeys])
+    paramsStr += "&sign=" + urllib.parse.quote(base64.b64encode(genSignature("/api/v1/user/cancelOrder", "POST", paramsMap)))
+    url = "%s/api/v1/user/cancelOrder" % APIURL
+    return post(url, paramsStr)
+
+
 
 def main():
     print("getBalance:", getBalance())

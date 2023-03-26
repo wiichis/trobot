@@ -26,7 +26,19 @@ def total_positions(currencie):
     positions = pkg.bingx.getPositions(currencie)
     positions = json.loads(positions)
     symbol = positions['data']['positions'][0]['symbol'].split('-')[0]
-    return symbol
+    symbolPair = positions['data']['positions'][0]['symbol']
+    positionId = positions['data']['positions'][0]['positionId']
+    return symbol,symbolPair,positionId
+
+#Cerrando Posiciones
+def close_positions(currencie):
+    symbol,symbolPair,positionId = total_positions(currencie)
+    close = pkg.bingx.oneClickClosePosition(symbolPair,positionId)
+
+#Cerrando Ordenes
+def close_orders(currencie):
+    symbol,symbolPair,positionId = total_positions(currencie)
+    close = pkg.bingx.cancelOrder(symbolPair,positionId)
 
 def saving_operations():
     currencies = pkg.api.currencies_list()
