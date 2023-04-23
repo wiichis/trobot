@@ -68,7 +68,7 @@ def get_balance():
     return send_request(methed, path, paramsStr, payload)
 
 
-def post_market_order():
+def post_order():
     payload = {}
     path = '/openApi/swap/v2/trade/order'
     methed = "POST"
@@ -77,7 +77,14 @@ def post_market_order():
         "positionSide": "LONG",
         "quantity": 5,
         "symbol": "LINK-USDT",
-        "type": "MARKET",
+        "type": {
+            "order_type": "TAKE_PROFIT_MARKET",
+            "parameters":{
+                "quantity": 5,
+                "stopPrice": 7.16,
+            }
+        },
+        "price": 7.13,
         "timestamp": int(time.time() * 1000),
     }
     paramsStr = praseParam(paramsMap)

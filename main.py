@@ -9,10 +9,12 @@ def monkey_result():
     pkg.monkey.bot_send_text(monkey_USD)
     
 def run():
-    print(pkg.monkey_bx.total_monkey())
+    
     #print(pkg.monkey_bx.total_positions('LINK-USDT'))
     #print('Close Order: ',pkg.monkey_bx.close_orders('LINK-USDT'))
     #print('Close Order: ',pkg.bingx.one_clickLclose_all_positions())
+    print('Post Order: ',pkg.bingx.post_order())
+    print(pkg.monkey_bx.total_monkey())
     pkg.api.price_bingx()
 
 if __name__ == '__main__':
