@@ -16,29 +16,24 @@ def bot_send_text(bot_message):
 
 # Calucando El Valor de las inversiones
 def total_monkey():
-    monkey = pkg.bingx.getBalance()
+    monkey = pkg.bingx.get_balance()
     monkey = json.loads(monkey)
-    balance = monkey['data']['account']['balance']
+    balance = monkey['data']['balance']['balance']
     return balance
 
 # Obteniendo las Posiciones
 def total_positions(currencie):
-    positions = pkg.bingx.getPositions(currencie)
+    positions = pkg.bingx.perpetual_swap_positions(currencie)
     positions = json.loads(positions)
-    symbol = positions['data']['positions'][0]['symbol'].split('-')[0]
-    symbolPair = positions['data']['positions'][0]['symbol']
-    positionId = positions['data']['positions'][0]['positionId']
+    symbol = positions['data'][0]['symbol'].split('-')[0]
+    symbolPair = positions['data'][0]['symbol']
+    positionId = positions['data'][0]['positionId']
     return symbol,symbolPair,positionId
-
-#Cerrando Posiciones
-def close_positions(currencie):
-    symbol,symbolPair,positionId = total_positions(currencie)
-    close = pkg.bingx.oneClickClosePosition(symbolPair,positionId)
 
 #Cerrando Ordenes
 def close_orders(currencie):
     symbol,symbolPair,positionId = total_positions(currencie)
-    close = pkg.bingx.cancelOrder(symbolPair,positionId)
+    close = pkg.bingx.cancel_order(symbolPair,positionId)
 
 def saving_operations():
     currencies = pkg.api.currencies_list()

@@ -9,23 +9,14 @@ def monkey_result():
     pkg.monkey.bot_send_text(monkey_USD)
     
 def run():
-    pkg.api.get_data()
-    #pkg.monkey.saving_operations()
-    pkg.indicadores.emas_indicator()
-    #pkg.monkey.trading_result()
     print(pkg.monkey_bx.total_monkey())
-    #print(pkg.monkey_bx.total_positions("BTC-USDT"))
-    #print(pkg.monkey_bx.close_positions("BTC-USDT"))
-           
-    #print(pkg.monkey_bx.saving_operations())
-    print("placeOpenOrder:", pkg.bingx.placeOrder("BTC-USDT", "Bid", 0, 0.00068, "Market", "Open",27800,27000))
-    #print("placeOpenOrder:", pkg.bingx.placeOrder("BTC-USDT", "Bid", 0, 0.0004, "Market", "Open"))
-    #print("getPositions:", pkg.bingx.getPositions("BTC-USDT"))
-        #print("ClosePositions:", pkg.bingx.oneClickClosePosition("BTC-USDT",1638345765501796352))
-    
+    #print(pkg.monkey_bx.total_positions('LINK-USDT'))
+    #print('Close Order: ',pkg.monkey_bx.close_orders('LINK-USDT'))
+    #print('Close Order: ',pkg.bingx.one_clickLclose_all_positions())
+    pkg.api.price_bingx()
 
 if __name__ == '__main__':
-    schedule.every(0.1).minutes.do(run) 
+    schedule.every(0.5).minutes.do(run) 
 
     hours = list(map(lambda x: x if x > 9 else "0"+str(x), range(1,24)))
     for hour in hours:
