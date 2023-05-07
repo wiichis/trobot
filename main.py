@@ -10,11 +10,12 @@ def monkey_result():
     
 def run():
     
-    #print(pkg.monkey_bx.total_positions('LINK-USDT'))
-    #print('Close Order: ',pkg.monkey_bx.close_orders('LINK-USDT'))
-    #print('Close Order: ',pkg.bingx.one_clickLclose_all_positions())
-    print('Post Order: ',pkg.bingx.post_order())
+    #print(pkg.monkey_bx.total_positions('BTC-USDT'))
+    #print('Cerrar Todas las Ordenes Pendientes: ',pkg.bingx.cancel_all_orders('BTC-USDT'))
+    #print('Cerrar una orden: ',pkg.bingx.one_clickLclose_all_positions())
+    #print('Post Order: ',pkg.bingx.post_order())
     print(pkg.monkey_bx.total_monkey())
+    pkg.monkey_bx.obteniendo_ordenes_pendientes()
     pkg.api.price_bingx()
 
 if __name__ == '__main__':
