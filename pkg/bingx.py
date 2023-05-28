@@ -73,6 +73,7 @@ def one_clickLclose_all_positions():
     return send_request(methed, path, paramsStr, payload)
 
 
+#Obtner el balance 
 def get_balance():
     payload = {}
     path = '/openApi/swap/v2/user/balance'
@@ -83,7 +84,7 @@ def get_balance():
     paramsStr = praseParam(paramsMap)
     return send_request(methed, path, paramsStr, payload)
 
-
+# Colocar una orden
 def post_order():
     payload = {}
     path = '/openApi/swap/v2/trade/order'
