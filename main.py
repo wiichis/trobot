@@ -9,13 +9,17 @@ def monkey_result():
     pkg.monkey.bot_send_text(monkey_USD)
     
 def run():
-    pkg.api.get_data()
-    pkg.monkey.saving_operations()
-    pkg.indicadores.emas_indicator()
-    pkg.monkey.trading_result()
+    
+    print(pkg.monkey_bx.total_positions('BTC-USDT'))
+    #print('Cerrar Todas las Ordenes Pendientes: ',pkg.bingx.cancel_all_orders('BTC-USDT'))
+    #print('Cerrar una orden: ',pkg.bingx.one_clickLclose_all_positions())
+    #print('Post Order: ',pkg.bingx.post_order())
+    print(pkg.monkey_bx.total_monkey())
+    pkg.monkey_bx.obteniendo_ordenes_pendientes()
+    pkg.api.price_bingx()
 
 if __name__ == '__main__':
-    schedule.every(1).minutes.do(run) 
+    schedule.every(0.5).minutes.do(run) 
 
     hours = list(map(lambda x: x if x > 9 else "0"+str(x), range(1,24)))
     for hour in hours:

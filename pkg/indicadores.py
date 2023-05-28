@@ -38,24 +38,6 @@ def emas_indicator():
     df['envelope_inferior'] = envelope_inferior
 
 
-    #Calular la inclinacion de la tendencia
-    #Normalizar los precios
-    normalize_prices = grouped['price'].transform(lambda x: (x - x.min()) / (x.max() - x.min()))* 9 + 1
-    df['normalize_prices'] = round(normalize_prices,2)
-
-
-   # Define una función lambda para calcular la pendiente
-    #get_slope = lambda x: np.polyfit(range(len(x.iloc[-4::-5])), x.iloc[-4::-5], 1)[0]
-    #get_slope_20 = lambda x: np.polyfit(range(len(x.iloc[-20::-15])), x.iloc[-20::-15], 1)[0]
-
-    # Calcula la pendiente para cada grupo
-    #slope = grouped['normalize_prices'].transform(get_slope)
-    #slope_20 = grouped['normalize_prices'].transform(get_slope_20)
-
-    # Agrega la pendiente como una nueva columna en el DataFrame
-    #df['pendiente'] = slope
-   # df['pendiente_20'] = slope_20
-
     #Calcular la columna 'type' utilizando los valores de EMA y RSI para cada fila
     df['type'] = 'NONE'
     df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price), 'type'] = 'LONG'
@@ -72,19 +54,17 @@ def ema_alert(currencie):
     df_filterd = cruce_emas[cruce_emas['symbol'] ==  currencie]
     price_last = df_filterd['price'].iloc[-1]
     type = df_filterd['type'].iloc[-1]
-    envelope_superior = df_filterd['envelope_superior'].iloc[-1]
-    envelope_inferior = df_filterd['envelope_inferior'].iloc[-1]
        
     if type == 'LONG':
         stop_lose = price_last * 0.9983
         profit = price_last * 1.005
         tipo = '=== Alerta de LONG ==='
-        return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
+        return price_last, stop_lose, profit, tipo
     elif type == 'SHORT':
         stop_lose = price_last * 1.0017
         profit = price_last * 0.995
         tipo = '=== Alerta de SHORT ==='
-        return price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior
+        return price_last, stop_lose, profit, tipo
     else:
         pass
 
