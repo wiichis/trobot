@@ -5,8 +5,8 @@ from datetime import datetime
 
 
 def currencies_list():
-  currencies = ['MASK-USDT','MATIC-USDT','DYDX-USDT','ETH-USDT','BTC-USDT','BNB-USDT',
-                'ADA-USDT','SOL-USDT','DOT-USDT','AVAX-USDT']
+  currencies = ['MASK-USDT','MATIC-USDT','DYDX-USDT','ETH-USDT','BTC-USDT','BNB-USDT','DOGE-USDT',
+                'YFI-USDT','SOL-USDT','TRX-USDT','CFX-USDT','OP-USDT','XRP-USDT','LDO-USDT','FIL-USDT']
   return currencies
 
 def price_bingx():

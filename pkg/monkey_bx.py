@@ -54,7 +54,7 @@ def obteniendo_ordenes_pendientes():
         print(f"Status: {order['status']}")
         print(f"Time: {order['time']}")
         print(f"Update time: {order['updateTime']}")
-        print()
+        
 
 
 #Cerrando Ordenes

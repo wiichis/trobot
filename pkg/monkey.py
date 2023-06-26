@@ -36,7 +36,7 @@ def saving_operations():
         # elif contador >15 and contador <=19:
         #     max_contador = 20
         # elif contador > 19:
-        max_contador = 21
+        max_contador = 15
         
         #Comprobar si hay dinero en caja.
         total_monkey = df['USD_Total'].sum()
@@ -46,7 +46,7 @@ def saving_operations():
             total_usd = trade * -1
 
             try:
-                price_last, stop_lose, profit, tipo, envelope_superior, envelope_inferior = pkg.indicadores.ema_alert(currencie)
+                price_last, stop_lose, profit, tipo = pkg.indicadores.ema_alert(currencie)
                 
                 currency_amount = trade / price_last
                             
@@ -112,7 +112,7 @@ def trading_result():
             count = df[df['symbol']== currencie]['symbol'].count()
             if count %2 != 0:
                 #Ganancia en Long
-                if minutes < 16:
+                if minutes < 60:
                     if price_last > df_open['profit'].item():
                         df_open['date'] = date
                         df_open['status'] = 'close'
@@ -155,7 +155,7 @@ def trading_result():
             count = df[df['symbol']== currencie]['symbol'].count()
             if count %2 != 0:
                 #Ganancia en Short
-                if minutes < 13:
+                if minutes < 60:
                     if price_last < df_open['profit'].item():
                         df_open['date'] = date
                         df_open['status'] = 'close'
