@@ -12,14 +12,14 @@ SECRETKEY = pkg.credentials.SECRETKEY
 #Generar Firma
 def get_sign(api_secret, payload):
     signature = hmac.new(api_secret.encode("utf-8"), payload.encode("utf-8"), digestmod=sha256).hexdigest()
-    print("sign=" + signature)
+    #print("sign=" + signature)
     return signature
 
 
 #Enviar Requerimiento
 def send_request(methed, path, urlpa, payload):
     url = "%s%s?%s&signature=%s" % (APIURL, path, urlpa, get_sign(SECRETKEY, urlpa))
-    print(url)
+    #print(url)
 
     headers = {
         'X-BX-APIKEY': APIKEY,
@@ -130,6 +130,7 @@ def query_pending_orders():
     return send_request(methed, path, paramsStr, payload)
 
 
+#Obtener el prcio de un PAR
 def last_price_trading_par(symbol):
     payload = {}
     path = '/openApi/swap/v2/quote/price'
