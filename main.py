@@ -27,11 +27,11 @@ def run():
 
 if __name__ == '__main__':
     schedule.every(1).minutes.do(run) 
-
-    hours = list(map(lambda x: x if x > 9 else "0"+str(x), range(1,24)))
+  
+    hours = list(map(lambda x: str(x).zfill(2), range(0, 24)))
     for hour in hours:
         schedule.every().day.at(f"{hour}:00").do(monkey_result)
-   
+
     while True:
         schedule.run_pending()
 
