@@ -29,13 +29,6 @@ def saving_operations():
         df_open = df[df['status'] == 'open']
         df_close = df[df['status'] == 'close']
         contador = len(df_open) - len(df_close)
-        max_contador = 20
-
-        # if contador <=15:
-        #     max_contador = 15
-        # elif contador >15 and contador <=19:
-        #     max_contador = 20
-        # elif contador > 19:
         max_contador = 15
         
         #Comprobar si hay dinero en caja.

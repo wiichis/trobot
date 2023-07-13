@@ -85,18 +85,18 @@ def get_balance():
     return send_request(methed, path, paramsStr, payload)
 
 # Colocar una orden
-def post_order():
+def post_order(symbol, type, side, position_side, price, quantity, stopPrice ):
     payload = {}
     path = '/openApi/swap/v2/trade/order'
     methed = "POST"
     paramsMap = {
-        "symbol": "BTC-USDT",
-        "type": "TRIGGER_LIMIT",
-        "side": "BUY",
-        "positionSide": "LONG",
-        "price": 28840,
-        "quantity": 0.00010,
-        "stopPrice": 28830,
+        "symbol": symbol,
+        "type": type,
+        "side": side,
+        "position_side": position_side,
+        "price": price,
+        "quantity": quantity,
+        "stopPrice": stopPrice,
         "timestamp": int(time.time() * 1000),
 
     }

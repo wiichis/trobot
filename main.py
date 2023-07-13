@@ -4,19 +4,20 @@ import pkg
 
 
 def monkey_result():
-    total_result, total_USD_trade, final_usd_total = pkg.monkey.monkey_result()
-    monkey_USD = f'*==RESULTADOS==* \n Resultados Trade: *{round(total_result,2)}* \n Total Trade: *{round(total_USD_trade,2)}* \n Total Dinero: *{round(final_usd_total,2)}*'
+    balance_actual, diferencia_hora, diferencia_dia = pkg.monkey_bx.monkey_result()
+    monkey_USD = f'*📊===RESULTADOS===* \n Balance Actual: *{round(balance_actual,2)}* \n Resultado Última Hora: *{round(diferencia_hora,2)}* \n Resultado Día: *{round(diferencia_dia,2)}*'
     pkg.monkey.bot_send_text(monkey_USD)
     
 def run_bingx():
-    
-    print(pkg.monkey_bx.total_positions('BTC-USDT'))
-    #print('Cerrar Todas las Ordenes Pendientes: ',pkg.bingx.cancel_all_orders('BTC-USDT'))
-    #print('Cerrar una orden: ',pkg.bingx.one_clickLclose_all_positions())
-    #print('Post Order: ',pkg.bingx.post_order())
-    print(pkg.monkey_bx.total_monkey())
-    pkg.monkey_bx.obteniendo_ordenes_pendientes()
+    print('Cerrar Todas las Ordenes Pendientes: ',pkg.bingx.cancel_all_orders('BTC-USDT'))
+    #print(pkg.bingx.one_clickLclose_all_positions())
+
+    print('Posiciones Pendientes: ',pkg.bingx.perpetual_swap_positions('BTC-USDT'))
     pkg.api.price_bingx()
+    pkg.monkey_bx.colocando_ordenes()
+    pkg.monkey_bx.obteniendo_ordenes_pendientes()
+    #pkg.monkey_bx.prueba_short()
+    pkg.monkey_bx.cerrando_ordenes()
 
 def run():
     pkg.api.price_bingx()
@@ -26,11 +27,11 @@ def run():
 
 
 if __name__ == '__main__':
-    schedule.every(1).minutes.do(run) 
+    schedule.every(1).minutes.do(run_bingx) 
   
     hours = list(map(lambda x: str(x).zfill(2), range(0, 24)))
     for hour in hours:
-        schedule.every().day.at(f"{hour}:00").do(monkey_result)
+        schedule.every().day.at(f"{hour}:59").do(monkey_result)
 
     while True:
         schedule.run_pending()
