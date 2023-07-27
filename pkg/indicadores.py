@@ -16,7 +16,7 @@ def calcular_vela_subida_bajada(precios):
     subida_bajada = 'Subida' if cierre > apertura else 'Bajada'
 
     alerta = None
-    if abs(cierre - apertura) > apertura * 0.009:  # Diferencia de precio mayor al 1%
+    if abs(cierre - apertura) > apertura * 0.012:  # Diferencia de precio mayor al 1%
         if porcentaje_mecha > 20:  # Porcentaje de mecha mayor al 20%
             alerta = 'Retorno Envolvente'
         else:

@@ -15,20 +15,28 @@ def bot_send_text(bot_message):
 
     return response
 
-# Calucando El Valor de las inversiones
 def total_monkey():
-        monkey = pkg.bingx.get_balance()
-        monkey = json.loads(monkey)
-        balance = monkey['data']['balance']['balance']
-        datenow = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    # Obtiene el balance actual
+    monkey = pkg.bingx.get_balance()
+    monkey = json.loads(monkey)
+    balance = monkey['data']['balance']['balance']
+    datenow = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        data = {'datenow': [datenow], 'balance': [balance]}
-        df = pd.DataFrame(data)
+    data = {'datenow': [datenow], 'balance': [balance]}
+    df_new = pd.DataFrame(data)
 
-        with open('./archivos/ganancias.csv', 'a', newline='') as archivo_csv:
-            df.to_csv(archivo_csv, header=archivo_csv.tell() == 0, index=False)
-        
-        return balance
+    # Ruta del archivo
+    file_path = './archivos/ganancias.csv'
+    
+    # Añade los nuevos datos al final y se queda con las últimas 10000 filas
+    df_old = pd.read_csv(file_path)
+    df_total = pd.concat([df_old, df_new])
+    df_total = df_total.tail(10000)  # Mantiene solo las últimas 10000 filas
+
+    # Guarda el DataFrame en un archivo csv
+    df_total.to_csv(file_path, index=False)
+    
+    return balance
 
 def resultado_PnL():
     df_data = pd.read_csv('./archivos/PnL.csv')
