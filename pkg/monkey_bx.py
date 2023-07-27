@@ -22,7 +22,7 @@ def total_monkey():
     balance = monkey['data']['balance']['balance']
     datenow = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    data = {'datenow': [datenow], 'balance': [balance]}
+    data = {'date': [datenow], 'balance': [balance]}
     df_new = pd.DataFrame(data)
 
     # Ruta del archivo
