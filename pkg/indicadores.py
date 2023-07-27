@@ -3,6 +3,30 @@ import numpy as np
 from datetime import datetime
 import talib
 
+def calcular_vela_subida_bajada(precios):
+
+    #Tomar los ultimos 15 ciclos
+    precios = precios.iloc[-15:]
+
+    apertura = precios.iloc[0]
+    cierre = precios.iloc[-1]
+    maximo = precios.max()
+    minimo = precios.min()
+    porcentaje_mecha = (maximo - minimo) / apertura * 100
+    subida_bajada = 'Subida' if cierre > apertura else 'Bajada'
+
+    alerta = None
+    if abs(cierre - apertura) > apertura * 0.009:  # Diferencia de precio mayor al 1%
+        if porcentaje_mecha > 20:  # Porcentaje de mecha mayor al 20%
+            alerta = 'Retorno Envolvente'
+        else:
+            alerta = f'{subida_bajada} Envolvente'
+
+    # Mensaje predeterminado si no se cumple ninguna condición
+    if alerta is None:
+        alerta = 'Sin alerta'
+
+    return alerta
 
 
 def emas_indicator():
@@ -37,11 +61,14 @@ def emas_indicator():
     df['envelope_superior'] = envelope_superior
     df['envelope_inferior'] = envelope_inferior
 
-
-    #Calcular la columna 'type' utilizando los valores de EMA y RSI para cada fila
+    # Calcular vela envolvente
+    alertas = grouped['price'].transform(lambda x: calcular_vela_subida_bajada(x))
+    df['alerta'] = alertas
+    
+    #Calcular la columna 'type' utilizando los valores de EMA, RSI, Envelope para cada fila
     df['type'] = 'NONE'
-    df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price), 'type'] = 'LONG'
-    df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price),'type'] = 'SHORT'
+    df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price) & (alertas != 'Bajada Envolvente'),'type'] = 'LONG'
+    df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price)& (alertas != 'Subida Envolvente'),'type'] = 'SHORT'
             
     cruce_emas = df.groupby('symbol').tail(20).reset_index()
     cruce_emas = cruce_emas.sort_values(['symbol', 'date'])
@@ -56,15 +83,11 @@ def ema_alert(currencie):
     type = df_filterd['type'].iloc[-1]
        
     if type == 'LONG':
-        stop_lose = price_last * 0.9983
-        profit = price_last * 1.005
         tipo = '=== Alerta de LONG ==='
-        return price_last, stop_lose, profit, tipo
+        return price_last, tipo
     elif type == 'SHORT':
-        stop_lose = price_last * 1.0017
-        profit = price_last * 0.995
         tipo = '=== Alerta de SHORT ==='
-        return price_last, stop_lose, profit, tipo
+        return price_last, tipo
     else:
         pass
 

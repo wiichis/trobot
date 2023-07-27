@@ -85,20 +85,19 @@ def get_balance():
     return send_request(methed, path, paramsStr, payload)
 
 # Colocar una orden
-def post_order(symbol, type, side, position_side, price, quantity, stopPrice ):
+def post_order(symbol, quantity, price, stopPrice, position_side, type, side):
     payload = {}
     path = '/openApi/swap/v2/trade/order'
     methed = "POST"
     paramsMap = {
         "symbol": symbol,
+        "quantity": quantity,
+        "price": price,
+        "stopPrice": stopPrice,
+        "position_side": position_side,
         "type": type,
         "side": side,
-        "position_side": position_side,
-        "price": price,
-        "quantity": quantity,
-        "stopPrice": stopPrice,
-        "timestamp": int(time.time() * 1000),
-
+        "timestamp": int(time.time() * 1000)
     }
     paramsStr = praseParam(paramsMap)
     return send_request(methed, path, paramsStr, payload)
@@ -137,6 +136,25 @@ def last_price_trading_par(symbol):
     methed = "GET"
     paramsMap = {
         "symbol": symbol
+    }
+    paramsStr = praseParam(paramsMap)
+    return send_request(methed, path, paramsStr, payload)
+
+
+
+#Obtener el historico de PnL
+def hystory_PnL():
+    payload = {}
+    path = '/openApi/swap/v2/user/income'
+    methed = "GET"
+    paramsMap = {
+        "symbol": "",
+        "incomeType": "",
+        "startTime": 0,
+        "endTime": 0,
+        "limit": 0,
+        "timestamp": int(time.time() * 1000),
+        "recvWindow": 0
     }
     paramsStr = praseParam(paramsMap)
     return send_request(methed, path, paramsStr, payload)

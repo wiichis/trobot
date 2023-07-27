@@ -1,8 +1,9 @@
 import pkg
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 import json
+import time
 
 #Funcion Enviar Mensajes
 def bot_send_text(bot_message):
@@ -29,45 +30,86 @@ def total_monkey():
         
         return balance
 
+def resultado_PnL():
+    df_data = pd.read_csv('./archivos/PnL.csv')
+    npl = pkg.bingx.hystory_PnL()
+    npl = json.loads(npl)
+    df = pd.DataFrame(npl['data'])
+    
+    # Convertir el campo "time" en formato de fecha y hora
+    df['time'] = pd.to_datetime(df['time'], unit='ms')
+
+    # Concatenar el DataFrame existente con los nuevos datos
+    df_concat = pd.concat([df_data, df])
+
+    # Eliminar duplicados basados en todas las columnas
+    df_unique = df_concat.drop_duplicates()
+
+    # Limitar el número de líneas a 10,000 (manteniendo las más recientes)
+    df_limited = df_unique.tail(10000)
+
+    # Guardar el DataFrame actualizado en el archivo CSV
+    df_limited.to_csv('./archivos/PnL.csv', index=False)
+
 
 def monkey_result():
-    #Obteniendo ultimo resultado
+    # Obteniendo último resultado
     balance_actual = float(total_monkey())
+    
     # Cargar los datos desde el archivo CSV en un DataFrame de pandas
     df = pd.read_csv('./archivos/ganancias.csv')
-
-   # Convertir la columna 'date' en formato datetime
+    
+    # Convertir la columna 'date' en formato datetime
     df['date'] = pd.to_datetime(df['date'])
-
+    
     # Filtrar los datos para obtener solo el día actual y la hora actual
     fecha_actual = datetime.now().date()
     hora_actual = datetime.now().hour
     df_dia_actual = df[df['date'].dt.date == fecha_actual]
     df_hora_actual = df_dia_actual[df_dia_actual['date'].dt.hour == hora_actual]
-
+    
     # Obtener el balance al inicio y al final del día actual
     balance_inicial_dia = df_dia_actual['balance'].iloc[0]
     balance_final_dia = df_dia_actual['balance'].iloc[-1]
-
+    
     # Obtener el balance al inicio y al final de la hora actual
     balance_inicial_hora = df_hora_actual['balance'].iloc[0]
     balance_final_hora = df_hora_actual['balance'].iloc[-1]
-
+    
     # Calcular la diferencia del día actual y la diferencia de la hora actual
     diferencia_dia = balance_final_dia - balance_inicial_dia
     diferencia_hora = balance_final_hora - balance_inicial_hora
-
-    return balance_actual, diferencia_hora, diferencia_dia
+    
+    # Calcular la fecha de una semana atrás
+    fecha_semana_pasada = datetime.now().date() - timedelta(days=7)
+    
+    # Filtrar los datos para obtener la semana pasada
+    df_semana_pasada = df[df['date'].dt.date >= fecha_semana_pasada]
+    
+    # Obtener el balance al inicio y al final de la semana pasada
+    balance_inicial_semana = df_semana_pasada['balance'].iloc[0]
+    balance_final_semana = df_semana_pasada['balance'].iloc[-1]
+    
+    # Calcular la diferencia de la semana pasada
+    diferencia_semana = balance_final_semana - balance_inicial_semana
+    
+    return balance_actual, diferencia_hora, diferencia_dia, diferencia_semana
 
 
 # Obteniendo las Posiciones
-def total_positions(currencie):
-    positions = pkg.bingx.perpetual_swap_positions(currencie)
+def total_positions(symbol):
+    positions = pkg.bingx.perpetual_swap_positions(symbol)
     positions = json.loads(positions)
-    symbol = positions['data'][0]['symbol'].split('-')[0]
-    symbolPair = positions['data'][0]['symbol']
-    positionId = positions['data'][0]['positionId']
-    return symbol,symbolPair,positionId
+    #Capturando el error en caso de que no haya nada
+    if not positions['data']:
+        return None, None, None, None
+
+    symbol = positions['data'][0]['symbol']
+    positionSide = positions['data'][0]['positionSide']
+    price = float(positions['data'][0]['avgPrice'])
+    positionAmt = positions['data'][0]['positionAmt']
+    return symbol, positionSide, price, positionAmt
+
 
 #Obteniendo Ordenes Pendientes
 def obteniendo_ordenes_pendientes():
@@ -80,13 +122,24 @@ def obteniendo_ordenes_pendientes():
 
     # Verificar si la columna 'stopPrice' está presente en el DataFrame
     if 'stopPrice' not in df.columns:
-        return
+        df = pd.DataFrame({
+            'Date': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+            'Currencie': ['CERO'],
+            'OrderID Stop Loss': [''],
+            'OrderID Take Profit': [''],
+            'Stop Lose Value': [100],
+            'Profit': [100]
+        })
+
+        # Guardar los datos en un archivo CSV
+        csv_file = './archivos/order_id_register.csv'
+        df.to_csv(csv_file, index=False)
+        return      
     
     # Agregar las columnas adicionales
-
     df['Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    df['OrderID Stop Loss'] = ""
-    df['OrderID Take Profit'] = ""
+    df['OrderID Stop Loss'] = "0"
+    df['OrderID Take Profit'] = "0"
     df['Stop Lose Value'] = df['stopPrice']
     df['Profit'] = df['profit']
 
@@ -113,6 +166,7 @@ def obteniendo_ordenes_pendientes():
 def colocando_ordenes():
     currencies = pkg.api.currencies_list()
     df = pd.read_csv('./archivos/order_id_register.csv')
+    df_positions = pd.read_csv('./archivos/position_id_register.csv')
 
     for currencie in currencies:
         # Verificar si la moneda ya está en el DataFrame
@@ -125,98 +179,115 @@ def colocando_ordenes():
         max_contador = int(max_contador)
         
         try:
-            price_last, stop_lose, profit, tipo = pkg.indicadores.ema_alert(currencie)
+            price_last, tipo = pkg.indicadores.ema_alert(currencie)
             if tipo == '=== Alerta de LONG ===':
                 total_money = float(total_monkey())
                 trade = total_money / max_contador
                 currency_amount = trade / price_last
                 #Colocando orden de compra
-                response = json.loads(pkg.bingx.post_order(currencie, "MARKET", "BUY", "BOTH", price_last, currency_amount, 0))
-                if 'orderId' in response['data']['order']:
-                    #Enviando Mensajes
-                    alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n *Trade: * {round(trade,2)}\n *Contador* {contador}'
-                    bot_send_text(alert)
-                    
-                    # Configurar la orden de stop loss
-                    pkg.bingx.post_order(currencie, "STOP_MARKET", "SELL", "BOTH", 0, currency_amount, stop_lose)
+                pkg.bingx.post_order(currencie,currency_amount,price_last,0,"LONG", "LIMIT", "BUY")
+                
+                #Guardando las posiciones
+                df_posiciones = {'symbol': currencie, 'tipo': 'LONG'}
+                print(df_posiciones)
+                df_positions.loc[len(df_positions)] = df_posiciones
 
-                    # Configurar la orden de take profit
-                    pkg.bingx.post_order(currencie, "TAKE_PROFIT_MARKET", "SELL", "BOTH", 0, currency_amount, profit)
-                else:
-                    print("Error al realizar la orden de compra:", response['msg']) 
+                #Enviando Mensajes
+                alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(price_last * 0.998,3)} \n *Profit* en: {round(price_last * 1.006,3)}\n *Trade: * {round(trade,2)}\n *Contador* {contador}'
+                bot_send_text(alert)
 
             elif tipo == '=== Alerta de SHORT ===':
                 total_money = float(total_monkey())
+                trade = total_money / max_contador
+                currency_amount = trade / price_last
                 # Colocando orden de venta
-                response = json.loads(pkg.bingx.post_order(currencie, "MARKET", "SELL", "BOTH", price_last, currency_amount, 0))
-                if 'orderId' in response['data']['order']:
-                    # Enviando Mensajes
-                    alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n *Trade: * {round(trade,2)}\n *Contador* {contador}'
-                    bot_send_text(alert)
+                response = pkg.bingx.post_order(currencie,currency_amount,price_last,price_last,"SHORT","LIMIT", "SELL")
+                print(response)
 
-                    # Configurar la orden de stop loss
-                    pkg.bingx.post_order(currencie, "STOP_MARKET", "BUY", "BOTH", 0, currency_amount, stop_lose)
+                #Guardando las posiciones
+                df_posiciones = pd.DataFrame({'symbol': currencie, 'tipo': 'SHORT'})
+                df_positions = pd.concat([df_positions, df_posiciones], ignore_index=True)
 
-                    # Configurar la orden de take profit
-                    pkg.bingx.post_order(currencie, "TAKE_PROFIT_MARKET", "BUY", "BOTH", 0, currency_amount, profit)
-                else:
-                    print("Error al realizar la orden de venta:", response['msg'])  
-
+                # Enviando Mensajes
+                alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(price_last * 1.002,3)} \n *Profit* en: {round(0.994,3)}\n *Trade: * {round(trade,2)}\n *Contador* {contador}'
+                bot_send_text(alert)
+            
+            #Guardando Posiciones
+            df_positions.to_csv('./archivos/position_id_register.csv', index=False)
         except:
             continue
         else:
             continue
 
+def prueba():
+    long_stop_lose = 0.9983
+    long_profit = 1.005
 
-def prueba_short():
-    currencie = "BTC-USDT"
-    price_last = 30579
-    currency_amount = 0.00015
-    stop_lose = 30650
-    profit = 30520
-    tipo = "Alerta de SHORT"
+    currencies = pkg.api.currencies_list()
+    for currencie in currencies:
+        #configurara SL TK Trayendo las posisciones
+        symbol,price,positionAmt =  total_positions(currencie)
+        if symbol is None:
+            continue
 
-
-    response = json.loads(pkg.bingx.post_order(currencie, "MARKET", "SELL", "BOTH", 0, currency_amount, 0))
-    print(response)
-    if 'orderId' in response['data']['order']:
-        # Enviando Mensajes
-        alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(stop_lose,3)} \n *Profit* en: {round(profit,3)}\n'
-        bot_send_text(alert)
+        # Convertir price a float antes de la multiplicación
+        price = float(price)
 
         # Configurar la orden de stop loss
-        pkg.bingx.post_order(currencie, "STOP_MARKET", "BUY", "BOTH", 0, currency_amount, stop_lose)
+        pkg.bingx.post_order(symbol, "STOP_MARKET", "SELL", "BOTH", 0, positionAmt, price * long_stop_lose)
 
         # Configurar la orden de take profit
-        pkg.bingx.post_order(currencie, "TAKE_PROFIT_MARKET", "BUY", "BOTH", 0, currency_amount, profit)
-    else:
-        print("Error al realizar la orden de venta:", response['msg'])  
+        pkg.bingx.post_order(symbol, "TAKE_PROFIT_MARKET", "SELL", "BOTH", 0, positionAmt, price * long_profit)
+
+
+def prueba_short():
+    #compra = pkg.bingx.post_order('TRX-USDT', "MARKET", "BUY", "LONG", 0, 50, 0)
+    response = pkg.bingx.post_order("BTC-USDT", 1, 29320, 29320, "SHORT", "LIMIT", "SELL")
+
+    print("prueba", response)
+
+
+def colocando_TK_SL():
+    #Configuracion SL TP
+    long_stop_lose = 0.998
+    long_profit = 1.006
+    short_stop_lose = 1.002
+    short_profit = 0.994
+
+    #obteniendo posiciones sin SL o TP
+    df_posiciones = pd.read_csv('./archivos/position_id_register.csv')
+    
+    for index, row in df_posiciones.iterrows():
+        symbol = row['symbol']
+ 
+        #Obteniendo el valor de las posiciones reales
+        symbol, positionSide, price, positionAmt = total_positions(symbol)
+
+        if positionSide == 'LONG':
+            # Configurar la orden de stop loss
+            pkg.bingx.post_order(symbol, "STOP_MARKET", "SELL", "BOTH", 0, positionAmt, price * long_stop_lose)
+            time.sleep(1)
+            # Configurar la orden de take profit
+            pkg.bingx.post_order(symbol, "TAKE_PROFIT_MARKET", "SELL", "BOTH", 0, positionAmt, price * long_profit)
+
+            #Borrando linea
+            df_posiciones.drop(index, inplace=True)
+
+        elif positionSide == 'SHORT':
+            # Configurar la orden de stop loss
+            pkg.bingx.post_order(symbol, "STOP_MARKET", "BUY", "BOTH", 0, positionAmt, price * short_stop_lose)
+            time.sleep(1)
+            # Configurar la orden de take profit
+            pkg.bingx.post_order(symbol, "TAKE_PROFIT_MARKET", "BUY", "BOTH", 0, positionAmt, price * short_profit)
+
+            #Borrando linea
+            df_posiciones.drop(index, inplace=True)
+
+    #Guardando Posiciones
+    df_posiciones.to_csv('./archivos/position_id_register.csv', index=False)
 
 
 
-def cerrando_ordenes():
-    # Leer los datos desde un archivo CSV
-    df = pd.read_csv('./archivos/order_id_register.csv')
 
-    # Contar los valores y filtrar los que tienen una aparición
-    value_counts = df['Currencie'].value_counts()
-    filtered_counts = value_counts[value_counts == 1]
 
-    # Evaluar los valores filtrados que tienen 'OrderID Stop Loss' vacío
-    for currencie in filtered_counts.index:
-        filtered_df = df[df['Currencie'] == currencie]
-        if filtered_df['OrderID Stop Loss'].isnull().all():
-            order_id_take_profit = int(filtered_df['OrderID Take Profit'].iloc[0]) # Obtener el valor del primer registro
-            #Enviadndo Mensajes
-            alert = f' 💸 🤖 💸 \n *Perdida SHORT* \n 🚧' + currencie
-            bot_send_text(alert)
-            #Canelando orden pendiente
-            pkg.bingx.cancel_order(currencie, order_id_take_profit)
-        else:
-            order_id_stop_loss = int(filtered_df['OrderID Stop Loss'].iloc[0])  # Obtener el valor del primer registro
-            #Enviadndo Mensajes
-            alert = f' 💵 🤖 💵 \n *Ganancia SHORT* \n 🚧' + currencie
-            bot_send_text(alert)
-            #Cancelando orden pendiente
-            pkg.bingx.cancel_order(currencie, order_id_stop_loss)
-
+  
