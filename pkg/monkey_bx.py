@@ -209,11 +209,12 @@ def colocando_ordenes():
                 trade = total_money / max_contador
                 currency_amount = trade / price_last
                 # Colocando orden de venta
-                response = pkg.bingx.post_order(currencie,currency_amount,price_last,price_last,"SHORT","LIMIT", "SELL")
+                response = pkg.bingx.post_order(currencie,currency_amount,price_last,0,"SHORT","LIMIT", "SELL")
                 print(response)
 
                 #Guardando las posiciones
                 df_posiciones = pd.DataFrame({'symbol': currencie, 'tipo': 'SHORT'})
+                print(df_posiciones)
                 df_positions = pd.concat([df_positions, df_posiciones], ignore_index=True)
 
                 # Enviando Mensajes
@@ -226,13 +227,6 @@ def colocando_ordenes():
             continue
         else:
             continue
-
-
-def prueba_short():
-    #compra = pkg.bingx.post_order('TRX-USDT', "MARKET", "BUY", "LONG", 0, 50, 0)
-    response = pkg.bingx.post_order("BTC-USDT", 1, 29320, 29320, "SHORT", "LIMIT", "SELL")
-
-    print("prueba", response)
 
 
 def colocando_TK_SL():

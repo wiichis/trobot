@@ -13,7 +13,7 @@ def run_bingx():
     pkg.monkey_bx.colocando_TK_SL()
     pkg.monkey_bx.obteniendo_ordenes_pendientes()
     pkg.monkey_bx.colocando_ordenes()
-    #pkg.monkey_bx.prueba_short()
+
 
 def run():
     pkg.api.price_bingx()

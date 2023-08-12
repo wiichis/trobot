@@ -67,8 +67,8 @@ def emas_indicator():
     
     #Calcular la columna 'type' utilizando los valores de EMA, RSI, Envelope para cada fila
     df['type'] = 'NONE'
-    df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price) & (alertas != 'Bajada Envolvente'),'type'] = 'LONG'
-    df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price)& (alertas != 'Subida Envolvente'),'type'] = 'SHORT'
+    df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price),'type'] = 'LONG'
+    df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price),'type'] = 'SHORT'
             
     cruce_emas = df.groupby('symbol').tail(20).reset_index()
     cruce_emas = cruce_emas.sort_values(['symbol', 'date'])

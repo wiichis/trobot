@@ -94,7 +94,7 @@ def post_order(symbol, quantity, price, stopPrice, position_side, type, side):
         "quantity": quantity,
         "price": price,
         "stopPrice": stopPrice,
-        "position_side": position_side,
+        "positionSide": position_side,
         "type": type,
         "side": side,
         "timestamp": int(time.time() * 1000)
