@@ -231,9 +231,9 @@ def colocando_ordenes():
 
 def colocando_TK_SL():
     #Configuracion SL TP
-    long_stop_lose = 0.985
+    long_stop_lose = 0.998333
     long_profit = 1.005
-    short_stop_lose = 1.015
+    short_stop_lose = 1.001667
     short_profit = 0.995
 
     #obteniendo posiciones sin SL o TP
