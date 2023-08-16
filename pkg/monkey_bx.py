@@ -213,12 +213,12 @@ def colocando_ordenes():
                 print(response)
 
                 #Guardando las posiciones
-                df_posiciones = pd.DataFrame({'symbol': currencie, 'tipo': 'SHORT'})
+                df_posiciones = {'symbol': currencie, 'tipo': 'SHORT'}
                 print(df_posiciones)
-                df_positions = pd.concat([df_positions, df_posiciones], ignore_index=True)
+                df_positions.loc[len(df_positions)] = df_posiciones
 
                 # Enviando Mensajes
-                alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(price_last * 1.002,3)} \n *Profit* en: {round(0.994,3)}\n *Trade: * {round(trade,2)}\n *Contador* {contador}'
+                alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(price_last * 1.002,3)} \n *Profit* en: {round(price_last * 0.994,3)}\n *Trade: * {round(trade,2)}\n *Contador* {contador}'
                 bot_send_text(alert)
             
             #Guardando Posiciones
@@ -231,10 +231,10 @@ def colocando_ordenes():
 
 def colocando_TK_SL():
     #Configuracion SL TP
-    long_stop_lose = 0.998
-    long_profit = 1.006
-    short_stop_lose = 1.002
-    short_profit = 0.994
+    long_stop_lose = 0.985
+    long_profit = 1.005
+    short_stop_lose = 1.015
+    short_profit = 0.995
 
     #obteniendo posiciones sin SL o TP
     df_posiciones = pd.read_csv('./archivos/position_id_register.csv')
@@ -247,20 +247,20 @@ def colocando_TK_SL():
 
         if positionSide == 'LONG':
             # Configurar la orden de stop loss
-            pkg.bingx.post_order(symbol, positionAmt, 0,  price * long_stop_lose, "BOTH", "STOP_MARKET", "SELL")
+            pkg.bingx.post_order(symbol, positionAmt, 0,  price * long_stop_lose, "LONG", "STOP_MARKET", "SELL")
             time.sleep(1)
             # Configurar la orden de take profit
-            pkg.bingx.post_order(symbol, positionAmt, 0, price * long_profit, "BOTH", "TAKE_PROFIT_MARKET", "SELL")
+            pkg.bingx.post_order(symbol, positionAmt, 0, price * long_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
 
             #Borrando linea
             df_posiciones.drop(index, inplace=True)
 
         elif positionSide == 'SHORT':
             # Configurar la orden de stop loss
-            pkg.bingx.post_order(symbol, positionAmt, 0, price * short_stop_lose, "BOTH", "STOP_MARKET", "BUY")
+            pkg.bingx.post_order(symbol, positionAmt, 0, price * short_stop_lose, "SHORT", "STOP_MARKET", "BUY")
             time.sleep(1)
             # Configurar la orden de take profit
-            pkg.bingx.post_order(symbol, positionAmt, 0, price * short_profit, "BOTH", "TAKE_PROFIT_MARKET", "BUY")
+            pkg.bingx.post_order(symbol, positionAmt, 0, price * short_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
 
             #Borrando linea
             df_posiciones.drop(index, inplace=True)
