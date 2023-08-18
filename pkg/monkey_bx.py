@@ -128,42 +128,6 @@ def obteniendo_ordenes_pendientes():
     #Crear un DataFrame con los datos
     df = pd.DataFrame(orders)
 
-    # Verificar si la columna 'stopPrice' está presente en el DataFrame
-    if 'stopPrice' not in df.columns:
-        df = pd.DataFrame({
-            'Date': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
-            'Currencie': ['CERO'],
-            'OrderID Stop Loss': [''],
-            'OrderID Take Profit': [''],
-            'Stop Lose Value': [100],
-            'Profit': [100]
-        })
-
-        # Guardar los datos en un archivo CSV
-        csv_file = './archivos/order_id_register.csv'
-        df.to_csv(csv_file, index=False)
-        return      
-    
-    # Agregar las columnas adicionales
-    df['Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    df['OrderID Stop Loss'] = "0"
-    df['OrderID Take Profit'] = "0"
-    df['Stop Lose Value'] = df['stopPrice']
-    df['Profit'] = df['profit']
-
-    # Recorrer cada fila y asignar los valores adecuados
-    for i, row in df.iterrows():
-        if row['type'] == 'STOP_MARKET':
-            df.at[i, 'OrderID Stop Loss'] = row['orderId']
-            df.at[i, 'Stop Lose Value'] = row['stopPrice']
-        elif row['type'] == 'TAKE_PROFIT_MARKET':
-            df.at[i, 'OrderID Take Profit'] = row['orderId']
-        df.at[i, 'Currencie'] = row['symbol']
-
-    # Seleccionar las columnas deseadas
-    columns = ['Date', 'Currencie', 'OrderID Stop Loss', 'OrderID Take Profit', 'Stop Lose Value', 'Profit']
-    df = df[columns]
-
     # Guardar los datos en un archivo CSV
     csv_file = './archivos/order_id_register.csv'
     df.to_csv(csv_file, index=False)
@@ -178,7 +142,7 @@ def colocando_ordenes():
 
     for currencie in currencies:
         # Verificar si la moneda ya está en el DataFrame
-        if currencie in df['Currencie'].values:
+        if currencie in df['symbol'].values:
             continue
 
         contador = len(df)
@@ -196,7 +160,7 @@ def colocando_ordenes():
                 pkg.bingx.post_order(currencie,currency_amount,price_last,0,"LONG", "LIMIT", "BUY")
                 
                 #Guardando las posiciones
-                df_posiciones = {'symbol': currencie, 'tipo': 'LONG'}
+                df_posiciones = {'symbol': currencie, 'tipo': 'LONG', 'counter' : 0}
                 print(df_posiciones)
                 df_positions.loc[len(df_positions)] = df_posiciones
 
@@ -213,7 +177,7 @@ def colocando_ordenes():
                 print(response)
 
                 #Guardando las posiciones
-                df_posiciones = {'symbol': currencie, 'tipo': 'SHORT'}
+                df_posiciones = {'symbol': currencie, 'tipo': 'SHORT', 'counter' : 0}
                 print(df_posiciones)
                 df_positions.loc[len(df_positions)] = df_posiciones
 
@@ -238,9 +202,21 @@ def colocando_TK_SL():
 
     #obteniendo posiciones sin SL o TP
     df_posiciones = pd.read_csv('./archivos/position_id_register.csv')
+    df_posiciones['counter'] += 1
+
+    #Oteniendo ordenes pendientes
+    df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
     
     for index, row in df_posiciones.iterrows():
         symbol = row['symbol']
+        counter = row['counter']
+
+        #aqui necesitamos el codigo de order_id
+        if counter >= 10:
+            # Filtrar el valor orderId del symbol 
+            orderId = df_ordenes[df_ordenes['symbol'] == symbol]['orderId'].iloc[0]
+            pkg.bingx.cancel_order(symbol, orderId)
+            df_posiciones.drop(index, inplace=True)
  
         #Obteniendo el valor de las posiciones reales
         symbol, positionSide, price, positionAmt = total_positions(symbol)

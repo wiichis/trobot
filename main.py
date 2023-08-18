@@ -10,20 +10,17 @@ def monkey_result():
     
 def run_bingx():
     pkg.api.price_bingx()
-    pkg.monkey_bx.colocando_TK_SL()
     pkg.monkey_bx.obteniendo_ordenes_pendientes()
     pkg.monkey_bx.colocando_ordenes()
 
 
-def run():
-    pkg.api.price_bingx()
-    pkg.monkey.saving_operations()
-    pkg.indicadores.emas_indicator()
-    pkg.monkey.trading_result()
+def run_fast():
+    pkg.monkey_bx.colocando_TK_SL()
 
 
 if __name__ == '__main__':
-    schedule.every(1).minutes.do(run_bingx) 
+    schedule.every(1).minutes.do(run_bingx)
+    schedule.every(0.2).minutes.do(run_fast)  
   
     hours = list(map(lambda x: str(x).zfill(2), range(0, 24)))
     for hour in hours:
