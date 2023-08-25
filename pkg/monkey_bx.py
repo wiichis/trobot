@@ -125,20 +125,24 @@ def obteniendo_ordenes_pendientes():
     ordenes = json.loads(ordenes)
     orders = ordenes['data']['orders']
 
-    #Crear un DataFrame con los datos
-    df = pd.DataFrame(orders)
+    # Verificar si orders está vacío y crear un DataFrame apropiado
+    if not orders:  # Si orders está vacío
+        df = pd.DataFrame([{'symbol': 'zero', 'orderId': 0, 'side': 'both'}])
+    else:
+        df = pd.DataFrame(orders)
 
     # Guardar los datos en un archivo CSV
     csv_file = './archivos/order_id_register.csv'
     df.to_csv(csv_file, index=False)
 
-    return orders       
+    return orders
 
 
 def colocando_ordenes():
     currencies = pkg.api.currencies_list()
     df = pd.read_csv('./archivos/order_id_register.csv')
     df_positions = pd.read_csv('./archivos/position_id_register.csv')
+
 
     for currencie in currencies:
         # Verificar si la moneda ya está en el DataFrame
@@ -173,8 +177,7 @@ def colocando_ordenes():
                 trade = total_money / max_contador
                 currency_amount = trade / price_last
                 # Colocando orden de venta
-                response = pkg.bingx.post_order(currencie,currency_amount,price_last,0,"SHORT","LIMIT", "SELL")
-                print(response)
+                pkg.bingx.post_order(currencie,currency_amount,price_last,0,"SHORT","LIMIT", "SELL")
 
                 #Guardando las posiciones
                 df_posiciones = {'symbol': currencie, 'tipo': 'SHORT', 'counter' : 0}
@@ -201,6 +204,7 @@ def colocando_TK_SL():
     short_profit = 0.995
 
     #obteniendo posiciones sin SL o TP
+    
     df_posiciones = pd.read_csv('./archivos/position_id_register.csv')
     df_posiciones['counter'] += 1
 
@@ -214,11 +218,15 @@ def colocando_TK_SL():
         #aqui necesitamos el codigo de order_id
         if counter >= 10:
             # Filtrar el valor orderId del symbol 
-            orderId = df_ordenes[df_ordenes['symbol'] == symbol]['orderId'].iloc[0]
-            pkg.bingx.cancel_order(symbol, orderId)
-            df_posiciones.drop(index, inplace=True)
- 
-        #Obteniendo el valor de las posiciones reales
+            try:
+                orderId = df_ordenes[df_ordenes['symbol'] == symbol]['orderId'].iloc[0]
+                pkg.bingx.cancel_order(symbol, orderId)
+                df_posiciones.drop(index, inplace=True)
+            except:
+                pass
+    
+    #Obteniendo el valor de las posiciones reales
+    try:
         symbol, positionSide, price, positionAmt = total_positions(symbol)
 
         if positionSide == 'LONG':
@@ -240,6 +248,9 @@ def colocando_TK_SL():
 
             #Borrando linea
             df_posiciones.drop(index, inplace=True)
+
+    except:
+        pass
 
     #Guardando Posiciones
     df_posiciones.to_csv('./archivos/position_id_register.csv', index=False)

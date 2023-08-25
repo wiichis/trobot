@@ -3,38 +3,42 @@ import numpy as np
 from datetime import datetime
 import talib
 
-def calcular_vela_subida_bajada(precios):
 
-    #Tomar los ultimos 15 ciclos
-    precios = precios.iloc[-15:]
+def heikin_ashi(df):
+    df['HA_Close'] = round((df['price'] + df['price'].shift(1)) / 2, 8)
+    df['HA_Open'] = round((df['HA_Close'] + df['HA_Close'].shift(1)) / 2, 8)
+    df['HA_High'] = round(df[['price', 'HA_Open', 'HA_Close']].max(axis=1), 6)
+    df['HA_Low'] = round(df[['price', 'HA_Open', 'HA_Close']].min(axis=1), 6)
+    return df
 
-    apertura = precios.iloc[0]
-    cierre = precios.iloc[-1]
-    maximo = precios.max()
-    minimo = precios.min()
-    porcentaje_mecha = (maximo - minimo) / apertura * 100
-    subida_bajada = 'Subida' if cierre > apertura else 'Bajada'
+  # Esto es un estado global que se utilizará dentro de la función
 
-    alerta = None
-    if abs(cierre - apertura) > apertura * 0.012:  # Diferencia de precio mayor al 1%
-        if porcentaje_mecha > 20:  # Porcentaje de mecha mayor al 20%
-            alerta = 'Retorno Envolvente'
-        else:
-            alerta = f'{subida_bajada} Envolvente'
+def detect_trend_change(row, previous_row):
 
-    # Mensaje predeterminado si no se cumple ninguna condición
-    if alerta is None:
-        alerta = 'Sin alerta'
+    # Si el cuerpo de la vela actual es alcista y el anterior es bajista
+    if row['HA_Close'] > row['HA_Open'] and previous_row['HA_Close'] < previous_row['HA_Open']:
+        result = f"Cambio a Alcista"
 
-    return alerta
+    # Si el cuerpo de la vela actual es bajista y el anterior es alcista
+    elif row['HA_Close'] < row['HA_Open'] and previous_row['HA_Close'] > previous_row['HA_Open']:
+        result = f"Cambio a Bajista"
+ 
+    else:
+        result = None
+
+    return result
+
+
+
 
 
 def emas_indicator():
+    global previous_row
     # Importar datos de precios
     df = pd.read_csv('./archivos/cripto_price.csv')
-    df = df.iloc[-20000:] 
+    df = df.iloc[-10000:] 
    
-    grouped = df.groupby('symbol')
+    grouped = df.groupby('symbol', group_keys=False)
   
     # Calcular el EMA de período 50 y el EMA de período 21 para cada grupo
     ema50 = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=50))
@@ -61,14 +65,31 @@ def emas_indicator():
     df['envelope_superior'] = envelope_superior
     df['envelope_inferior'] = envelope_inferior
 
-    # Calcular vela envolvente
-    alertas = grouped['price'].transform(lambda x: calcular_vela_subida_bajada(x))
+    # Calcula Heikin Ashi para cada moneda
+    df = grouped.apply(lambda group: heikin_ashi(group))
+
+    # Logica de Alertas
+    # Ordena el DataFrame primero por 'symbol' y luego por 'date'
+    df = df.sort_values(by=['symbol', 'date'])
+
+    alertas = []
+    previous_row = None
+    previous_symbol = None
+
+    for index, row in df.iterrows():
+        if row['symbol'] != previous_symbol:
+            previous_row = None  # Reiniciar previous_row si cambiamos de símbolo
+            previous_symbol = row['symbol']
+
+        alerta = detect_trend_change(row, previous_row)
+        alertas.append(alerta)
+        previous_row = row  # Actualizar previous_row para la siguiente iteración
+
     df['alerta'] = alertas
-    
+
     #Calcular la columna 'type' utilizando los valores de EMA, RSI, Envelope para cada fila
-    df['type'] = 'NONE'
-    df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price),'type'] = 'LONG'
-    df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price),'type'] = 'SHORT'
+    df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price) & (alerta == 'Cambio a Alcista'),'type'] = 'LONG'
+    df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price)& (alerta == 'Cambio a Bajista'),'type'] = 'SHORT'
             
     cruce_emas = df.groupby('symbol').tail(20).reset_index()
     cruce_emas = cruce_emas.sort_values(['symbol', 'date'])
@@ -91,3 +112,6 @@ def ema_alert(currencie):
     else:
         pass
 
+
+
+#prueba = emas_indicator()
