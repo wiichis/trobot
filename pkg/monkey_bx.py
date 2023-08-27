@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime, timedelta
 import requests
 import json
-import time
 
 #Funcion Enviar Mensajes
 def bot_send_text(bot_message):
@@ -232,7 +231,6 @@ def colocando_TK_SL():
         if positionSide == 'LONG':
             # Configurar la orden de stop loss
             pkg.bingx.post_order(symbol, positionAmt, 0,  price * long_stop_lose, "LONG", "STOP_MARKET", "SELL")
-            time.sleep(1)
             # Configurar la orden de take profit
             pkg.bingx.post_order(symbol, positionAmt, 0, price * long_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
 
@@ -242,7 +240,6 @@ def colocando_TK_SL():
         elif positionSide == 'SHORT':
             # Configurar la orden de stop loss
             pkg.bingx.post_order(symbol, positionAmt, 0, price * short_stop_lose, "SHORT", "STOP_MARKET", "BUY")
-            time.sleep(1)
             # Configurar la orden de take profit
             pkg.bingx.post_order(symbol, positionAmt, 0, price * short_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
 
