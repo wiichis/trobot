@@ -11,91 +11,83 @@ def heikin_ashi(df):
     df['HA_Low'] = round(df[['price', 'HA_Open', 'HA_Close']].min(axis=1), 6)
     return df
 
-  # Esto es un estado global que se utilizará dentro de la función
-
 def detect_trend_change(row, previous_row):
-
-    # Si el cuerpo de la vela actual es alcista y el anterior es bajista
     if row['HA_Close'] > row['HA_Open'] and previous_row['HA_Close'] < previous_row['HA_Open']:
-        result = f"Cambio a Alcista"
-
-    # Si el cuerpo de la vela actual es bajista y el anterior es alcista
+        return "Cambio a Alcista"
     elif row['HA_Close'] < row['HA_Open'] and previous_row['HA_Close'] > previous_row['HA_Open']:
-        result = f"Cambio a Bajista"
- 
+        return "Cambio a Bajista"
     else:
-        result = None
-
-    return result
+        return None
 
 
+def calculate_indicators(group):
+    group = heikin_ashi(group)
+    group['rsi'] = talib.RSI(group['price'], timeperiod=14)
+
+    ancho_banda = 5
+    periodo = int(ancho_banda / 2)
+    group['smoothing'] = talib.EMA(group['price'], timeperiod=periodo)
+
+    group['residuos'] = group['price'] - group['price'].mean()
+    group['envelope_superior'] = group['smoothing'] + 2 * group['residuos']
+    group['envelope_inferior'] = group['smoothing'] - 2 * group['residuos']
+
+    group['trend_change'] = group.apply(lambda row: detect_trend_change(row, group.iloc[group.index.get_loc(row.name) - 1]), axis=1)
+    
+    return group
+
+def calculate_type(row):
+    if (
+        row['ema50'] > row['ema21'] and 
+        row['rsi'] < 30 and 
+        row['envelope_inferior'] >= row['price'] and 
+        row['trend_change'] == 'Cambio a Alcista'
+    ):
+        return 'LONG'
+    
+    if (
+        row['ema50'] < row['ema21'] and 
+        row['rsi'] > 70 and 
+        row['envelope_superior'] <= row['price'] and 
+        row['trend_change'] == 'Cambio a Bajista'
+    ):
+        return 'SHORT'
+    
+    return None
 
 
 
 def emas_indicator():
-    global previous_row
-    # Importar datos de precios
     df = pd.read_csv('./archivos/cripto_price.csv')
-    df = df.iloc[-750:] 
-   
-    grouped = df.groupby('symbol', group_keys=False)
+    
+    # Uso de .copy() para evitar SettingWithCopyWarning
+    df_ema = df.iloc[-750:].copy()
   
-    # Calcular el EMA de período 50 y el EMA de período 21 para cada grupo
-    ema50 = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=50))
-    ema21 = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=21))
-    df['ema50'] = ema50
-    df['ema21'] = ema21
+    df_ema['ema50'] = df_ema.groupby('symbol')['price'].transform(lambda x: talib.EMA(x, timeperiod=50))
+    df_ema['ema21'] = df_ema.groupby('symbol')['price'].transform(lambda x: talib.EMA(x, timeperiod=21))
+  
+    # Uso de group_keys=True para evitar FutureWarning
+    df_indicators = df_ema.groupby('symbol', group_keys=True).apply(calculate_indicators)
+    
+    # Restablecer el índice para evitar ambigüedad
+    df_indicators.reset_index(drop=True, inplace=True)
+    
+    last_10_rows = df_indicators.groupby('symbol').tail(10).reset_index()
+    last_10_rows = last_10_rows.sort_values(['symbol', 'date'])
 
-    # Calcular el RSI de período 14 para cada grupo
-    rsi = grouped['price'].transform(lambda x: talib.RSI(x, timeperiod=14))
-    df['rsi'] = rsi
 
-     # Calcular la media móvil exponencial
-    ancho_banda = 5
-    periodo = int(ancho_banda / 2)
-    smoothing = grouped['price'].transform(lambda x: talib.EMA(x, timeperiod=periodo))
+    # Insertar columna 'type' con valores predeterminados como 'NEUTRAL'
+    df_ema['type'] = 'NEUTRAL'
 
-        # Calcular los residuos
-    residuos = grouped['price'].transform(lambda x: x - x.mean())
+    # Calcular el tipo de comercio usando el método 'apply' y la función 'calculate_type'
+    last_10_rows['type'] = last_10_rows.apply(calculate_type, axis=1)
 
-        # Calcular el envelope
-    envelope_superior = smoothing + 2 * residuos
-    envelope_inferior = smoothing - 2 * residuos
-    price = df['price']
-    df['envelope_superior'] = envelope_superior
-    df['envelope_inferior'] = envelope_inferior
+    # Eliminar las columnas que no quieres guardar
+    last_10_rows.drop(['HA_Close', 'HA_Open', 'HA_High', 'HA_Low', 'smoothing', 'residuos'], axis=1, inplace=True)
+    last_10_rows.to_csv('./archivos/indicadores.csv', index=False)
 
-    # Calcula Heikin Ashi para cada moneda
-    #df = grouped.apply(lambda group: heikin_ashi(group))
+    return last_10_rows
 
-    # Logica de Alertas
-    # Ordena el DataFrame primero por 'symbol' y luego por 'date'
-    # df = df.sort_values(by=['symbol', 'date'])
-
-    # alertas = []
-    # previous_row = None
-    # previous_symbol = None
-
-    # for index, row in df.iterrows():
-    #     if row['symbol'] != previous_symbol:
-    #         previous_row = None  # Reiniciar previous_row si cambiamos de símbolo
-    #         previous_symbol = row['symbol']
-
-    #     alerta = detect_trend_change(row, previous_row)
-    #     alertas.append(alerta)
-    #     previous_row = row  # Actualizar previous_row para la siguiente iteración
-
-    # df['alerta'] = alertas
-
-    #Calcular la columna 'type' utilizando los valores de EMA, RSI, Envelope para cada fila
-    df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price),'type'] = 'LONG'
-    df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price),'type'] = 'SHORT'
-            
-    cruce_emas = df.groupby('symbol').tail(20).reset_index()
-    cruce_emas = cruce_emas.sort_values(['symbol', 'date'])
-    cruce_emas.to_csv('./archivos/indicadores.csv', index=False)
-
-    return cruce_emas
 
 def ema_alert(currencie):
     cruce_emas = emas_indicator()
@@ -114,4 +106,4 @@ def ema_alert(currencie):
 
 
 
-#prueba = emas_indicator()
+prueba = emas_indicator()
