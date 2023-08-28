@@ -36,7 +36,7 @@ def emas_indicator():
     global previous_row
     # Importar datos de precios
     df = pd.read_csv('./archivos/cripto_price.csv')
-    df = df.iloc[-10000:] 
+    df = df.iloc[-2000:] 
    
     grouped = df.groupby('symbol', group_keys=False)
   

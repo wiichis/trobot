@@ -35,7 +35,7 @@ def price_bingx():
         # Guarda el DataFrame en un archivo CSV
         df_file = pd.read_csv('./archivos/cripto_price.csv')
         df_new = pd.concat([df_file, df], ignore_index=True)
-        df_month = df_new.iloc[-70000:]
+        df_month = df_new.iloc[-6000:]
         df_month.to_csv('./archivos/cripto_price.csv', index=False)
         
     except requests.exceptions.ConnectionError as e:
