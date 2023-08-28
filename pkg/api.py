@@ -7,8 +7,7 @@ from datetime import datetime
 
 
 def currencies_list():
-  currencies = ['MASK-USDT','MATIC-USDT','DYDX-USDT','ETH-USDT','BTC-USDT','BNB-USDT','DOGE-USDT',
-                'YFI-USDT','SOL-USDT','TRX-USDT','CFX-USDT','OP-USDT','XRP-USDT','LDO-USDT','FIL-USDT']
+  currencies = ['DYDX-USDT','ETH-USDT','BTC-USDT','SOL-USDT','TRX-USDT','CFX-USDT','OP-USDT','XRP-USDT','LDO-USDT','FIL-USDT']
   return currencies
 
 def price_bingx():
@@ -35,7 +34,7 @@ def price_bingx():
         # Guarda el DataFrame en un archivo CSV
         df_file = pd.read_csv('./archivos/cripto_price.csv')
         df_new = pd.concat([df_file, df], ignore_index=True)
-        df_month = df_new.iloc[-6000:]
+        df_month = df_new.iloc[-10000:]
         df_month.to_csv('./archivos/cripto_price.csv', index=False)
         
     except requests.exceptions.ConnectionError as e:

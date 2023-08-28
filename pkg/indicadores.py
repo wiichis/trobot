@@ -36,7 +36,7 @@ def emas_indicator():
     global previous_row
     # Importar datos de precios
     df = pd.read_csv('./archivos/cripto_price.csv')
-    df = df.iloc[-2000:] 
+    df = df.iloc[-750:] 
    
     grouped = df.groupby('symbol', group_keys=False)
   
@@ -66,30 +66,30 @@ def emas_indicator():
     df['envelope_inferior'] = envelope_inferior
 
     # Calcula Heikin Ashi para cada moneda
-    df = grouped.apply(lambda group: heikin_ashi(group))
+    #df = grouped.apply(lambda group: heikin_ashi(group))
 
     # Logica de Alertas
     # Ordena el DataFrame primero por 'symbol' y luego por 'date'
-    df = df.sort_values(by=['symbol', 'date'])
+    # df = df.sort_values(by=['symbol', 'date'])
 
-    alertas = []
-    previous_row = None
-    previous_symbol = None
+    # alertas = []
+    # previous_row = None
+    # previous_symbol = None
 
-    for index, row in df.iterrows():
-        if row['symbol'] != previous_symbol:
-            previous_row = None  # Reiniciar previous_row si cambiamos de símbolo
-            previous_symbol = row['symbol']
+    # for index, row in df.iterrows():
+    #     if row['symbol'] != previous_symbol:
+    #         previous_row = None  # Reiniciar previous_row si cambiamos de símbolo
+    #         previous_symbol = row['symbol']
 
-        alerta = detect_trend_change(row, previous_row)
-        alertas.append(alerta)
-        previous_row = row  # Actualizar previous_row para la siguiente iteración
+    #     alerta = detect_trend_change(row, previous_row)
+    #     alertas.append(alerta)
+    #     previous_row = row  # Actualizar previous_row para la siguiente iteración
 
-    df['alerta'] = alertas
+    # df['alerta'] = alertas
 
     #Calcular la columna 'type' utilizando los valores de EMA, RSI, Envelope para cada fila
-    df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price) & (alerta == 'Cambio a Alcista'),'type'] = 'LONG'
-    df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price)& (alerta == 'Cambio a Bajista'),'type'] = 'SHORT'
+    df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price),'type'] = 'LONG'
+    df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price),'type'] = 'SHORT'
             
     cruce_emas = df.groupby('symbol').tail(20).reset_index()
     cruce_emas = cruce_emas.sort_values(['symbol', 'date'])
