@@ -197,18 +197,19 @@ def colocando_ordenes():
 
 
 def colocando_TK_SL():
-    #Oteniendo ordenes pendientes
-    df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
-    
-    #obteniendo posiciones sin SL o TP
-    df_posiciones = pd.read_csv('./archivos/position_id_register.csv')
-    df_posiciones['counter'] += 1
-
     #Configuracion SL TP
     long_stop_lose = 0.998333
     long_profit = 1.005
     short_stop_lose = 1.001667
     short_profit = 0.995
+
+    #obteniendo posiciones sin SL o TP
+    df_posiciones = pd.read_csv('./archivos/position_id_register.csv')
+    df_posiciones['counter'] += 1
+
+
+    #Oteniendo ordenes pendientes
+    df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
 
     for index, row in df_posiciones.iterrows():
         symbol = row['symbol']

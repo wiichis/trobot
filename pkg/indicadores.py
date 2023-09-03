@@ -3,6 +3,15 @@ import numpy as np
 from datetime import datetime
 import talib
 
+last_trend = None
+
+def detect_trend_change(row, previous_row):
+    global last_trend
+    if row['HA_Close'] > row['HA_Open'] and previous_row['HA_Close'] < previous_row['HA_Open']:
+        last_trend = "Cambio a Alcista"
+    elif row['HA_Close'] < row['HA_Open'] and previous_row['HA_Close'] > previous_row['HA_Open']:
+        last_trend = "Cambio a Bajista"
+    return last_trend
 
 def heikin_ashi(df):
     df['HA_Close'] = round((df['price'] + df['price'].shift(1)) / 2, 8)
@@ -11,30 +20,54 @@ def heikin_ashi(df):
     df['HA_Low'] = round(df[['price', 'HA_Open', 'HA_Close']].min(axis=1), 6)
     return df
 
-def detect_trend_change(row, previous_row):
-    if row['HA_Close'] > row['HA_Open'] and previous_row['HA_Close'] < previous_row['HA_Open']:
-        return "Cambio a Alcista"
-    elif row['HA_Close'] < row['HA_Open'] and previous_row['HA_Close'] > previous_row['HA_Open']:
-        return "Cambio a Bajista"
-    else:
-        return None
+def calculate_type(row):
+    if (
+        row['ema50'] > row['ema21'] and 
+        row['rsi'] < 30 and 
+        row['envelope_inferior'] >= row['price'] and 
+        row['trend_change'] == 'Cambio a Alcista'
+    ):
+        return 'LONG'
+    
+    if (
+        row['ema50'] < row['ema21'] and 
+        row['rsi'] > 70 and 
+        row['envelope_superior'] <= row['price'] and 
+        row['trend_change'] == 'Cambio a Bajista'
+    ):
+        return 'SHORT'
+    
+    return None
 
+def calculate_rsi(df):
+    df['rsi'] = talib.RSI(df['price'], timeperiod=14)
+    return df
 
-def calculate_indicators(group):
-    group = heikin_ashi(group)
-    group['rsi'] = talib.RSI(group['price'], timeperiod=14)
+def calculate_ema(df, timeperiod, column_name):
+    df[column_name] = talib.EMA(df['price'], timeperiod=timeperiod)
+    return df
 
+def calculate_envelope(df):
     ancho_banda = 5
     periodo = int(ancho_banda / 2)
-    group['smoothing'] = talib.EMA(group['price'], timeperiod=periodo)
+    df['smoothing'] = talib.EMA(df['price'], timeperiod=periodo)
 
-    group['residuos'] = group['price'] - group['price'].mean()
-    group['envelope_superior'] = group['smoothing'] + 2 * group['residuos']
-    group['envelope_inferior'] = group['smoothing'] - 2 * group['residuos']
+    df['residuos'] = df['price'] - df['price'].mean()
+    df['envelope_superior'] = df['smoothing'] + 2 * df['residuos']
+    df['envelope_inferior'] = df['smoothing'] - 2 * df['residuos']
+    return df
 
-    group['trend_change'] = group.apply(lambda row: detect_trend_change(row, group.iloc[group.index.get_loc(row.name) - 1]), axis=1)
-    
-    return group
+def apply_all_indicators(df):
+    df = df.groupby('symbol', group_keys=False).apply(lambda x: x.tail(100)).reset_index(drop=True)
+    df = df.groupby('symbol', group_keys=False).apply(heikin_ashi)
+    df['trend_change'] = df.apply(lambda row: detect_trend_change(row, df.iloc[df.index.get_loc(row.name) - 1] if df.index.get_loc(row.name) > 0 else row), axis=1)
+    df = df.groupby('symbol', group_keys=False).apply(calculate_rsi)
+    df = df.groupby('symbol', group_keys=False).apply(lambda x: calculate_ema(x, 50, 'ema50'))
+    df = df.groupby('symbol', group_keys=False).apply(lambda x: calculate_ema(x, 21, 'ema21'))
+    df = df.groupby('symbol', group_keys=False).apply(calculate_envelope)
+
+    df.reset_index(drop=True, inplace=True)
+    return df
 
 def calculate_type(row):
     if (
@@ -56,41 +89,21 @@ def calculate_type(row):
     return None
 
 
-
-def emas_indicator():
+# Utilizar la función
+def indicadores():
     df = pd.read_csv('./archivos/cripto_price.csv')
-    
-    # Uso de .copy() para evitar SettingWithCopyWarning
-    df_ema = df.iloc[-750:].copy()
-  
-    df_ema['ema50'] = df_ema.groupby('symbol')['price'].transform(lambda x: talib.EMA(x, timeperiod=50))
-    df_ema['ema21'] = df_ema.groupby('symbol')['price'].transform(lambda x: talib.EMA(x, timeperiod=21))
-  
-    # Uso de group_keys=True para evitar FutureWarning
-    df_indicators = df_ema.groupby('symbol', group_keys=True).apply(calculate_indicators)
-    
-    # Restablecer el índice para evitar ambigüedad
-    df_indicators.reset_index(drop=True, inplace=True)
-    
-    last_10_rows = df_indicators.groupby('symbol').tail(10).reset_index()
-    last_10_rows = last_10_rows.sort_values(['symbol', 'date'])
-
-
-    # Insertar columna 'type' con valores predeterminados como 'NEUTRAL'
-    df_ema['type'] = 'NEUTRAL'
-
-    # Calcular el tipo de comercio usando el método 'apply' y la función 'calculate_type'
-    last_10_rows['type'] = last_10_rows.apply(calculate_type, axis=1)
-
+    df_indicators = apply_all_indicators(df)
     # Eliminar las columnas que no quieres guardar
-    last_10_rows.drop(['HA_Close', 'HA_Open', 'HA_High', 'HA_Low', 'smoothing', 'residuos'], axis=1, inplace=True)
-    last_10_rows.to_csv('./archivos/indicadores.csv', index=False)
+    df_indicators.drop(['HA_Close', 'HA_Open', 'HA_High', 'HA_Low', 'smoothing', 'residuos'], axis=1, inplace=True)
+    df_indicators['type'] = df_indicators.apply(calculate_type, axis=1)
+    df_indicators.to_csv('./archivos/indicadores.csv', index=False)
 
-    return last_10_rows
+    return df_indicators
+
 
 
 def ema_alert(currencie):
-    cruce_emas = emas_indicator()
+    cruce_emas = indicadores()
     df_filterd = cruce_emas[cruce_emas['symbol'] ==  currencie]
     price_last = df_filterd['price'].iloc[-1]
     type = df_filterd['type'].iloc[-1]
@@ -106,4 +119,3 @@ def ema_alert(currencie):
 
 
 
-prueba = emas_indicator()

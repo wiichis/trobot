@@ -48,7 +48,7 @@ def price_bingx():
     except requests.exceptions.ConnectionError as e:
         print(f"Error de conexión: {e}")
         print("Reintentando la solicitud en 1 minuto...")
-        time.sleep(60)
+        time.sleep(30)
         price_bingx()
     except Exception as e:
         print(f"Ocurrió un error: {e}")
