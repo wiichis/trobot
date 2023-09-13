@@ -19,7 +19,7 @@ def run_fast():
 
 
 if __name__ == '__main__':
-    schedule.every(2).minutes.do(run_bingx)
+    schedule.every(1).minutes.do(run_bingx)
     schedule.every(0.4).minutes.do(run_fast)  
   
     hours = list(map(lambda x: str(x).zfill(2), range(0, 24)))

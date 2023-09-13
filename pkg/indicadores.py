@@ -3,21 +3,22 @@ import numpy as np
 from datetime import datetime
 import talib
 
-last_trend = None
 
-def detect_trend_change(row, previous_row):
-    global last_trend
-    if row['HA_Close'] > row['HA_Open'] and previous_row['HA_Close'] < previous_row['HA_Open']:
-        last_trend = "Cambio a Alcista"
-    elif row['HA_Close'] < row['HA_Open'] and previous_row['HA_Close'] > previous_row['HA_Open']:
-        last_trend = "Cambio a Bajista"
-    return last_trend
+def calculate_pct(df):
+    df['cambio_pct'] = df['price'].pct_change() * 100
+    return df
 
-def heikin_ashi(df):
-    df['HA_Close'] = round((df['price'] + df['price'].shift(1)) / 2, 8)
-    df['HA_Open'] = round((df['HA_Close'] + df['HA_Close'].shift(1)) / 2, 8)
-    df['HA_High'] = round(df[['price', 'HA_Open', 'HA_Close']].max(axis=1), 6)
-    df['HA_Low'] = round(df[['price', 'HA_Open', 'HA_Close']].min(axis=1), 6)
+def calculate_volatility_alert(df):
+    alerts = []
+    window_size = 20
+    for i in range(len(df)):
+        if i < window_size - 1:
+            alerts.append('Baja')  # o podrías usar NaN o alguna otra etiqueta para indicar que la ventana aún no es lo suficientemente grande
+        else:
+            window = df['cambio_pct'].iloc[i-window_size+1:i+1]
+            alert = 'Alta' if any(abs(x) > 1.5 for x in window) else 'Baja'
+            alerts.append(alert)
+    df['volatility_alert'] = alerts
     return df
 
 def calculate_type(row):
@@ -25,7 +26,7 @@ def calculate_type(row):
         row['ema50'] > row['ema21'] and 
         row['rsi'] < 30 and 
         row['envelope_inferior'] >= row['price'] and 
-        row['trend_change'] == 'Cambio a Alcista'
+        row['volatility_alert'] == 'Baja'
     ):
         return 'LONG'
     
@@ -33,7 +34,7 @@ def calculate_type(row):
         row['ema50'] < row['ema21'] and 
         row['rsi'] > 70 and 
         row['envelope_superior'] <= row['price'] and 
-        row['trend_change'] == 'Cambio a Bajista'
+        row['volatility_alert'] == 'Baja'
     ):
         return 'SHORT'
     
@@ -52,19 +53,21 @@ def calculate_envelope(df):
     periodo = int(ancho_banda / 2)
     df['smoothing'] = talib.EMA(df['price'], timeperiod=periodo)
 
-    df['residuos'] = df['price'] - df['price'].mean()
+    df['residuos'] = df['price'] - df['smoothing']
     df['envelope_superior'] = df['smoothing'] + 2 * df['residuos']
     df['envelope_inferior'] = df['smoothing'] - 2 * df['residuos']
     return df
 
 def apply_all_indicators(df):
     df = df.groupby('symbol', group_keys=False).apply(lambda x: x.tail(100)).reset_index(drop=True)
-    df = df.groupby('symbol', group_keys=False).apply(heikin_ashi)
-    df['trend_change'] = df.apply(lambda row: detect_trend_change(row, df.iloc[df.index.get_loc(row.name) - 1] if df.index.get_loc(row.name) > 0 else row), axis=1)
+    df = df.groupby('symbol', group_keys=False).apply(calculate_pct)
+    df = df.groupby('symbol', group_keys=False).apply(calculate_volatility_alert)
     df = df.groupby('symbol', group_keys=False).apply(calculate_rsi)
     df = df.groupby('symbol', group_keys=False).apply(lambda x: calculate_ema(x, 50, 'ema50'))
     df = df.groupby('symbol', group_keys=False).apply(lambda x: calculate_ema(x, 21, 'ema21'))
     df = df.groupby('symbol', group_keys=False).apply(calculate_envelope)
+    
+    
 
     df.reset_index(drop=True, inplace=True)
     return df
@@ -73,16 +76,16 @@ def calculate_type(row):
     if (
         row['ema50'] > row['ema21'] and 
         row['rsi'] < 30 and 
-        row['envelope_inferior'] >= row['price'] and 
-        row['trend_change'] == 'Cambio a Alcista'
+        row['envelope_inferior'] >= row['price'] #and 
+        #row['trend_change'] == 'Cambio a Alcista'
     ):
         return 'LONG'
     
     if (
         row['ema50'] < row['ema21'] and 
         row['rsi'] > 70 and 
-        row['envelope_superior'] <= row['price'] and 
-        row['trend_change'] == 'Cambio a Bajista'
+        row['envelope_superior'] <= row['price'] #and 
+        #row['trend_change'] == 'Cambio a Bajista'
     ):
         return 'SHORT'
     
@@ -94,7 +97,7 @@ def indicadores():
     df = pd.read_csv('./archivos/cripto_price.csv')
     df_indicators = apply_all_indicators(df)
     # Eliminar las columnas que no quieres guardar
-    df_indicators.drop(['HA_Close', 'HA_Open', 'HA_High', 'HA_Low', 'smoothing', 'residuos'], axis=1, inplace=True)
+    df_indicators.drop(['smoothing', 'residuos'], axis=1, inplace=True)
     df_indicators['type'] = df_indicators.apply(calculate_type, axis=1)
     df_indicators.to_csv('./archivos/indicadores.csv', index=False)
 
