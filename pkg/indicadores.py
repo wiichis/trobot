@@ -53,7 +53,7 @@ def calculate_envelope(df):
     periodo = int(ancho_banda / 2)
     df['smoothing'] = talib.EMA(df['price'], timeperiod=periodo)
 
-    df['residuos'] = df['price'] - df['smoothing']
+    df['residuos'] = df['price'] - df['price'].mean()
     df['envelope_superior'] = df['smoothing'] + 2 * df['residuos']
     df['envelope_inferior'] = df['smoothing'] - 2 * df['residuos']
     return df
