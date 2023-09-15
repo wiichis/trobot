@@ -20,12 +20,12 @@ def run_fast():
 
 if __name__ == '__main__':
     schedule.every(1).minutes.do(run_bingx)
-    schedule.every(0.4).minutes.do(run_fast)  
+    schedule.every(0.39).minutes.do(run_fast)
+    schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)    
   
     hours = list(map(lambda x: str(x).zfill(2), range(0, 24)))
     for hour in hours:
         schedule.every().day.at(f"{hour}:59").do(monkey_result)
-        schedule.every().day.at(f"{hour}:30").do(pkg.monkey_bx.resultado_PnL)
 
     while True:
         schedule.run_pending()

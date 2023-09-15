@@ -12,7 +12,7 @@ def calculate_volatility_alert(df):
     alerts = []
     window_size = 20
     for i in range(len(df)):
-        if i < window_size - 0.8:  #reduciendo el % de cambio
+        if i < window_size - 0.1:  #reduciendo el % de cambio
             alerts.append('Baja')  # o podrías usar NaN o alguna otra etiqueta para indicar que la ventana aún no es lo suficientemente grande
         else:
             window = df['cambio_pct'].iloc[i-window_size+1:i+1]
@@ -54,14 +54,12 @@ def calculate_envelope(df):
     df['smoothing'] = talib.EMA(df['price'], timeperiod=periodo)
 
     df['residuos'] = df['price'] - df['price'].mean()
-    #Calulando residuos para shorts
-    df['residuos_short'] = df['price'] - df['smoothing'] 
-    df['envelope_superior'] = df['smoothing'] + 2 * df['residuos_short']
+    df['envelope_superior'] = df['smoothing'] + 2 * df['residuos']
     df['envelope_inferior'] = df['smoothing'] - 2 * df['residuos']
     return df
 
 def apply_all_indicators(df):
-    df = df.groupby('symbol', group_keys=False).apply(lambda x: x.tail(65)).reset_index(drop=True)
+    df = df.groupby('symbol', group_keys=False).apply(lambda x: x.tail(70)).reset_index(drop=True)
     df = df.groupby('symbol', group_keys=False).apply(calculate_pct)
     df = df.groupby('symbol', group_keys=False).apply(calculate_volatility_alert)
     df = df.groupby('symbol', group_keys=False).apply(calculate_rsi)
