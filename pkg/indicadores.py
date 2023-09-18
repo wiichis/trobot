@@ -50,7 +50,7 @@ def calculate_ema(df, timeperiod, column_name):
     return df
 
 def calculate_envelope(df):
-    ancho_banda = 0.05  # 5% como ejemplo
+    ancho_banda = 0.01  # 5% como ejemplo
     periodo = 90  # Puedes ajustar este valor según tus necesidades
     df['sma'] = talib.SMA(df['price'], timeperiod=periodo)  # Usamos SMA como ejemplo, pero puedes usar EMA si prefieres
 
