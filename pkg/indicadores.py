@@ -10,13 +10,13 @@ def calculate_pct(df):
 
 def calculate_volatility_alert(df):
     alerts = []
-    window_size = 20
+    window_size = 35
     for i in range(len(df)):
         if i < window_size - 1:  #reduciendo el % de cambio
             alerts.append('Baja')  # o podrías usar NaN o alguna otra etiqueta para indicar que la ventana aún no es lo suficientemente grande
         else:
             window = df['cambio_pct'].iloc[i-window_size+1:i+1]
-            alert = 'Alta' if any(abs(x) > 0.2 for x in window) else 'Baja'
+            alert = 'Alta' if any(abs(x) > 0.22 for x in window) else 'Baja'
             alerts.append(alert)
     df['volatility_alert'] = alerts
     return df
@@ -41,55 +41,37 @@ def calculate_type(row):
     return None
 
 def calculate_rsi(df):
-    df['rsi'] = talib.RSI(df['price'], timeperiod=14)
+    df['rsi'] = round(talib.RSI(df['price'], timeperiod=14),1)
     return df
 
 def calculate_ema(df, timeperiod, column_name):
     df[column_name] = talib.EMA(df['price'], timeperiod=timeperiod)
+    df[column_name] = df[column_name].round(3)
     return df
 
 def calculate_envelope(df):
-    ancho_banda = 5
-    periodo = int(ancho_banda / 2)
-    df['smoothing'] = talib.EMA(df['price'], timeperiod=periodo)
+    ancho_banda = 0.05  # 5% como ejemplo
+    periodo = 90  # Puedes ajustar este valor según tus necesidades
+    df['sma'] = talib.SMA(df['price'], timeperiod=periodo)  # Usamos SMA como ejemplo, pero puedes usar EMA si prefieres
 
-    df['residuos'] = df['price'] - df['price'].mean()
-    df['envelope_superior'] = df['smoothing'] + 2 * df['residuos']
-    df['envelope_inferior'] = df['smoothing'] - 2 * df['residuos']
+    # Calculamos el envelope superior e inferior como un porcentaje de la media móvil
+    df['envelope_superior'] = round(df['sma'] * (1 + ancho_banda),3)
+    df['envelope_inferior'] = round(df['sma'] * (1 - ancho_banda),3)
     return df
 
+
 def apply_all_indicators(df):
-    df = df.groupby('symbol', group_keys=False).apply(lambda x: x.tail(70)).reset_index(drop=True)
+    df = df.groupby('symbol', group_keys=False).apply(lambda x: x.tail(100)).reset_index(drop=True)
     df = df.groupby('symbol', group_keys=False).apply(calculate_pct)
     df = df.groupby('symbol', group_keys=False).apply(calculate_volatility_alert)
     df = df.groupby('symbol', group_keys=False).apply(calculate_rsi)
     df = df.groupby('symbol', group_keys=False).apply(lambda x: calculate_ema(x, 50, 'ema50'))
     df = df.groupby('symbol', group_keys=False).apply(lambda x: calculate_ema(x, 21, 'ema21'))
     df = df.groupby('symbol', group_keys=False).apply(calculate_envelope)
-    
-    
 
     df.reset_index(drop=True, inplace=True)
     return df
 
-def calculate_type(row):
-    if (
-        row['ema50'] > row['ema21'] and 
-        row['rsi'] < 30 and 
-        row['envelope_inferior'] >= row['price'] #and 
-        #row['trend_change'] == 'Cambio a Alcista'
-    ):
-        return 'LONG'
-    
-    if (
-        row['ema50'] < row['ema21'] and 
-        row['rsi'] > 70 and 
-        row['envelope_superior'] <= row['price'] #and 
-        #row['trend_change'] == 'Cambio a Bajista'
-    ):
-        return 'SHORT'
-    
-    return None
 
 
 # Utilizar la función
@@ -97,7 +79,7 @@ def indicadores():
     df = pd.read_csv('./archivos/cripto_price.csv')
     df_indicators = apply_all_indicators(df)
     # Eliminar las columnas que no quieres guardar
-    df_indicators.drop(['smoothing', 'residuos'], axis=1, inplace=True)
+    df_indicators.drop(['sma'], axis=1, inplace=True)
     df_indicators['type'] = df_indicators.apply(calculate_type, axis=1)
     df_indicators.to_csv('./archivos/indicadores.csv', index=False)
 
