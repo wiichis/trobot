@@ -51,7 +51,7 @@ def calculate_ema(df, timeperiod, column_name):
 
 def calculate_envelope(df):
     ancho_banda = 0.006  # 5% como ejemplo
-    periodo = 90  # Puedes ajustar este valor según tus necesidades
+    periodo = 100  # Puedes ajustar este valor según tus necesidades
     df['sma'] = talib.SMA(df['price'], timeperiod=periodo)  # Usamos SMA como ejemplo, pero puedes usar EMA si prefieres
 
     # Calculamos el envelope superior e inferior como un porcentaje de la media móvil
@@ -61,7 +61,7 @@ def calculate_envelope(df):
 
 
 def apply_all_indicators(df):
-    df = df.groupby('symbol', group_keys=False).apply(lambda x: x.tail(100)).reset_index(drop=True)
+    df = df.groupby('symbol', group_keys=False).apply(lambda x: x.tail(105)).reset_index(drop=True)
     df = df.groupby('symbol', group_keys=False).apply(calculate_pct)
     df = df.groupby('symbol', group_keys=False).apply(calculate_volatility_alert)
     df = df.groupby('symbol', group_keys=False).apply(calculate_rsi)
