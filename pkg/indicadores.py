@@ -16,7 +16,7 @@ def calculate_volatility_alert(df):
             alerts.append('Baja')  # o podrías usar NaN o alguna otra etiqueta para indicar que la ventana aún no es lo suficientemente grande
         else:
             window = df['cambio_pct'].iloc[i-window_size+1:i+1]
-            alert = 'Alta' if any(abs(x) > 0.18 for x in window) else 'Baja'
+            alert = 'Alta' if any(abs(x) > 0.2 for x in window) else 'Baja'
             alerts.append(alert)
     df['volatility_alert'] = alerts
     return df
@@ -51,7 +51,7 @@ def calculate_ema(df, timeperiod, column_name):
 
 def calculate_envelope(df):
     ancho_banda = 0.0058  # 5% como ejemplo
-    periodo = 100  # Puedes ajustar este valor según tus necesidades
+    periodo = 60  # Puedes ajustar este valor según tus necesidades
     df['sma'] = talib.SMA(df['price'], timeperiod=periodo)  # Usamos SMA como ejemplo, pero puedes usar EMA si prefieres
 
     # Calculamos el envelope superior e inferior como un porcentaje de la media móvil
