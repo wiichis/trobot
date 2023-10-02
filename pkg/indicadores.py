@@ -61,7 +61,7 @@ def calculate_envelope(df):
 
 
 def apply_all_indicators(df):
-    df = df.groupby('symbol', group_keys=False).apply(lambda x: x.tail(105)).reset_index(drop=True)
+    df = df.groupby('symbol', group_keys=False).apply(lambda x: x.tail(125)).reset_index(drop=True)
     df = df.groupby('symbol', group_keys=False).apply(calculate_pct)
     df = df.groupby('symbol', group_keys=False).apply(calculate_volatility_alert)
     df = df.groupby('symbol', group_keys=False).apply(calculate_rsi)
