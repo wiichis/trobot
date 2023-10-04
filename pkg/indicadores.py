@@ -51,7 +51,7 @@ def calculate_ema(df, timeperiod, column_name):
 
 def calculate_envelope(df):
     ancho_banda = 0.00585  # 5% como ejemplo
-    periodo = 120  # Puedes ajustar este valor según tus necesidades
+    periodo = 100  # Puedes ajustar este valor según tus necesidades
     df['sma'] = talib.SMA(df['price'], timeperiod=periodo)  # Usamos SMA como ejemplo, pero puedes usar EMA si prefieres
 
     # Calculamos el envelope superior e inferior como un porcentaje de la media móvil
