@@ -10,13 +10,13 @@ def calculate_pct(df):
 
 def calculate_volatility_alert(df):
     alerts = []
-    window_size = 30
+    window_size = 15
     for i in range(len(df)):
         if i < window_size - 1:  #reduciendo el % de cambio
             alerts.append('Baja')  # o podrías usar NaN o alguna otra etiqueta para indicar que la ventana aún no es lo suficientemente grande
         else:
             window = df['cambio_pct'].iloc[i-window_size+1:i+1]
-            alert = 'Alta' if any(abs(x) > 0.24 for x in window) else 'Baja'
+            alert = 'Alta' if any(abs(x) > 0.20 for x in window) else 'Baja'
             alerts.append(alert)
     df['volatility_alert'] = alerts
     return df
@@ -61,7 +61,7 @@ def calculate_envelope(df):
 
 
 def apply_all_indicators(df):
-    df = df.groupby('symbol', group_keys=False).apply(lambda x: x.tail(125)).reset_index(drop=True)
+    df = df.groupby('symbol', group_keys=False).apply(lambda x: x.tail(110)).reset_index(drop=True)
     df = df.groupby('symbol', group_keys=False).apply(calculate_pct)
     df = df.groupby('symbol', group_keys=False).apply(calculate_volatility_alert)
     df = df.groupby('symbol', group_keys=False).apply(calculate_rsi)
