@@ -10,13 +10,13 @@ def calculate_pct(df):
 
 def calculate_volatility_alert(df):
     alerts = []
-    window_size = 30
+    window_size = 45
     for i in range(len(df)):
         if i < window_size - 1:  #reduciendo el % de cambio
             alerts.append('Baja')  # o podrías usar NaN o alguna otra etiqueta para indicar que la ventana aún no es lo suficientemente grande
         else:
             window = df['cambio_pct'].iloc[i-window_size+1:i+1]
-            alert = 'Alta' if any(abs(x) > 0.20 for x in window) else 'Baja'
+            alert = 'Alta' if any(abs(x) > 0.25 for x in window) else 'Baja'
             alerts.append(alert)
     df['volatility_alert'] = alerts
     return df
