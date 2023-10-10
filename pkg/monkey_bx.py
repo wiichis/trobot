@@ -123,7 +123,11 @@ def total_positions(symbol):
 def obteniendo_ordenes_pendientes():
     ordenes = pkg.bingx.query_pending_orders()
     ordenes = json.loads(ordenes)
-    orders = ordenes['data']['orders']
+    #orders = ordenes['data']['orders']
+
+    #Metodo para corregir error de key orders, si fuciona eliminar este comentario y el de arriba.
+    data = ordenes.get('data', {})
+    orders = data.get('orders', [])
 
     # Verificar si orders está vacío y crear un DataFrame apropiado
     if not orders:  # Si orders está vacío
