@@ -55,15 +55,11 @@ def ema_alert(currencie):
     type = df_filterd['type'].iloc[-1]
        
     if type == 'LONG':
-        stop_lose = price_last * 0.9983
-        profit = price_last * 1.005
         tipo = '=== Alerta de LONG ==='
-        return price_last, stop_lose, profit, tipo
+        return price_last, tipo
     elif type == 'SHORT':
-        stop_lose = price_last * 1.0017
-        profit = price_last * 0.995
         tipo = '=== Alerta de SHORT ==='
-        return price_last, stop_lose, profit, tipo
+        return price_last, tipo
     else:
         pass
 
