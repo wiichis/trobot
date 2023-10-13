@@ -65,7 +65,7 @@ def emas_indicator():
     ohlc.reset_index(inplace=True)
 
      # Calculamos el ATR y si la vela es larga para cada grupo y lo añadimos al DataFrame ohlc
-    ohlc['ATR'] = round(ohlc.groupby('symbol').apply(lambda x: calculate_atr(x)).reset_index(level=0, drop=True),3)
+    ohlc['ATR'] = round(ohlc.groupby('symbol').apply(lambda x: calculate_atr(x)).reset_index(level=0, drop=True),5)
     ohlc['IsLongCandle'] = ohlc.groupby('symbol').apply(lambda x: is_long_candle(x)).reset_index(level=0, drop=True)
 
     # Merge ohlc de vuelta con df para agregar las nuevas columnas calculadas
@@ -73,8 +73,11 @@ def emas_indicator():
 
     #Calcular la columna 'type' utilizando los valores de EMA y RSI para cada fila
     merged_df['type'] = 'NONE'
-    merged_df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price) & (merged_df['IsLongCandle'] == 'False' ), 'type'] = 'LONG'
-    merged_df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price) & (merged_df['IsLongCandle'] == 'False' ),'type'] = 'SHORT'
+    print(merged_df['IsLongCandle'])
+    merged_df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price) & (merged_df['IsLongCandle'] == False ), 'type'] = 'LONG'
+    merged_df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price) & (merged_df['IsLongCandle'] == False ),'type'] = 'SHORT'
+
+
             
     cruce_emas = merged_df.groupby('symbol').tail(20).reset_index()
     cruce_emas = cruce_emas.sort_values(['symbol', 'date'])
