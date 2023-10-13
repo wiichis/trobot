@@ -202,10 +202,10 @@ def colocando_ordenes():
 
 def colocando_TK_SL():
     #Configuracion SL TP
-    long_stop_lose = 0.998333
-    long_profit = 1.0058
-    short_stop_lose = 1.001667
-    short_profit = 0.9942
+    long_stop_lose = 0.9985
+    long_profit = 1.0048
+    short_stop_lose = 1.0015
+    short_profit = 0.9952
 
     #obteniendo posiciones sin SL o TP
     df_posiciones = pd.read_csv('./archivos/position_id_register.csv')
