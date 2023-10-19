@@ -20,15 +20,21 @@ def is_long_candle(data, multiplier=2):   #Multiplier es el tamaño de las velas
     atr = calculate_atr(data)
     return candle_range > multiplier * atr
 
-#Velas Consecutivas en una sola direccion
-def consecutive_candles_direction(df):
-    # 1. Determinar la dirección de la vela
-    df['candle_direction'] = (df['close'] > df['open']).astype(int).replace(0, -1)  # 1 para alcista, -1 para bajista
-    
-    # 2. Contar las velas consecutivas
-    df['consecutive'] = df.groupby((df['candle_direction'] != df['candle_direction'].shift()).cumsum()).cumcount() + 1
-    df['consecutive'] = df['consecutive'] * df['candle_direction']
+def analizar_tendencia_criptomonedas(df, umbral=0, umbral_alerta=45):
+    df['Diferencia'] = df['close'] - df['open']
+    df['Tendencia'] = 0
+    df.loc[df['Diferencia'] > umbral, 'Tendencia'] = 1
+    df.loc[df['Diferencia'] < -umbral, 'Tendencia'] = -1
 
+    # Agrupar por símbolo y calcular la tendencia acumulada
+    df['Tendencia_acumulada'] = df.groupby('symbol')['Tendencia'].cumsum()
+    
+    # Crear una columna que indica si se cumple la condición de tendencia acumulada mayor a umbral_alerta
+    df['Alerta'] = abs(df['Tendencia_acumulada']) > umbral_alerta
+    
+    # Eliminar columnas temporales
+    df.drop(['Tendencia', 'Tendencia_acumulada'], axis=1, inplace=True)
+    
     return df
 
 
@@ -82,25 +88,22 @@ def emas_indicator():
     # Merge ohlc de vuelta con df para agregar las nuevas columnas calculadas
     merged_df = pd.merge(df, ohlc, how='left', on=['symbol', 'time_bin'], suffixes=('', '_ohlc'))
 
-    merged_df = consecutive_candles_direction(merged_df)
+    # Direccion de las velas consecutivas
+    umbral = 0  # Ajusta el umbral según tus necesidades
+    umbral_alerta = 45  # Ajusta el número de velas consecutivas para considerar
+    merged_df = analizar_tendencia_criptomonedas(merged_df, umbral, umbral_alerta)
 
-    # Evitar entrar después de 3 velas consecutivas al alza
-    merged_df.loc[(merged_df['consecutive'] >= 3), 'avoid_entry'] = True
 
-    # Evitar entrar después de 3 velas consecutivas a la baja
-    merged_df.loc[(merged_df['consecutive'] <= -3), 'avoid_entry'] = True
-
-    # Establecer el resto como False
-    merged_df['avoid_entry'].fillna(False, inplace=True)
 
 
     #Calcular la columna 'type' utilizando los valores de EMA y RSI para cada fila
     merged_df['type'] = 'NONE'
-    merged_df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price) & (merged_df['IsLongCandle'] == False ) & (merged_df['avoid_entry'] == False ),'type'] = 'LONG'
-    merged_df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price) & (merged_df['IsLongCandle'] == False ) & (merged_df['avoid_entry'] == False ),'type'] = 'SHORT'
+    merged_df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price) & (merged_df['IsLongCandle'] == False ),'type'] = 'LONG'
+    merged_df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price) & (merged_df['IsLongCandle'] == False ),'type'] = 'SHORT'
 
 
-    cruce_emas = merged_df.groupby('symbol').tail(20).reset_index()
+            
+    cruce_emas = merged_df.groupby('symbol').tail(35).reset_index()
     cruce_emas = cruce_emas.sort_values(['symbol', 'date'])
     cruce_emas.to_csv('./archivos/indicadores.csv', index=False)
 

@@ -87,7 +87,7 @@ def get_balance():
 # Colocar una orden
 def post_order(symbol, quantity, price, stopPrice, position_side, type, side):
     payload = {}
-    path = '/openApi/swap/v2/trade/order/test'
+    path = '/openApi/swap/v2/trade/order'
     methed = "POST"
     paramsMap = {
         "symbol": symbol,
