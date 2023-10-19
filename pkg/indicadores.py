@@ -33,7 +33,7 @@ def analizar_tendencia_criptomonedas(df, umbral=0, umbral_alerta=45):
     df['Alerta'] = abs(df['Tendencia_acumulada']) > umbral_alerta
     
     # Eliminar columnas temporales
-    df.drop(['Tendencia', 'Tendencia_acumulada'], axis=1, inplace=True)
+    df.drop(['Diferencia'], axis=1, inplace=True)
     
     return df
 
