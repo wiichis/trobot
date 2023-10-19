@@ -98,8 +98,8 @@ def emas_indicator():
 
     #Calcular la columna 'type' utilizando los valores de EMA y RSI para cada fila
     merged_df['type'] = 'NONE'
-    merged_df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price) & (merged_df['IsLongCandle'] == False ),'type'] = 'LONG'
-    merged_df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price) & (merged_df['IsLongCandle'] == False ),'type'] = 'SHORT'
+    merged_df.loc[(ema50 > ema21) & (rsi < 30) & (envelope_inferior >= price) & (merged_df['IsLongCandle'] == False ) & (merged_df['Alerta'] == False ),'type'] = 'LONG'
+    merged_df.loc[(ema50 < ema21) & (rsi > 70) & (envelope_superior <= price) & (merged_df['IsLongCandle'] == False ) & (merged_df['Alerta'] == False ),'type'] = 'SHORT'
 
 
             
