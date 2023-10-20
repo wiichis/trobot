@@ -21,28 +21,29 @@ def is_long_candle(data, multiplier=2):   #Multiplier es el tamaño de las velas
     return candle_range > multiplier * atr
 
 def analizar_tendencia_criptomonedas(df, umbral=0, umbral_alerta=45):
-    df['Diferencia'] = df['close'] - df['open']
-    df['Tendencia'] = 0
-    df.loc[df['Diferencia'] > umbral, 'Tendencia'] = 1
-    df.loc[df['Diferencia'] < -umbral, 'Tendencia'] = -1
+    df_2 = df.iloc[-1900:].copy()
+    df_2['Diferencia'] = df_2['close'] - df_2['open']
+    df_2['Tendencia'] = 0
+    df_2.loc[df_2['Diferencia'] > umbral, 'Tendencia'] = 1
+    df_2.loc[df_2['Diferencia'] < -umbral, 'Tendencia'] = -1
 
     # Agrupar por símbolo y calcular la tendencia acumulada
-    df['Tendencia_acumulada'] = df.groupby('symbol')['Tendencia'].cumsum()
+    df_2['Tendencia_acumulada'] = df_2.groupby('symbol')['Tendencia'].cumsum()
     
     # Crear una columna que indica si se cumple la condición de tendencia acumulada mayor a umbral_alerta
-    df['Alerta'] = abs(df['Tendencia_acumulada']) > umbral_alerta
+    df_2['Alerta'] = abs(df_2['Tendencia_acumulada']) > umbral_alerta
     
     # Eliminar columnas temporales
-    df.drop(['Diferencia'], axis=1, inplace=True)
+    df_2.drop(['Diferencia'], axis=1, inplace=True)
     
-    return df
+    return df_2
 
 
 
 def emas_indicator():
     # Importar datos de precios
     df = pd.read_csv('./archivos/cripto_price.csv', parse_dates=["date"])
-    df = df.iloc[-2000:] 
+    df = df.iloc[-20000:] 
    
     grouped = df.groupby('symbol')
 
