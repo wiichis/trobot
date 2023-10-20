@@ -42,7 +42,7 @@ def analizar_tendencia_criptomonedas(df, umbral=0, umbral_alerta=45):
 def emas_indicator():
     # Importar datos de precios
     df = pd.read_csv('./archivos/cripto_price.csv', parse_dates=["date"])
-    df = df.iloc[-20000:] 
+    df = df.iloc[-2000:] 
    
     grouped = df.groupby('symbol')
 
