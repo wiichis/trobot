@@ -20,8 +20,8 @@ def is_long_candle(data, multiplier=2):   #Multiplier es el tamaño de las velas
     atr = calculate_atr(data)
     return candle_range > multiplier * atr
 
-def analizar_tendencia_criptomonedas(df, umbral=0, umbral_alerta=45):
-    df_2 = df.iloc[-1500:].copy()
+def analizar_tendencia_criptomonedas(df, umbral=0, umbral_alerta=30):
+    df_2 = df.iloc[-400:].copy()
     df_2['Diferencia'] = df_2['close'] - df_2['open']
     df_2['Tendencia'] = 0
     df_2.loc[df_2['Diferencia'] > umbral, 'Tendencia'] = 1
@@ -91,7 +91,7 @@ def emas_indicator():
 
     # Direccion de las velas consecutivas
     umbral = 0  # Ajusta el umbral según tus necesidades
-    umbral_alerta = 45  # Ajusta el número de velas consecutivas para considerar
+    umbral_alerta = 30  # Ajusta el número de velas consecutivas para considerar
     merged_df = analizar_tendencia_criptomonedas(merged_df, umbral, umbral_alerta)
 
 
@@ -104,7 +104,7 @@ def emas_indicator():
 
 
             
-    cruce_emas = merged_df.groupby('symbol').tail(35).reset_index()
+    cruce_emas = merged_df.groupby('symbol').tail(40).reset_index()
     cruce_emas = cruce_emas.sort_values(['symbol', 'date'])
     cruce_emas.to_csv('./archivos/indicadores.csv', index=False)
 
