@@ -21,7 +21,7 @@ def is_long_candle(data, multiplier=2):   #Multiplier es el tamaño de las velas
     return candle_range > multiplier * atr
 
 def analizar_tendencia_criptomonedas(df, umbral=0, umbral_alerta=35):
-    df_2 = df.iloc[-600:].copy()
+    df_2 = df.iloc[-750:].copy()
     df_2['Diferencia'] = df_2['close'] - df_2['open']
     df_2['Tendencia'] = 0
     df_2.loc[df_2['Diferencia'] > umbral, 'Tendencia'] = 1
