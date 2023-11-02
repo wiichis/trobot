@@ -267,30 +267,37 @@ def colocando_TK_SL():
 #Filtrando Posiciones con mas de 30 min
 def filtrando_posiciones_antiguas() -> pd.DataFrame:
     try:
-        # Load the data
+        # Cargar los datos
         data = pd.read_csv('./archivos/order_id_register.csv')
         
-        current_time = pd.Timestamp.now() + timedelta(hours=5)  # Adjusting for timezone by subtracting 5 hours
+        # Ajustar por zona horaria sumando 5 horas al tiempo actual
+        current_time = pd.Timestamp.now() - timedelta(hours=5)
         
-        # Filter columns
-        data_filtered = data[['symbol', 'time']].copy()  # Using copy to avoid SettingWithCopyWarning
+        # Comprobar si la columna 'symbol' está en el DataFrame
+        if 'symbol' not in data.columns:
+            raise KeyError("La columna 'symbol' no se encuentra en el DataFrame.")
+        
+        # Filtro de columnas
+        data_filtered = data[['symbol', 'time']].copy()
         data_filtered['time'] = pd.to_datetime(data_filtered['time'], unit='ms')
         
-        # Calculate time difference
+        # Calcular la diferencia de tiempo
         data_filtered['time_difference'] = (current_time - data_filtered['time']).dt.total_seconds() / 60
         
-        # Filter entries with more than 30 minutes difference
+        # Filtrar entradas con más de 30 minutos de diferencia
         data_filtered = data_filtered[data_filtered['time_difference'] > 30]
         
-        # Remove duplicates based on 'symbol'
+        # Remover duplicados basado en 'symbol'
         data_filtered = data_filtered.drop_duplicates(subset='symbol')
 
         return data_filtered
 
     except FileNotFoundError:
-        return pd.DataFrame()  # Retorna un DataFrame vacío
-    except KeyError:
-        return pd.DataFrame()  # Retorna un DataFrame vacío en caso de que la columna "time" no exista
+        return pd.DataFrame(columns=['symbol', 'time'])  # Retorna un DataFrame con las columnas esperadas pero vacío
+
+    except KeyError as e:
+        return pd.DataFrame(columns=['symbol', 'time'])  # Retorna un DataFrame con las columnas esperadas pero vacío
+
 
 
 #Consultando margen actual
