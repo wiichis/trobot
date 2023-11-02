@@ -5,6 +5,14 @@ import requests
 import json
 import time
 
+#Configuracion SL TP
+long_stop_lose = 0.9984
+long_profit = 1.005
+short_stop_lose = 1.0016
+short_profit = 0.995
+
+
+
 #Funcion Enviar Mensajes
 def bot_send_text(bot_message):
 
@@ -116,7 +124,8 @@ def total_positions(symbol):
     positionSide = positions['data'][0]['positionSide']
     price = float(positions['data'][0]['avgPrice'])
     positionAmt = positions['data'][0]['positionAmt']
-    return symbol, positionSide, price, positionAmt
+    unrealizedProfit = positions['data'][0]['unrealizedProfit']
+    return symbol, positionSide, price, positionAmt, unrealizedProfit
 
 
 #Obteniendo Ordenes Pendientes
@@ -201,12 +210,6 @@ def colocando_ordenes():
 
 
 def colocando_TK_SL():
-    #Configuracion SL TP
-    long_stop_lose = 0.9984
-    long_profit = 1.005
-    short_stop_lose = 1.001
-    short_profit = 0.995
-
     #obteniendo posiciones sin SL o TP
     df_posiciones = pd.read_csv('./archivos/position_id_register.csv')
     df_posiciones['counter'] += 1
@@ -231,7 +234,7 @@ def colocando_TK_SL():
     
         #Obteniendo el valor de las posiciones reales
         try:
-            symbol, positionSide, price, positionAmt = total_positions(symbol)
+            symbol, positionSide, price, positionAmt,unrealizedProfit = total_positions(symbol)
 
             if positionSide == 'LONG':
                 # Configurar la orden de stop loss
@@ -260,6 +263,58 @@ def colocando_TK_SL():
     df_posiciones.to_csv('./archivos/position_id_register.csv', index=False)
 
 
+#Cerrando Posiciones antiguas
+#Filtrando Posiciones con mas de 30 min
+def filtrando_posiciones_antiguas() -> pd.DataFrame:
+    try:
+        # Load the data
+        data = pd.read_csv('./archivos/order_id_register.csv')
+        
+        current_time = pd.Timestamp.now() + timedelta(hours=5)  # Adjusting for timezone by subtracting 5 hours
+        
+        # Filter columns
+        data_filtered = data[['symbol', 'time']].copy()  # Using copy to avoid SettingWithCopyWarning
+        data_filtered['time'] = pd.to_datetime(data_filtered['time'], unit='ms')
+        
+        # Calculate time difference
+        data_filtered['time_difference'] = (current_time - data_filtered['time']).dt.total_seconds() / 60
+        
+        # Filter entries with more than 30 minutes difference
+        data_filtered = data_filtered[data_filtered['time_difference'] > 30]
+        
+        # Remove duplicates based on 'symbol'
+        data_filtered = data_filtered.drop_duplicates(subset='symbol')
+
+        return data_filtered
+
+    except FileNotFoundError:
+        return pd.DataFrame()  # Retorna un DataFrame vacío
+    except KeyError:
+        return pd.DataFrame()  # Retorna un DataFrame vacío en caso de que la columna "time" no exista
+
+
+#Consultando margen actual
+def unrealized_profit_positions():
+    # Obtaining the symbols from the previous function
+    symbols = filtrando_posiciones_antiguas()['symbol'].tolist()
+
+    currencies = pkg.api.currencies_list()
+    max_contador = int(len(currencies))
+    total_money = float(total_monkey())
+    trade = (total_money / max_contador) * (1 - long_stop_lose)
+     
+
+    for symbol in symbols:
+        symbol_result, positionSide, _, positionAmt, unrealizedProfit = total_positions(symbol)
+        print(symbol_result, positionSide, positionAmt)
+        if float(unrealizedProfit) > trade * 0.0016:
+            print(f"Symbol: {symbol_result}, RealisedProfit: {unrealizedProfit}")
+            
+            if positionSide == 'LONG':
+                pkg.bingx.post_order(symbol_result, positionAmt, 0,  0, "LONG", "MARKET", "SELL")
+            elif positionSide == 'SHORT':
+                pkg.bingx.post_order(symbol_result, positionAmt, 0,  0, "SHORT", "MARKET", "BUY")
+                
 
 
 
