@@ -309,18 +309,27 @@ def unrealized_profit_positions():
     max_contador = int(len(currencies))
     total_money = float(total_monkey())
     trade = (total_money / max_contador) * (1 - long_stop_lose)
-     
-
+    
     for symbol in symbols:
-        symbol_result, positionSide, _, positionAmt, unrealizedProfit = total_positions(symbol)
+        result = total_positions(symbol)
+        
+        # Verificar si result recibió valores None, lo cual indica que no hay datos
+        if result[0] is None:
+            print(f"No hay datos de posición para el símbolo: {symbol}")
+            continue  # Saltar a la siguiente iteración del bucle
+
+        # Desempaquetar el resultado ya que ahora estamos seguros de que tenemos datos
+        symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
+
         print(symbol_result, positionSide, positionAmt)
         if float(unrealizedProfit) > trade * 0.0016:
             print(f"Symbol: {symbol_result}, RealisedProfit: {unrealizedProfit}")
             
             if positionSide == 'LONG':
-                pkg.bingx.post_order(symbol_result, positionAmt, 0,  0, "LONG", "MARKET", "SELL")
+                pkg.bingx.post_order(symbol_result, positionAmt, 0, 0, "LONG", "MARKET", "SELL")
             elif positionSide == 'SHORT':
-                pkg.bingx.post_order(symbol_result, positionAmt, 0,  0, "SHORT", "MARKET", "BUY")
+                pkg.bingx.post_order(symbol_result, positionAmt, 0, 0, "SHORT", "MARKET", "BUY")
+
                 
 
 
