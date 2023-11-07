@@ -290,6 +290,8 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
         # Remover duplicados basado en 'symbol'
         data_filtered = data_filtered.drop_duplicates(subset='symbol')
 
+        print('Data de mas de 30 min: ',data_filtered)
+
         return data_filtered
 
     except FileNotFoundError:
@@ -322,7 +324,7 @@ def unrealized_profit_positions():
         symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
 
         print(symbol_result, positionSide, positionAmt)
-        if float(unrealizedProfit) > trade * 0.0016:
+        if float(unrealizedProfit) > trade * short_stop_lose:
             print(f"Symbol: {symbol_result}, RealisedProfit: {unrealizedProfit}")
             
             if positionSide == 'LONG':
