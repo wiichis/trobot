@@ -6,10 +6,10 @@ import json
 import time
 
 #Configuracion SL TP
-long_stop_lose = 0.9984
-long_profit = 1.005
-short_stop_lose = 1.0016
-short_profit = 0.995
+long_stop_lose = 0.998
+long_profit = 1.0062
+short_stop_lose = 1.002
+short_profit = 0.9938
 
 
 
@@ -271,7 +271,7 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
         data = pd.read_csv('./archivos/order_id_register.csv')
         
         # Ajustar por zona horaria sumando 5 horas al tiempo actual
-        current_time = pd.Timestamp.now() - timedelta(hours=5)
+        current_time = pd.Timestamp.now() - timedelta(minutes=1)
         
         # Comprobar si la columna 'symbol' está en el DataFrame
         if 'symbol' not in data.columns:
