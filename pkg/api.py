@@ -43,7 +43,7 @@ def price_bingx():
             existing_df = pd.DataFrame(columns=['symbol', 'price', 'date'])
 
         concatenated_df = pd.concat([existing_df, new_df], ignore_index=True)
-        df_month = concatenated_df.iloc[-10000:]
+        df_month = concatenated_df.iloc[-30000:]
         df_month.to_csv('./archivos/cripto_price.csv', index=False)
         
     except requests.exceptions.ConnectionError as e:
