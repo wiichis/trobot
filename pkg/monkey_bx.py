@@ -271,7 +271,7 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
         data = pd.read_csv('./archivos/order_id_register.csv')
         
         # Ajustar por zona horaria sumando 5 horas al tiempo actual
-        current_time = pd.Timestamp.now() - timedelta(minutes=1)
+        current_time = pd.Timestamp.now()  - timedelta(hours=9)
         
         # Comprobar si la columna 'symbol' está en el DataFrame
         if 'symbol' not in data.columns:
