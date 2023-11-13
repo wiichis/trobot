@@ -6,10 +6,10 @@ import json
 import time
 
 #Configuracion SL TP
-long_stop_lose = 0.998
-long_profit = 1.0062
-short_stop_lose = 1.002
-short_profit = 0.9938
+long_stop_lose = 0.9987
+long_profit = 1.0040
+short_stop_lose = 1.0013
+short_profit = 0.996
 
 
 
