@@ -5,11 +5,31 @@ import requests
 import json
 import time
 
-#Configuracion SL TP
-long_stop_lose = 0.9987
-long_profit = 1.0040
-short_stop_lose = 1.0013
-short_profit = 0.996
+#Obtener los valores de SL TP
+
+
+def get_last_take_profit_stop_loss(symbol):
+    # Leer el archivo CSV
+    df = pd.read_csv('./archivos/indicadores.csv')
+
+    # Filtrar por el símbolo de criptomoneda especificado
+    filtered_df = df[df['symbol'] == symbol]
+
+    if not filtered_df.empty:
+        # Obtener los últimos valores de Take_Profit y Stop_Loss
+        take_profit = filtered_df['Take_Profit'].iloc[-1]
+        stop_loss = filtered_df['Stop_Loss'].iloc[-1]
+
+        long_stop_lose = 1 + take_profit
+        long_profit = 1 - stop_loss
+        short_stop_lose = 1 + stop_loss
+        short_profit = 1 - take_profit
+
+
+        return long_stop_lose, long_profit, short_stop_lose, short_profit
+    else:
+        # Si no hay datos para ese símbolo, devolver None
+        return None, None, None, None
 
 
 
@@ -234,6 +254,7 @@ def colocando_TK_SL():
     
         #Obteniendo el valor de las posiciones reales
         try:
+            long_stop_lose, long_profit, short_stop_lose, short_profit = get_last_take_profit_stop_loss(symbol)
             symbol, positionSide, price, positionAmt,unrealizedProfit = total_positions(symbol)
 
             if positionSide == 'LONG':
@@ -285,7 +306,7 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
         data_filtered['time_difference'] = (current_time - data_filtered['time']).dt.total_seconds() / 60
         
         # Filtrar entradas con más de 30 minutos de diferencia
-        data_filtered = data_filtered[data_filtered['time_difference'] > 30]
+        data_filtered = data_filtered[data_filtered['time_difference'] > 120]
         
         # Remover duplicados basado en 'symbol'
         data_filtered = data_filtered.drop_duplicates(subset='symbol')
@@ -306,14 +327,15 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
 def unrealized_profit_positions():
     # Obtaining the symbols from the previous function
     symbols = filtrando_posiciones_antiguas()['symbol'].tolist()
-
+    
     currencies = pkg.api.currencies_list()
     max_contador = int(len(currencies))
     total_money = float(total_monkey())
-    trade = (total_money / max_contador) * (1 - long_stop_lose)
+    trade = (total_money / max_contador)
     
     for symbol in symbols:
         result = total_positions(symbol)
+        long_stop_lose, _, short_stop_lose, _ = get_last_take_profit_stop_loss(symbol)
         
         # Verificar si result recibió valores None, lo cual indica que no hay datos
         if result[0] is None:
