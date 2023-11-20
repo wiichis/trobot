@@ -150,23 +150,26 @@ def total_positions(symbol):
 
 #Obteniendo Ordenes Pendientes
 def obteniendo_ordenes_pendientes():
-    ordenes = pkg.bingx.query_pending_orders()
-    ordenes = json.loads(ordenes)
-    #orders = ordenes['data']['orders']
+    try:
+        ordenes_raw = pkg.bingx.query_pending_orders()
+        ordenes = json.loads(ordenes_raw)
+    except json.JSONDecodeError as e:
+        print("Error decodificando JSON:", e)
+        return []
 
-    #Metodo para corregir error de key orders, si fuciona eliminar este comentario y el de arriba.
     data = ordenes.get('data', {})
     orders = data.get('orders', [])
 
-    # Verificar si orders está vacío y crear un DataFrame apropiado
-    if not orders:  # Si orders está vacío
+    if not orders:
         df = pd.DataFrame([{'symbol': 'zero', 'orderId': 0, 'side': 'both'}])
     else:
         df = pd.DataFrame(orders)
 
-    # Guardar los datos en un archivo CSV
-    csv_file = './archivos/order_id_register.csv'
-    df.to_csv(csv_file, index=False)
+    try:
+        csv_file = './archivos/order_id_register.csv'
+        df.to_csv(csv_file, index=False)
+    except Exception as e:
+        print("Error al guardar en CSV:", e)
 
     return orders
 
