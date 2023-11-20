@@ -292,41 +292,57 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
         data = pd.read_csv('./archivos/order_id_register.csv')
         
         # Ajustar por zona horaria sumando 5 horas al tiempo actual
+        #Tiempo Server AWS
         current_time = pd.Timestamp.now()  - timedelta(hours=9)
+        #Tiempo Mac
+        #current_time = pd.Timestamp.now()  + timedelta(hours=5)
         
         # Comprobar si la columna 'symbol' está en el DataFrame
         if 'symbol' not in data.columns:
             raise KeyError("La columna 'symbol' no se encuentra en el DataFrame.")
         
         # Filtro de columnas
-        data_filtered = data[['symbol', 'time']].copy()
+        data_filtered = data[['symbol', 'time', 'stopPrice']].copy()
         data_filtered['time'] = pd.to_datetime(data_filtered['time'], unit='ms')
         
         # Calcular la diferencia de tiempo
         data_filtered['time_difference'] = (current_time - data_filtered['time']).dt.total_seconds() / 60
         
-        # Filtrar entradas con más de 30 minutos de diferencia
-        data_filtered = data_filtered[data_filtered['time_difference'] > 120]
+        # Filtrar entradas con más de 60 minutos de diferencia
+        data_filtered = data_filtered[data_filtered['time_difference'] > 10]
         
         # Remover duplicados basado en 'symbol'
         data_filtered = data_filtered.drop_duplicates(subset='symbol')
 
-        print('Data de mas de 30 min: ',data_filtered)
+        print('Data de mas de 60 min: ',data_filtered)
 
         return data_filtered
 
     except FileNotFoundError:
-        return pd.DataFrame(columns=['symbol', 'time'])  # Retorna un DataFrame con las columnas esperadas pero vacío
+        return pd.DataFrame(columns=['symbol', 'time', 'stopPrice'])  # Retorna un DataFrame con las columnas esperadas pero vacío
 
     except KeyError as e:
-        return pd.DataFrame(columns=['symbol', 'time'])  # Retorna un DataFrame con las columnas esperadas pero vacío
+        return pd.DataFrame(columns=['symbol', 'time', 'stopPrice'])  # Retorna un DataFrame con las columnas esperadas pero vacío
 
 
 
 #Consultando margen actual
 def unrealized_profit_positions():
-    # Obtaining the symbols from the previous function
-    symbols = filtrando_posiciones_antiguas()['symbol'].tolist()
+    #Obteniendo de indicadores los campos SL y last_price
+    df_indicadores = pd.read_csv('./archivos/indicadores.csv')
+
+    # Agrupar por 'symbol' y obtener la última fila de cada grupo
+    latest_values = df_indicadores.groupby('symbol').last().reset_index()
+
+    # Seleccionar solo las columnas requeridas: 'symbol', 'close_price', 'Stop_Loss'
+    latest_values = latest_values[['symbol', 'close_price', 'Stop_Loss']]
+
+    # Obteniendo data filtrada de la funcion anterior
+    data_filtered = filtrando_posiciones_antiguas()
+
+    # Extraer las columnas 'symbol' y 'stopPrice' en listas
+    symbols = data_filtered['symbol'].tolist()
+    stop_prices = data_filtered['stopPrice'].tolist()
     
     currencies = pkg.api.currencies_list()
     max_contador = int(len(currencies))
@@ -334,8 +350,12 @@ def unrealized_profit_positions():
     trade = (total_money / max_contador)
     
     for symbol in symbols:
+        #obteniendo de indicadores el Ultimo Precio y % de Sl
+        symbol_data = latest_values[latest_values['symbol'] == symbol]
+        last_price = symbol_data['close_price'].iloc[0]
+        stop_loss = symbol_data['Stop_Loss'].iloc[0]
+
         result = total_positions(symbol)
-        long_stop_lose, _, short_stop_lose, _ = get_last_take_profit_stop_loss(symbol)
         
         # Verificar si result recibió valores None, lo cual indica que no hay datos
         if result[0] is None:
@@ -345,16 +365,22 @@ def unrealized_profit_positions():
         # Desempaquetar el resultado ya que ahora estamos seguros de que tenemos datos
         symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
 
-        print(symbol_result, positionSide, positionAmt)
-        if float(unrealizedProfit) > trade * short_stop_lose:
-            print(f"Symbol: {symbol_result}, RealisedProfit: {unrealizedProfit}")
-            
-            if positionSide == 'LONG':
-                pkg.bingx.post_order(symbol_result, positionAmt, 0, 0, "LONG", "MARKET", "SELL")
-            elif positionSide == 'SHORT':
-                pkg.bingx.post_order(symbol_result, positionAmt, 0, 0, "SHORT", "MARKET", "BUY")
+        # Obtener el último valor de 'stopPrice' para un símbolo específico
+        last_stop_price = data_filtered[data_filtered['symbol'] == symbol]['stopPrice'].iloc[-1]
 
-                
+        ajuste_SL_Long = 1 - stop_loss #0.996
+        ajuste_SL_Short = 1 + stop_loss #1.004
+        percentage_difference = abs(last_stop_price - last_price) / last_price
+            
+        if positionSide == 'LONG' and percentage_difference > stop_loss:
+            print(f'nuevo SL: {symbol} es el {last_price * ajuste_SL_Long} el precio es: {last_price} la diferencia de SL y price es {percentage_difference} el ajuste_SL_long es: {ajuste_SL_Long} y el stop lose es: {stop_loss}')
+            #pkg.bingx.post_order(symbol_result, positionAmt, 0, price * ajuste_SL_Long, "LONG", "STOP_MARKET", "SELL")
+        elif positionSide == 'SHORT'and percentage_difference > stop_loss:
+            #pkg.bingx.post_order(symbol_result, positionAmt, 0, price * ajuste_SL_Short, "SHORT", "STOP_MARKET", "BUY")
+            print(f'nuevo SL: {symbol} es el {last_price * ajuste_SL_Short} el precio es: {last_price} la diferencia de SL y price es {percentage_difference} el ajuste_SL_long es: {ajuste_SL_Short} y el stop lose es: {stop_loss}')
+
+
+
 
 
 

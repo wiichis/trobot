@@ -22,9 +22,9 @@ def posiciones_antiguas():
 
 if __name__ == '__main__':
     schedule.every(1).minutes.do(run_bingx)
-    schedule.every(0.39).minutes.do(run_fast)
+    schedule.every(0.5).minutes.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
-    #schedule.every(5).minutes.do(posiciones_antiguas)    
+    schedule.every(5).minutes.do(posiciones_antiguas)    
   
     hours = list(map(lambda x: str(x).zfill(2), range(0, 24)))
     for hour in hours:
