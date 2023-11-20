@@ -305,14 +305,14 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
             raise KeyError("La columna 'symbol' no se encuentra en el DataFrame.")
         
         # Filtro de columnas
-        data_filtered = data[['symbol', 'time', 'stopPrice']].copy()
+        data_filtered = data[['symbol','type','time', 'stopPrice']].copy()
         data_filtered['time'] = pd.to_datetime(data_filtered['time'], unit='ms')
         
         # Calcular la diferencia de tiempo
         data_filtered['time_difference'] = (current_time - data_filtered['time']).dt.total_seconds() / 60
         
         # Filtrar entradas con más de 60 minutos de diferencia
-        data_filtered = data_filtered[data_filtered['time_difference'] > 10]
+        data_filtered = data_filtered[(data_filtered['time_difference'] > 10) & (data_filtered['type'] == 'STOP_MARKET')]
         
         # Remover duplicados basado en 'symbol'
         data_filtered = data_filtered.drop_duplicates(subset='symbol')
@@ -371,11 +371,17 @@ def unrealized_profit_positions():
         # Obtener el último valor de 'stopPrice' para un símbolo específico
         last_stop_price = data_filtered[data_filtered['symbol'] == symbol]['stopPrice'].iloc[-1]
 
-        ajuste_SL_Long = 1 - stop_loss #0.996
-        ajuste_SL_Short = 1 + stop_loss #1.004
-        percentage_difference = abs(last_stop_price - last_price) / last_price
+        stop_loss = stop_loss / 10
+
+        ajuste_SL_Long = 1 - stop_loss 
+        ajuste_SL_Short = 1 + stop_loss 
+        percentage_difference = 1 - (abs(last_price / last_stop_price))
+        percentage_difference_long = 1 - (abs(last_stop_price / last_price))
+
+        print(f'last_stop_price : {last_stop_price} y  last_price: {last_price}')
+        print(f'Porcentaje de Diferencia : {percentage_difference} y Stop Lose: {stop_loss}')
             
-        if positionSide == 'LONG' and percentage_difference > stop_loss:
+        if positionSide == 'LONG' and percentage_difference_long > stop_loss:
             print(f'nuevo SL: {symbol} es el {last_price * ajuste_SL_Long} el precio es: {last_price} la diferencia de SL y price es {percentage_difference} el ajuste_SL_long es: {ajuste_SL_Long} y el stop lose es: {stop_loss}')
             #pkg.bingx.post_order(symbol_result, positionAmt, 0, price * ajuste_SL_Long, "LONG", "STOP_MARKET", "SELL")
         elif positionSide == 'SHORT'and percentage_difference > stop_loss:
