@@ -104,10 +104,4 @@ def ema_alert(currencie):
     elif type == 'SHORT':
         tipo = '=== Alerta de SHORT ==='
         return price_last, tipo
-    else:
-        # No hay señal de Long o Short
-        return price_last, 'No hay señal'
-
-
-
-
+    
