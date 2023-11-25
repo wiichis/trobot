@@ -254,7 +254,6 @@ def colocando_TK_SL():
                 df_posiciones.drop(index, inplace=True)
             except:
                 pass
-    
         #Obteniendo el valor de las posiciones reales
         try:
             long_stop_lose, long_profit, short_stop_lose, short_profit = get_last_take_profit_stop_loss(symbol)
@@ -305,14 +304,14 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
             raise KeyError("La columna 'symbol' no se encuentra en el DataFrame.")
         
         # Filtro de columnas
-        data_filtered = data[['symbol','type','time', 'stopPrice']].copy()
+        data_filtered = data[['symbol','orderId','type','time', 'stopPrice']].copy()
         data_filtered['time'] = pd.to_datetime(data_filtered['time'], unit='ms')
         
         # Calcular la diferencia de tiempo
         data_filtered['time_difference'] = (current_time - data_filtered['time']).dt.total_seconds() / 60
         
         # Filtrar entradas con más de 60 minutos de diferencia
-        data_filtered = data_filtered[(data_filtered['time_difference'] > 10) & (data_filtered['type'] == 'STOP_MARKET')]
+        data_filtered = data_filtered[(data_filtered['time_difference'] > 20) & (data_filtered['type'] == 'STOP_MARKET')]
         
         # Remover duplicados basado en 'symbol'
         data_filtered = data_filtered.drop_duplicates(subset='symbol')
@@ -343,9 +342,8 @@ def unrealized_profit_positions():
     # Obteniendo data filtrada de la funcion anterior
     data_filtered = filtrando_posiciones_antiguas()
 
-    # Extraer las columnas 'symbol' y 'stopPrice' en listas
+    # Extraer las columnas 'symbol' en listas
     symbols = data_filtered['symbol'].tolist()
-    stop_prices = data_filtered['stopPrice'].tolist()
     
     currencies = pkg.api.currencies_list()
     max_contador = int(len(currencies))
@@ -355,7 +353,7 @@ def unrealized_profit_positions():
     for symbol in symbols:
         #obteniendo de indicadores el Ultimo Precio y % de Sl
         symbol_data = latest_values[latest_values['symbol'] == symbol]
-        last_price = symbol_data['close_price'].iloc[0]
+        precio_actual = symbol_data['close_price'].iloc[0]
         stop_loss = symbol_data['Stop_Loss'].iloc[0]
 
         result = total_positions(symbol)
@@ -369,27 +367,28 @@ def unrealized_profit_positions():
         symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
 
         # Obtener el último valor de 'stopPrice' para un símbolo específico
-        last_stop_price = data_filtered[data_filtered['symbol'] == symbol]['stopPrice'].iloc[-1]
+        filtered_data = data_filtered[data_filtered['symbol'] == symbol]
+        last_stop_price = filtered_data['stopPrice'].iloc[-1]
+        orderId = filtered_data['orderId'].iloc[-1]
 
-        stop_loss = stop_loss / 10
-
-        ajuste_SL_Long = 1 - stop_loss 
-        ajuste_SL_Short = 1 + stop_loss 
-        percentage_difference = 1 - (abs(last_price / last_stop_price))
-        percentage_difference_long = 1 - (abs(last_stop_price / last_price))
-
-        print(f'last_stop_price : {last_stop_price} y  last_price: {last_price}')
-        print(f'Porcentaje de Diferencia : {percentage_difference} y Stop Lose: {stop_loss}')
+        if positionSide == 'LONG':
+            # Lógica para posición larga
+            potencial_nuevo_sl = precio_actual * (1 - stop_loss )
+            if potencial_nuevo_sl > last_stop_price:
+                pkg.bingx.cancel_order(symbol, orderId)
+                time.sleep(1)
+                print(pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL"))
+        elif positionSide == 'SHORT':
+            # Lógica para posición corta
+            potencial_nuevo_sl = precio_actual * (1 + stop_loss)
+            if potencial_nuevo_sl < last_stop_price:
+                pkg.bingx.cancel_order(symbol, orderId)
+                time.sleep(1)
+                pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
+                print(f'symbol: {symbol} last_stop_price : {last_stop_price} last_price: {precio_actual}, nuevo SL {potencial_nuevo_sl} pRecio de entrada {price} SL: {stop_loss} Position Amout: {positionAmt}')
+        
+        
             
-        if positionSide == 'LONG' and percentage_difference_long > stop_loss:
-            print(f'nuevo SL: {symbol} es el {last_price * ajuste_SL_Long} el precio es: {last_price} la diferencia de SL y price es {percentage_difference} el ajuste_SL_long es: {ajuste_SL_Long} y el stop lose es: {stop_loss}')
-            #pkg.bingx.post_order(symbol_result, positionAmt, 0, price * ajuste_SL_Long, "LONG", "STOP_MARKET", "SELL")
-        elif positionSide == 'SHORT'and percentage_difference > stop_loss:
-            #pkg.bingx.post_order(symbol_result, positionAmt, 0, price * ajuste_SL_Short, "SHORT", "STOP_MARKET", "BUY")
-            print(f'nuevo SL: {symbol} es el {last_price * ajuste_SL_Short} el precio es: {last_price} la diferencia de SL y price es {percentage_difference} el ajuste_SL_long es: {ajuste_SL_Short} y el stop lose es: {stop_loss}')
-
-
-
 
 
 
