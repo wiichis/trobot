@@ -226,6 +226,7 @@ def colocando_ordenes():
             
             #Guardando Posiciones
             df_positions.to_csv('./archivos/position_id_register.csv', index=False)
+            print(df_positions)
         except:
             continue
         else:
@@ -311,12 +312,11 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
         data_filtered['time_difference'] = (current_time - data_filtered['time']).dt.total_seconds() / 60
         
         # Filtrar entradas con más de 60 minutos de diferencia
-        data_filtered = data_filtered[(data_filtered['time_difference'] > 20) & (data_filtered['type'] == 'STOP_MARKET')]
+        data_filtered = data_filtered[(data_filtered['time_difference'] > 15) & (data_filtered['type'] == 'STOP_MARKET')]
         
         # Remover duplicados basado en 'symbol'
         data_filtered = data_filtered.drop_duplicates(subset='symbol')
 
-        print('Data de mas de 60 min: ',data_filtered)
 
         return data_filtered
 
@@ -385,7 +385,7 @@ def unrealized_profit_positions():
                 pkg.bingx.cancel_order(symbol, orderId)
                 time.sleep(1)
                 pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
-                print(f'symbol: {symbol} last_stop_price : {last_stop_price} last_price: {precio_actual}, nuevo SL {potencial_nuevo_sl} pRecio de entrada {price} SL: {stop_loss} Position Amout: {positionAmt}')
+                #print(f'symbol: {symbol} last_stop_price : {last_stop_price} last_price: {precio_actual}, nuevo SL {potencial_nuevo_sl} pRecio de entrada {price} SL: {stop_loss} Position Amout: {positionAmt}')
         
         
             
