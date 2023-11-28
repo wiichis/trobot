@@ -179,58 +179,49 @@ def colocando_ordenes():
     df = pd.read_csv('./archivos/order_id_register.csv')
     df_positions = pd.read_csv('./archivos/position_id_register.csv')
 
-
-    for currencie in currencies:
+    for currency in currencies:
         # Verificar si la moneda ya está en el DataFrame
-        if currencie in df['symbol'].values:
+        if currency in df['symbol'].values:
             continue
 
         contador = len(df)
-        contador = int(contador)
         max_contador = len(currencies)
-        max_contador = int(max_contador)
         
         try:
-            price_last, tipo = pkg.indicadores.ema_alert(currencie)
-            if tipo == '=== Alerta de LONG ===':
-                total_money = float(total_monkey())
-                trade = total_money / max_contador
-                currency_amount = trade / price_last
-                #Colocando orden de compra
-                pkg.bingx.post_order(currencie,currency_amount,price_last,0,"LONG", "LIMIT", "BUY")
-                
-                #Guardando las posiciones
-                df_posiciones = {'symbol': currencie, 'tipo': 'LONG', 'counter' : 0}
-                print(df_posiciones)
-                df_positions.loc[len(df_positions)] = df_posiciones
+            price_last, tipo = pkg.indicadores.ema_alert(currency)
+            total_money = float(total_monkey())
+            trade = total_money / max_contador
+            currency_amount = trade / price_last
 
-                #Enviando Mensajes
-                alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(price_last * 0.998,3)} \n *Profit* en: {round(price_last * 1.006,3)}\n *Trade: * {round(trade,2)}\n *Contador* {contador}'
+            if tipo == '=== Alerta de LONG ===':
+                # Colocando orden de compra
+                pkg.bingx.post_order(currency, currency_amount, price_last, 0, "LONG", "LIMIT", "BUY")
+                
+                # Guardando las posiciones
+                df_positions = df_positions.append({'symbol': currency, 'tipo': 'LONG', 'counter': 0}, ignore_index=True)
+
+                # Enviando Mensajes
+                alert = f'🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currency}* \n *Precio Actual:* {round(price_last, 3)} \n *Stop Loss* en: {round(price_last * 0.998, 3)} \n *Profit* en: {round(price_last * 1.006, 3)}\n *Trade:* {round(trade, 2)}\n *Contador:* {contador}'
                 bot_send_text(alert)
 
             elif tipo == '=== Alerta de SHORT ===':
-                total_money = float(total_monkey())
-                trade = total_money / max_contador
-                currency_amount = trade / price_last
                 # Colocando orden de venta
-                pkg.bingx.post_order(currencie,currency_amount,price_last,0,"SHORT","LIMIT", "SELL")
+                pkg.bingx.post_order(currency, currency_amount, price_last, 0, "SHORT", "LIMIT", "SELL")
 
-                #Guardando las posiciones
-                df_posiciones = {'symbol': currencie, 'tipo': 'SHORT', 'counter' : 0}
-                print(df_posiciones)
-                df_positions.loc[len(df_positions)] = df_posiciones
+                # Guardando las posiciones
+                df_positions = df_positions.append({'symbol': currency, 'tipo': 'SHORT', 'counter': 0}, ignore_index=True)
 
                 # Enviando Mensajes
-                alert = f' 🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currencie}* \n *Precio Actual:* {round(price_last,3)} \n *Stop Loss* en: {round(price_last * 1.002,3)} \n *Profit* en: {round(price_last * 0.994,3)}\n *Trade: * {round(trade,2)}\n *Contador* {contador}'
+                alert = f'🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currency}* \n *Precio Actual:* {round(price_last, 3)} \n *Stop Loss* en: {round(price_last * 1.002, 3)} \n *Profit* en: {round(price_last * 0.994, 3)}\n *Trade:* {round(trade, 2)}\n *Contador:* {contador}'
                 bot_send_text(alert)
-            
-            #Guardando Posiciones
-            df_positions.to_csv('./archivos/position_id_register.csv', index=False)
-            print(df_positions)
-        except:
-            continue
-        else:
-            continue
+
+        except Exception as e:
+            print(f"Error al procesar {currency}: {e}")
+
+    # Guardando Posiciones fuera del bucle
+    df_positions.to_csv('./archivos/position_id_register.csv', index=False)
+    print(df_positions)
+
 
 
 def colocando_TK_SL():
@@ -312,7 +303,7 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
         data_filtered['time_difference'] = (current_time - data_filtered['time']).dt.total_seconds() / 60
         
         # Filtrar entradas con más de 60 minutos de diferencia
-        data_filtered = data_filtered[(data_filtered['time_difference'] > 15) & (data_filtered['type'] == 'STOP_MARKET')]
+        data_filtered = data_filtered[(data_filtered['time_difference'] > 10) & (data_filtered['type'] == 'STOP_MARKET')]
         
         # Remover duplicados basado en 'symbol'
         data_filtered = data_filtered.drop_duplicates(subset='symbol')
