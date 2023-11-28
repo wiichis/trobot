@@ -94,14 +94,19 @@ def ema_alert(currencie):
     cruce_emas = indicator()
     df_filtered = cruce_emas[cruce_emas['symbol'] == currencie]
     
+    # Verificar si df_filtered está vacío
+    if df_filtered.empty:
+        print(f"No hay datos para {currencie}")
+        return None, None
+
     price_last = df_filtered['close_price'].iloc[-1]
 
-    type = 'LONG' if df_filtered['Long_Signal'].iloc[-1] else ('SHORT' if df_filtered['Short_Signal'].iloc[-1] else None)
-    
-    if type == 'LONG':
+    if df_filtered['Long_Signal'].iloc[-1]:
         tipo = '=== Alerta de LONG ==='
         return price_last, tipo
-    elif type == 'SHORT':
+    elif df_filtered['Short_Signal'].iloc[-1]:
         tipo = '=== Alerta de SHORT ==='
         return price_last, tipo
-    
+    else:
+        # Manejar el caso donde no hay señal de LONG o SHORT
+        return None, None
