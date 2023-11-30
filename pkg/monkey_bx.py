@@ -198,7 +198,7 @@ def colocando_ordenes():
                 pkg.bingx.post_order(currency, currency_amount, price_last, 0, "LONG", "LIMIT", "BUY")
                 
                 # Guardando las posiciones
-                df_positions = df_positions.append({'symbol': currency, 'tipo': 'SHORT', 'counter': 0}, ignore_index=True)
+                df_positions = df_positions.append({'symbol': currency, 'tipo': 'LONG', 'counter': 0}, ignore_index=True)
 
                 # Enviando Mensajes
                 alert = f'🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currency}* \n *Precio Actual:* {round(price_last, 3)} \n *Stop Loss* en: {round(price_last * 0.998, 3)} \n *Profit* en: {round(price_last * 1.006, 3)}\n *Trade:* {round(trade, 2)}\n *Contador:* {contador}'
