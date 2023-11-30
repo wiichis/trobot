@@ -216,7 +216,8 @@ def colocando_ordenes():
                 bot_send_text(alert)
 
         except Exception as e:
-            print(f"Error al procesar {currency}: {e}")
+            pass
+            #print(f"Error al procesar {currency}: {e}")
 
     # Guardando Posiciones fuera del bucle
     df_positions.to_csv('./archivos/position_id_register.csv', index=False)
@@ -225,54 +226,49 @@ def colocando_ordenes():
 
 
 def colocando_TK_SL():
-    #obteniendo posiciones sin SL o TP
     df_posiciones = pd.read_csv('./archivos/position_id_register.csv')
     df_posiciones['counter'] += 1
 
-
-    #Oteniendo ordenes pendientes
     df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+    indices_para_eliminar = []
 
     for index, row in df_posiciones.iterrows():
         symbol = row['symbol']
         counter = row['counter']
 
-        #aqui necesitamos el codigo de order_id
         if counter >= 10:
-            # Filtrar el valor orderId del symbol 
-            try:
-                orderId = df_ordenes[df_ordenes['symbol'] == symbol]['orderId'].iloc[0]
-                pkg.bingx.cancel_order(symbol, orderId)
-                df_posiciones.drop(index, inplace=True)
-            except:
-                pass
-        #Obteniendo el valor de las posiciones reales
+            ordenes_filtradas = df_ordenes[df_ordenes['symbol'] == symbol]
+            if not ordenes_filtradas.empty:
+                try:
+                    orderId = ordenes_filtradas['orderId'].iloc[0]
+                    pkg.bingx.cancel_order(symbol, orderId)
+                    indices_para_eliminar.append(index)
+                except Exception as e:
+                    print(f"Error al cancelar orden para {symbol}: {e}")
+
         try:
-            long_stop_lose, long_profit, short_stop_lose, short_profit = get_last_take_profit_stop_loss(symbol)
-            symbol, positionSide, price, positionAmt,unrealizedProfit = total_positions(symbol)
+            valores_TP_SL = get_last_take_profit_stop_loss(symbol)
+            if valores_TP_SL is not None:
+                long_stop_lose, long_profit, short_stop_lose, short_profit = valores_TP_SL
+                posicion = total_positions(symbol)
+                if posicion is not None:
+                    symbol, positionSide, price, positionAmt, unrealizedProfit = posicion
 
-            if positionSide == 'LONG':
-                # Configurar la orden de stop loss
-                pkg.bingx.post_order(symbol, positionAmt, 0,  price * long_stop_lose, "LONG", "STOP_MARKET", "SELL")
-                time.sleep(1)
-                # Configurar la orden de take profit
-                pkg.bingx.post_order(symbol, positionAmt, 0, price * long_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
+                    if positionSide == 'LONG':
+                        pkg.bingx.post_order(symbol, positionAmt, 0, price * long_stop_lose, "LONG", "STOP_MARKET", "SELL")
+                        time.sleep(1)
+                        pkg.bingx.post_order(symbol, positionAmt, 0, price * long_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
+                        indices_para_eliminar.append(index)
 
-                #Borrando linea
-                df_posiciones.drop(index, inplace=True)
+                    elif positionSide == 'SHORT':
+                        pkg.bingx.post_order(symbol, positionAmt, 0, price * short_stop_lose, "SHORT", "STOP_MARKET", "BUY")
+                        time.sleep(1)
+                        pkg.bingx.post_order(symbol, positionAmt, 0, price * short_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
+                        indices_para_eliminar.append(index)
 
-            elif positionSide == 'SHORT':
-                # Configurar la orden de stop loss
-                pkg.bingx.post_order(symbol, positionAmt, 0, price * short_stop_lose, "SHORT", "STOP_MARKET", "BUY")
-                time.sleep(1)
-                # Configurar la orden de take profit
-                pkg.bingx.post_order(symbol, positionAmt, 0, price * short_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
+        except Exception as e:
+            print(f"Error al procesar {symbol}: {e}")
 
-                #Borrando linea
-                df_posiciones.drop(index, inplace=True)
-
-        except:
-            pass
 
     #Guardando Posiciones
     df_posiciones.to_csv('./archivos/position_id_register.csv', index=False)
