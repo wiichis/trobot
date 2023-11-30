@@ -198,7 +198,7 @@ def colocando_ordenes():
                 pkg.bingx.post_order(currency, currency_amount, price_last, 0, "LONG", "LIMIT", "BUY")
                 
                 # Guardando las posiciones
-                df_positions = df_positions.append({'symbol': currency, 'tipo': 'LONG', 'counter': 0}, ignore_index=True)
+                df_positions = df_positions.append({'symbol': currency, 'tipo': 'SHORT', 'counter': 0}, ignore_index=True)
 
                 # Enviando Mensajes
                 alert = f'🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currency}* \n *Precio Actual:* {round(price_last, 3)} \n *Stop Loss* en: {round(price_last * 0.998, 3)} \n *Profit* en: {round(price_last * 1.006, 3)}\n *Trade:* {round(trade, 2)}\n *Contador:* {contador}'
@@ -303,7 +303,7 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
         data_filtered['time_difference'] = (current_time - data_filtered['time']).dt.total_seconds() / 60
         
         # Filtrar entradas con más de 60 minutos de diferencia
-        data_filtered = data_filtered[(data_filtered['time_difference'] > 10) & (data_filtered['type'] == 'STOP_MARKET')]
+        data_filtered = data_filtered[(data_filtered['time_difference'] > 50) & (data_filtered['type'] == 'STOP_MARKET')]
         
         # Remover duplicados basado en 'symbol'
         data_filtered = data_filtered.drop_duplicates(subset='symbol')
