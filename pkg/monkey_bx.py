@@ -195,7 +195,7 @@ def colocando_ordenes():
 
             if tipo == '=== Alerta de LONG ===':
                 # Colocando orden de compra
-                pkg.bingx.post_order(currency, currency_amount, price_last, 0, "LONG", "LIMIT", "BUY")
+                print(pkg.bingx.post_order(currency, currency_amount, price_last, 0, "LONG", "LIMIT", "BUY"))
                 
                 # Guardando las posiciones
                 nueva_fila = pd.DataFrame({'symbol': [currency], 'tipo': ['LONG'], 'counter': [0]})
