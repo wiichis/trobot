@@ -254,10 +254,10 @@ def colocando_TK_SL():
 
             if positionSide == 'LONG':
                 # Configurar la orden de stop loss
-                print(pkg.bingx.post_order(symbol, positionAmt, 0,  price * long_stop_lose, "LONG", "STOP_MARKET", "SELL"))
+                pkg.bingx.post_order(symbol, positionAmt, 0,  price * long_stop_lose, "LONG", "STOP_MARKET", "SELL")
                 time.sleep(1)
                 # Configurar la orden de take profit
-                print(pkg.bingx.post_order(symbol, positionAmt, 0, price * long_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL"))
+                pkg.bingx.post_order(symbol, positionAmt, 0, price * long_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
 
                 #Borrando linea
                 df_posiciones.drop(index, inplace=True)
@@ -362,7 +362,7 @@ def unrealized_profit_positions():
         filtered_data = data_filtered[data_filtered['symbol'] == symbol]
         last_stop_price = filtered_data['stopPrice'].iloc[-1]
         orderId = filtered_data['orderId'].iloc[-1]
-
+        pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
         if positionSide == 'LONG':
             # Lógica para posición larga
             potencial_nuevo_sl = precio_actual * (1 - stop_loss )
