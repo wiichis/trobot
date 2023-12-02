@@ -20,8 +20,8 @@ def get_last_take_profit_stop_loss(symbol):
         take_profit = filtered_df['Take_Profit'].iloc[-1]
         stop_loss = filtered_df['Stop_Loss'].iloc[-1]
 
-        long_stop_lose = 1 + take_profit
-        long_profit = 1 - stop_loss
+        long_stop_lose = 1 - stop_loss
+        long_profit = 1 + take_profit
         short_stop_lose = 1 + stop_loss
         short_profit = 1 - take_profit
 
@@ -184,18 +184,18 @@ def colocando_ordenes():
         if currency in df['symbol'].values:
             continue
 
-        contador = len(df)
-        max_contador = len(currencies)
+        contador =  float(len(df))
+        max_contador = float(len(currencies))
         
         try:
             price_last, tipo = pkg.indicadores.ema_alert(currency)
             total_money = float(total_monkey())
             trade = total_money / max_contador
-            currency_amount = trade / price_last
+            currency_amount = trade / float(price_last)
 
             if tipo == '=== Alerta de LONG ===':
                 # Colocando orden de compra
-                print(pkg.bingx.post_order(currency, currency_amount, price_last, 0, "LONG", "LIMIT", "BUY"))
+                pkg.bingx.post_order(currency, currency_amount, price_last, 0, "LONG", "LIMIT", "BUY")
                 
                 # Guardando las posiciones
                 nueva_fila = pd.DataFrame({'symbol': [currency], 'tipo': ['LONG'], 'counter': [0]})
@@ -218,12 +218,11 @@ def colocando_ordenes():
                 bot_send_text(alert)
 
         except Exception as e:
-            print(f"Error al procesar {currency}: {e}")
+            pass
+            #print(f"Error al procesar {currency}: {e}")
 
     # Guardando Posiciones fuera del bucle
     df_positions.to_csv('./archivos/position_id_register.csv', index=False)
-    print(df_positions)
-
 
 
 def colocando_TK_SL():
@@ -305,7 +304,7 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
         data_filtered['time_difference'] = (current_time - data_filtered['time']).dt.total_seconds() / 60
         
         # Filtrar entradas con más de 60 minutos de diferencia
-        data_filtered = data_filtered[(data_filtered['time_difference'] > 50) & (data_filtered['type'] == 'STOP_MARKET')]
+        data_filtered = data_filtered[(data_filtered['time_difference'] > 10) & (data_filtered['type'] == 'STOP_MARKET')]
         
         # Remover duplicados basado en 'symbol'
         data_filtered = data_filtered.drop_duplicates(subset='symbol')
@@ -370,7 +369,7 @@ def unrealized_profit_positions():
             if potencial_nuevo_sl > last_stop_price:
                 pkg.bingx.cancel_order(symbol, orderId)
                 time.sleep(1)
-                print(pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL"))
+                print(f'Cambiando SL ojo aca en Long {symbol}')
         elif positionSide == 'SHORT':
             # Lógica para posición corta
             potencial_nuevo_sl = precio_actual * (1 + stop_loss)
@@ -378,7 +377,7 @@ def unrealized_profit_positions():
                 pkg.bingx.cancel_order(symbol, orderId)
                 time.sleep(1)
                 pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
-                #print(f'symbol: {symbol} last_stop_price : {last_stop_price} last_price: {precio_actual}, nuevo SL {potencial_nuevo_sl} pRecio de entrada {price} SL: {stop_loss} Position Amout: {positionAmt}')
+                
         
         
             

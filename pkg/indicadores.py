@@ -79,7 +79,7 @@ def indicator():
     hourly_data['Volatility'] = hourly_data.groupby('symbol')['close_price'].transform(lambda x: x.pct_change().rolling(window=20).std())
 
     # Validar y ajustar la volatilidad a 0.0025 como minimo
-    hourly_data['Volatility'] = hourly_data['Volatility'].apply(lambda x: max(x, 0.005) if not pd.isna(x) else x)
+    #hourly_data['Volatility'] = hourly_data['Volatility'].apply(lambda x: max(x, 0.005) if not pd.isna(x) else x)
 
     # Establecer el Take Profit y Stop Loss
     # Take Profit es 3 veces la volatilidad y Stop Loss es la volatilidad
