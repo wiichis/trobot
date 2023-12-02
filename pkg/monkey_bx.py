@@ -362,14 +362,14 @@ def unrealized_profit_positions():
         filtered_data = data_filtered[data_filtered['symbol'] == symbol]
         last_stop_price = filtered_data['stopPrice'].iloc[-1]
         orderId = filtered_data['orderId'].iloc[-1]
-        pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
+
         if positionSide == 'LONG':
             # Lógica para posición larga
             potencial_nuevo_sl = precio_actual * (1 - stop_loss )
             if potencial_nuevo_sl > last_stop_price:
                 pkg.bingx.cancel_order(symbol, orderId)
                 time.sleep(1)
-                print(f'Cambiando SL ojo aca en Long {symbol}')
+                pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
         elif positionSide == 'SHORT':
             # Lógica para posición corta
             potencial_nuevo_sl = precio_actual * (1 + stop_loss)
