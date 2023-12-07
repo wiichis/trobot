@@ -14,8 +14,11 @@ def indicator():
         open_price=('price', 'first'),
         high_price=('price', 'max'),
         low_price=('price', 'min'),
-        close_price=('price', 'last')
+        close_price=('price', 'last'),
+        line_count=('price', 'size')  # Contador de líneas por vela
     ).reset_index()
+
+    df = df[df['line_count'] > 45]
 
     # Función para calcular el RSI
     def calculate_rsi(data, window=14):
