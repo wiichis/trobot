@@ -52,7 +52,7 @@ def indicator():
     # Función para detectar cruces del MACD
     def detect_macd_cross(df):
         # Considerar solo velas con más de 24 líneas
-        df = df[df['line_count'] > 24]
+        df = df[df['line_count'] > 22]
 
         bullish_cross = (df['MACD'] > df['MACD_Signal']) & (df['MACD'].shift(1) <= df['MACD_Signal'].shift(1))
         bearish_cross = (df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))
