@@ -18,8 +18,6 @@ def indicator():
         line_count=('price', 'size')  # Contador de líneas por vela
     ).reset_index()
 
-    df = df[df['line_count'] > 45]
-
     # Función para calcular el RSI
     def calculate_rsi(data, window=14):
         delta = data.diff()
@@ -53,6 +51,9 @@ def indicator():
 
     # Función para detectar cruces del MACD
     def detect_macd_cross(df):
+        # Considerar solo velas con más de 48 líneas
+        df = df[df['line_count'] > 45]
+
         bullish_cross = (df['MACD'] > df['MACD_Signal']) & (df['MACD'].shift(1) <= df['MACD_Signal'].shift(1))
         bearish_cross = (df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))
         return bullish_cross, bearish_cross
