@@ -52,7 +52,7 @@ def indicator():
     # Función para detectar cruces del MACD
     def detect_macd_cross(df):
         # Considerar solo velas con más de 25 líneas
-        df = df[df['line_count'] > 25]
+        df = df[df['line_count'] > 35]
 
         bullish_cross = (df['MACD'] > df['MACD_Signal']) & (df['MACD'].shift(1) <= df['MACD_Signal'].shift(1))
         bearish_cross = (df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))
@@ -88,7 +88,7 @@ def indicator():
     # Establecer el Take Profit y Stop Loss
     # Take Profit es 3 veces la volatilidad y Stop Loss es la volatilidad
     # Establecer el Take Profit y Stop Loss
-    hourly_data['Take_Profit'] = 3 * hourly_data['Volatility']
+    hourly_data['Take_Profit'] = 2 * hourly_data['Volatility']
     hourly_data['Stop_Loss'] = hourly_data['Volatility']
 
     hourly_data.to_csv('./archivos/indicadores.csv', index=False)
