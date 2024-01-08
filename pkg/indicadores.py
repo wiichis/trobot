@@ -10,7 +10,7 @@ def indicator():
     crypto_data.sort_values(by='date', inplace=True)
 
     # Agrupar los datos en velas de una hora freq='H' freq='30T'
-    hourly_data = crypto_data.groupby(['symbol', pd.Grouper(key='date', freq='H')]).agg(
+    hourly_data = crypto_data.groupby(['symbol', pd.Grouper(key='date', freq='30T')]).agg(
         open_price=('price', 'first'),
         high_price=('price', 'max'),
         low_price=('price', 'min'),
@@ -51,8 +51,8 @@ def indicator():
 
     # Función para detectar cruces del MACD
     def detect_macd_cross(df):
-        # Considerar solo velas con más de 30 líneas
-        df = df[df['line_count'] > 31]
+        # Considerar solo velas con más de 20 líneas
+        df = df[df['line_count'] > 20]
 
         bullish_cross = (df['MACD'] > df['MACD_Signal']) & (df['MACD'].shift(1) <= df['MACD_Signal'].shift(1))
         bearish_cross = (df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))
