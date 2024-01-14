@@ -52,7 +52,7 @@ def indicator():
     # Función para detectar cruces del MACD
     def detect_macd_cross(df):
         # Considerar solo velas con más de 20 líneas
-        df = df[df['line_count'] > 20]
+        df = df[df['line_count'] > 35]
 
         bullish_cross = (df['MACD'] > df['MACD_Signal']) & (df['MACD'].shift(1) <= df['MACD_Signal'].shift(1))
         bearish_cross = (df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))
@@ -82,7 +82,7 @@ def indicator():
     # Calcular la volatilidad como la desviación estándar de los cambios en el precio de cierre
     hourly_data['Volatility'] = hourly_data.groupby('symbol')['close_price'].transform(lambda x: x.pct_change().rolling(window=20).std())
     #Multiplicando por el 80% la volatilidad para obtener unos valores mas bajos.
-    hourly_data['Volatility'] = hourly_data['Volatility'] * 0.6
+    hourly_data['Volatility'] = hourly_data['Volatility'] * 0.7
 
     # Validar y ajustar la volatilidad a 0.0025 como minimo
     #hourly_data['Volatility'] = hourly_data['Volatility'].apply(lambda x: max(x, 0.005) if not pd.isna(x) else x)
