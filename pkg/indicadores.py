@@ -10,7 +10,7 @@ def indicator():
     crypto_data.sort_values(by='date', inplace=True)
 
     # Agrupar los datos en velas de una hora freq='H' freq='30T'
-    hourly_data = crypto_data.groupby(['symbol', pd.Grouper(key='date', freq='30T')]).agg(
+    hourly_data = crypto_data.groupby(['symbol', pd.Grouper(key='date', freq='H')]).agg(
         open_price=('price', 'first'),
         high_price=('price', 'max'),
         low_price=('price', 'min'),
