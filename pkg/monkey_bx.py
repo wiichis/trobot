@@ -40,14 +40,17 @@ def bot_send_text(bot_message):
     bot_chatID = pkg.credentials.chatID
     send_text = pkg.credentials.send + bot_message
     response = requests.get(send_text)
-
+ 
     return response
 
 def total_monkey():
     # Obtiene el balance actual
     monkey = pkg.bingx.get_balance()
     monkey = json.loads(monkey)
-    balance = monkey['data']['balance']['balance']
+    try:
+        balance = monkey['data']['balance']['balance']
+    except KeyError as e:
+        print(f"Clave no encontrada: {e}")
     datenow = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     data = {'date': [datenow], 'balance': [balance]}
