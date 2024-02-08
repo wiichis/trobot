@@ -137,18 +137,30 @@ def monkey_result():
 
 # Obteniendo las Posiciones
 def total_positions(symbol):
+    # Obteniendo las posiciones desde la API o fuente de datos
     positions = pkg.bingx.perpetual_swap_positions(symbol)
-    positions = json.loads(positions)
-    #Capturando el error en caso de que no haya nada
-    if not positions['data']:
-        return None, None, None, None
+    
+    try:
+        # Intenta decodificar el JSON
+        positions = json.loads(positions)
+    except json.JSONDecodeError:
+        # Si hay un error en la decodificación, retorna None para todos los campos
+        print("Error decodificando JSON. Posible respuesta vacía o mal formada.")
+        return None, None, None, None, None
 
-    symbol = positions['data'][0]['symbol']
-    positionSide = positions['data'][0]['positionSide']
-    price = float(positions['data'][0]['avgPrice'])
-    positionAmt = positions['data'][0]['positionAmt']
-    unrealizedProfit = positions['data'][0]['unrealizedProfit']
-    return symbol, positionSide, price, positionAmt, unrealizedProfit
+    # Verifica si 'data' está en la respuesta y que no está vacía
+    if 'data' in positions and positions['data']:
+        # Extrae los datos necesarios
+        symbol = positions['data'][0]['symbol']
+        positionSide = positions['data'][0]['positionSide']
+        price = float(positions['data'][0]['avgPrice'])
+        positionAmt = positions['data'][0]['positionAmt']
+        unrealizedProfit = positions['data'][0]['unrealizedProfit']
+        return symbol, positionSide, price, positionAmt, unrealizedProfit
+    else:
+        # Retorna None si 'data' no está presente o está vacía
+        print("No se encontraron datos en 'data'.")
+        return None, None, None, None, None
 
 
 #Obteniendo Ordenes Pendientes
