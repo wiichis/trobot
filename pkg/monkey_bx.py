@@ -47,6 +47,9 @@ def total_monkey():
     # Obtiene el balance actual
     monkey = pkg.bingx.get_balance()
     monkey = json.loads(monkey)
+
+    balance = 0
+
     try:
         balance = monkey['data']['balance']['balance']
     except KeyError as e:
