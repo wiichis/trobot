@@ -162,7 +162,6 @@ def total_positions(symbol):
         return symbol, positionSide, price, positionAmt, unrealizedProfit
     else:
         # Retorna None si 'data' no está presente o está vacía
-        print("No se encontraron datos en 'data'.")
         return None, None, None, None, None
 
 
