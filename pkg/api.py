@@ -7,8 +7,8 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 def currencies_list():
-    return ['ADA-USDT','AVAX-USDT','CFX-USDT','DOGE-USDT','DOT-USDT','MATIC-USDT','SHIB-USDT','TONCOIN-USDT','BCH-USDT', 'NEAR-USDT']
-    # No usar DYDX, OP, LDO, SOL, BNB, XRP, FIL, ICP, LINK, UNI, TRX, ETH
+    return ['ADA-USDT','AVAX-USDT','CFX-USDT','DOT-USDT','MATIC-USDT','SHIB-USDT','TONCOIN-USDT','BCH-USDT', 'NEAR-USDT','LTC-USDT']
+    # No usar DYDX, OP, LDO, SOL, BNB, XRP, FIL, ICP, LINK, UNI, TRX, ETH, DOGE
 
 def fetch_price(symbol):
     try:
