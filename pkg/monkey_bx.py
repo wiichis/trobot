@@ -320,8 +320,8 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
         # Calcular la diferencia de tiempo
         data_filtered['time_difference'] = (current_time - data_filtered['time']).dt.total_seconds() / 60
         
-        # Filtrar entradas con más de 60 minutos de diferencia
-        data_filtered = data_filtered[(data_filtered['time_difference'] > 3) & (data_filtered['type'] == 'STOP_MARKET')]
+        # Filtrar entradas con más de 2 minutos de diferencia
+        data_filtered = data_filtered[(data_filtered['time_difference'] > 1) & (data_filtered['type'] == 'STOP_MARKET')]
         
         # Remover duplicados basado en 'symbol'
         data_filtered = data_filtered.drop_duplicates(subset='symbol')
