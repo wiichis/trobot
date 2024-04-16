@@ -67,29 +67,25 @@ def indicator():
         hourly_data.loc[group.index, 'Bullish_MACD_Cross'] = bullish_cross
         hourly_data.loc[group.index, 'Bearish_MACD_Cross'] = bearish_cross
 
-    # Identificar señales de Long y Short
+   # Calcular la volatilidad como la desviación estándar de los cambios en el precio de cierre
+    hourly_data['Volatility'] = hourly_data.groupby('symbol')['close_price'].transform(lambda x: x.pct_change().rolling(window=20).std())
+
     hourly_data['Long_Signal'] = (
         (hourly_data['close_price'] > hourly_data['SMA_20']) & 
         hourly_data['Bullish_MACD_Cross'] & 
-        (hourly_data['RSI_20'] < 70)
+        (hourly_data['RSI_20'] < 70) &
+        (hourly_data['Volatility'] > 0.01)  # Condición de volatilidad añadida
     )
     hourly_data['Short_Signal'] = (
         (hourly_data['close_price'] < hourly_data['SMA_20']) & 
         hourly_data['Bearish_MACD_Cross'] & 
-        (hourly_data['RSI_20'] > 30)
+        (hourly_data['RSI_20'] > 30) &
+        (hourly_data['Volatility'] > 0.01)  # Condición de volatilidad añadida
     )
 
-    # Calcular la volatilidad como la desviación estándar de los cambios en el precio de cierre
-    hourly_data['Volatility'] = hourly_data.groupby('symbol')['close_price'].transform(lambda x: x.pct_change().rolling(window=20).std())
-    #Multiplicando por el 80% la volatilidad para obtener unos valores mas bajos.
-    #hourly_data['Volatility'] = hourly_data['Volatility'] * 0.7
-
-    # Validar y ajustar la volatilidad a 0.0025 como minimo
-    #hourly_data['Volatility'] = hourly_data['Volatility'].apply(lambda x: max(x, 0.005) if not pd.isna(x) else x)
 
     # Establecer el Take Profit y Stop Loss
     # Take Profit es 3 veces la volatilidad y Stop Loss es la volatilidad
-    # Establecer el Take Profit y Stop Loss
     hourly_data['Take_Profit'] = 3 * hourly_data['Volatility']
     hourly_data['Stop_Loss'] = hourly_data['Volatility']
 
