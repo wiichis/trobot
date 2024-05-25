@@ -74,13 +74,13 @@ def indicator():
         (hourly_data['close_price'] > hourly_data['SMA_20']) & 
         hourly_data['Bullish_MACD_Cross'] & 
         (hourly_data['RSI_20'] < 70) &
-        (hourly_data['Volatility'] > 0.006)  # Condición de volatilidad añadida
+        (hourly_data['Volatility'] > 0.007)  # Condición de volatilidad añadida
     )
     hourly_data['Short_Signal'] = (
         (hourly_data['close_price'] < hourly_data['SMA_20']) & 
         hourly_data['Bearish_MACD_Cross'] & 
         (hourly_data['RSI_20'] > 30) &
-        (hourly_data['Volatility'] > 0.006)  # Condición de volatilidad añadida
+        (hourly_data['Volatility'] > 0.007)  # Condición de volatilidad añadida
     )
 
 
