@@ -3,8 +3,7 @@ import numpy as np
 
 def indicator():
     # Cargar los datos
-    crypto_data = pd.read_csv('./archivos/cripto_price.csv')
-    crypto_data['date'] = pd.to_datetime(crypto_data['date'])
+    crypto_data = pd.read_csv('./archivos/cripto_price.csv', parse_dates=['date'])
     crypto_data.sort_values(by='date', inplace=True)
 
     # Agrupar los datos en velas de 30 minutos
@@ -13,71 +12,59 @@ def indicator():
         high_price=('price', 'max'),
         low_price=('price', 'min'),
         close_price=('price', 'last'),
-        line_count=('price', 'size')  # Contador de líneas por vela
+        line_count=('price', 'size')
     ).reset_index()
 
     # Función para calcular el RSI
     def calculate_rsi(data, window=14):
         delta = data.diff()
-        up, down = delta.copy(), delta.copy()
-        up[up < 0] = 0
-        down[down > 0] = 0
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        avg_gain = pd.Series(gain).rolling(window=window).mean()
+        avg_loss = pd.Series(loss).rolling(window=window).mean()
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
 
-        roll_up = up.rolling(window).mean()
-        roll_down = down.abs().rolling(window).mean()
-
-        rs = roll_up / roll_down
-        rsi = 100.0 - (100.0 / (1.0 + rs))
-        return rsi
-    
     # Calcular la SMA de 20 períodos
     half_hour_data['SMA_20'] = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: x.rolling(window=20).mean())
 
-    # Calcular el RSI de 20 períodos
-    rsi_results = half_hour_data.groupby('symbol', group_keys=True)['close_price'].apply(lambda x: calculate_rsi(x, window=20)).reset_index(level=0, drop=True)
-    half_hour_data['RSI_20'] = rsi_results
+    # Calcular el RSI de 14 períodos
+    half_hour_data['RSI_14'] = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: calculate_rsi(x, window=14))
 
     # Calcular el MACD y su línea de señal
-    ema_12 = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: x.ewm(span=12, adjust=False).mean())
-    ema_26 = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: x.ewm(span=26, adjust=False).mean())
-    half_hour_data['MACD'] = ema_12 - ema_26
+    half_hour_data['EMA_12'] = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: x.ewm(span=12, adjust=False).mean())
+    half_hour_data['EMA_26'] = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: x.ewm(span=26, adjust=False).mean())
+    half_hour_data['MACD'] = half_hour_data['EMA_12'] - half_hour_data['EMA_26']
     half_hour_data['MACD_Signal'] = half_hour_data.groupby('symbol')['MACD'].transform(lambda x: x.ewm(span=9, adjust=False).mean())
 
-    # Función para detectar cruces del MACD
+    # Detectar cruces del MACD con filtro
     def detect_macd_cross(df):
-        # Considerar solo velas con más de 12 líneas
-        df = df[df['line_count'] > 5]
-
         bullish_cross = (df['MACD'] > df['MACD_Signal']) & (df['MACD'].shift(1) <= df['MACD_Signal'].shift(1))
         bearish_cross = (df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))
+        bullish_cross = bullish_cross & (df['MACD'] > 0)  # Filtro adicional
+        bearish_cross = bearish_cross & (df['MACD'] < 0)  # Filtro adicional
         return bullish_cross, bearish_cross
 
-    # Aplicar la función para detectar cruces del MACD
-    half_hour_data['Bullish_MACD_Cross'] = False
-    half_hour_data['Bearish_MACD_Cross'] = False
-    for symbol, group in half_hour_data.groupby('symbol'):
-        bullish_cross, bearish_cross = detect_macd_cross(group)
-        half_hour_data.loc[group.index, 'Bullish_MACD_Cross'] = bullish_cross
-        half_hour_data.loc[group.index, 'Bearish_MACD_Cross'] = bearish_cross
+    half_hour_data['Bullish_MACD_Cross'], half_hour_data['Bearish_MACD_Cross'] = zip(*half_hour_data.groupby('symbol').apply(detect_macd_cross))
 
     # Calcular la volatilidad como la desviación estándar de los cambios en el precio de cierre
     half_hour_data['Volatility'] = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: x.pct_change().rolling(window=20).std())
 
+    # Señales de compra y venta
     half_hour_data['Long_Signal'] = (
         (half_hour_data['close_price'] > half_hour_data['SMA_20']) & 
         half_hour_data['Bullish_MACD_Cross'] & 
-        (half_hour_data['RSI_20'] < 70) &
-        (half_hour_data['Volatility'] > 0.00)  # Condición de volatilidad añadida
+        (half_hour_data['RSI_14'] < 70) &
+        (half_hour_data['Volatility'] > 0.00)
     )
     half_hour_data['Short_Signal'] = (
         (half_hour_data['close_price'] < half_hour_data['SMA_20']) & 
         half_hour_data['Bearish_MACD_Cross'] & 
-        (half_hour_data['RSI_20'] > 30) &
-        (half_hour_data['Volatility'] > 0.00)  # Condición de volatilidad añadida
+        (half_hour_data['RSI_14'] > 30) &
+        (half_hour_data['Volatility'] > 0.00)
     )
 
     # Establecer el Take Profit y Stop Loss
-    # Take Profit es 3 veces la volatilidad y Stop Loss es la volatilidad
     half_hour_data['Take_Profit'] = 3 * half_hour_data['Volatility']
     half_hour_data['Stop_Loss'] = half_hour_data['Volatility']
 
@@ -87,8 +74,7 @@ def indicator():
 def ema_alert(currencie):
     cruce_emas = indicator()
     df_filtered = cruce_emas[cruce_emas['symbol'] == currencie]
-    
-    # Verificar si df_filtered está vacío
+
     if df_filtered.empty:
         print(f"No hay datos para {currencie}")
         return None, None
@@ -96,11 +82,8 @@ def ema_alert(currencie):
     price_last = df_filtered['close_price'].iloc[-1]
 
     if df_filtered['Long_Signal'].iloc[-1]:
-        tipo = '=== Alerta de LONG ==='
-        return price_last, tipo
+        return price_last, '=== Alerta de LONG ==='
     elif df_filtered['Short_Signal'].iloc[-1]:
-        tipo = '=== Alerta de SHORT ==='
-        return price_last, tipo
+        return price_last, '=== Alerta de SHORT ==='
     else:
-        # Manejar el caso donde no hay señal de LONG o SHORT
         return None, None
