@@ -7,7 +7,7 @@ def indicator():
     crypto_data.sort_values(by='date', inplace=True)
 
     # Agrupar los datos en velas de 30 minutos
-    half_hour_data = crypto_data.groupby(['symbol', pd.Grouper(key='date', freq='30T')]).agg(
+    half_hour_data = crypto_data.groupby(['symbol', pd.Grouper(key='date', freq='30min')]).agg(
         open_price=('price', 'first'),
         high_price=('price', 'max'),
         low_price=('price', 'min'),
@@ -43,9 +43,11 @@ def indicator():
         bearish_cross = (df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))
         bullish_cross = bullish_cross & (df['MACD'] > 0)  # Filtro adicional
         bearish_cross = bearish_cross & (df['MACD'] < 0)  # Filtro adicional
-        return bullish_cross, bearish_cross
+        df['Bullish_MACD_Cross'] = bullish_cross
+        df['Bearish_MACD_Cross'] = bearish_cross
+        return df
 
-    half_hour_data['Bullish_MACD_Cross'], half_hour_data['Bearish_MACD_Cross'] = zip(*half_hour_data.groupby('symbol').apply(detect_macd_cross))
+    half_hour_data = half_hour_data.groupby('symbol').apply(detect_macd_cross).reset_index(drop=True)
 
     # Calcular la volatilidad como la desviación estándar de los cambios en el precio de cierre
     half_hour_data['Volatility'] = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: x.pct_change().rolling(window=20).std())
@@ -65,25 +67,4 @@ def indicator():
     )
 
     # Establecer el Take Profit y Stop Loss
-    half_hour_data['Take_Profit'] = 3 * half_hour_data['Volatility']
-    half_hour_data['Stop_Loss'] = half_hour_data['Volatility']
-
-    half_hour_data.to_csv('./archivos/indicadores.csv', index=False)
-    return half_hour_data
-
-def ema_alert(currencie):
-    cruce_emas = indicator()
-    df_filtered = cruce_emas[cruce_emas['symbol'] == currencie]
-
-    if df_filtered.empty:
-        print(f"No hay datos para {currencie}")
-        return None, None
-
-    price_last = df_filtered['close_price'].iloc[-1]
-
-    if df_filtered['Long_Signal'].iloc[-1]:
-        return price_last, '=== Alerta de LONG ==='
-    elif df_filtered['Short_Signal'].iloc[-1]:
-        return price_last, '=== Alerta de SHORT ==='
-    else:
-        return None, None
+    half_hour_data
