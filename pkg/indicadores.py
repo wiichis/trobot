@@ -67,4 +67,27 @@ def indicator():
     )
 
     # Establecer el Take Profit y Stop Loss
-    half_hour_data
+    half_hour_data['Take_Profit'] = 3 * half_hour_data['Volatility']
+    half_hour_data['Stop_Loss'] = half_hour_data['Volatility']
+
+    # Guardar los datos en el archivo CSV
+    half_hour_data.to_csv('./archivos/indicadores.csv', index=False)
+    
+    return half_hour_data
+
+def ema_alert(currencie):
+    cruce_emas = indicator()
+    df_filtered = cruce_emas[cruce_emas['symbol'] == currencie]
+
+    if df_filtered.empty:
+        print(f"No hay datos para {currencie}")
+        return None, None
+
+    price_last = df_filtered['close_price'].iloc[-1]
+
+    if df_filtered['Long_Signal'].iloc[-1]:
+        return price_last, '=== Alerta de LONG ==='
+    elif df_filtered['Short_Signal'].iloc[-1]:
+        return price_last, '=== Alerta de SHORT ==='
+    else:
+        return None, None
