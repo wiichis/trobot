@@ -345,8 +345,8 @@ def unrealized_profit_positions():
     # Agrupar por 'symbol' y obtener la última fila de cada grupo
     latest_values = df_indicadores.groupby('symbol').last().reset_index()
 
-    # Seleccionar solo las columnas requeridas: 'symbol', 'close_price', 'Stop_Loss'
-    latest_values = latest_values[['symbol', 'close_price', 'Stop_Loss']]
+    # Seleccionar solo las columnas requeridas: 'symbol', 'close', 'Stop_Loss'
+    latest_values = latest_values[['symbol', 'close', 'Stop_Loss']]
 
     # Obteniendo data filtrada de la funcion anterior
     data_filtered = filtrando_posiciones_antiguas()
@@ -362,7 +362,7 @@ def unrealized_profit_positions():
     for symbol in symbols:
         #obteniendo de indicadores el Ultimo Precio y % de Sl
         symbol_data = latest_values[latest_values['symbol'] == symbol]
-        precio_actual = symbol_data['close_price'].iloc[0]
+        precio_actual = symbol_data['close'].iloc[0]
         stop_loss = symbol_data['Stop_Loss'].iloc[0]
 
         result = total_positions(symbol)

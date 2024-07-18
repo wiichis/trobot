@@ -158,3 +158,21 @@ def hystory_PnL():
     }
     paramsStr = praseParam(paramsMap)
     return send_request(methed, path, paramsStr, payload)
+
+
+#Obter el valor de una vela
+def get_candle(symbol, interval):
+    payload = {}
+    path = '/openApi/swap/v1/market/markPriceKlines'
+    method = "GET"
+    paramsMap = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": "2",
+        "timestamp": str(int(time.time() * 1000)) 
+    }
+    paramsStr = praseParam(paramsMap)
+    return send_request(method, path, paramsStr, payload)
+
+
+

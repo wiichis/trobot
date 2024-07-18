@@ -1,89 +1,91 @@
 import pandas as pd
 import numpy as np
 
-def indicator():
-    # Cargar los datos
-    crypto_data = pd.read_csv('./archivos/cripto_price.csv', parse_dates=['date'])
-    crypto_data.sort_values(by='date', inplace=True)
+def load_data(filepath='./archivos/cripto_price.csv'):
+    try:
+        crypto_data = pd.read_csv(filepath, parse_dates=['date'])
+        crypto_data.sort_values(by='date', inplace=True)
+        return crypto_data
+    except Exception as e:
+        print(f"Error leyendo el archivo: {e}")
+        return None
 
-    # Agrupar los datos en velas de 30 minutos
-    half_hour_data = crypto_data.groupby(['symbol', pd.Grouper(key='date', freq='30min')]).agg(
-        open_price=('price', 'first'),
-        high_price=('price', 'max'),
-        low_price=('price', 'min'),
-        close_price=('price', 'last'),
-        line_count=('price', 'size')
-    ).reset_index()
+def filter_duplicates(crypto_data):
+    return crypto_data.drop_duplicates(subset=['symbol', 'date'], keep='first')
 
-    # Función para calcular el RSI
-    def calculate_rsi(data, window=14):
-        delta = data.diff()
-        gain = np.where(delta > 0, delta, 0)
-        loss = np.where(delta < 0, -delta, 0)
-        avg_gain = pd.Series(gain).rolling(window=window).mean()
-        avg_loss = pd.Series(loss).rolling(window=window).mean()
-        rs = avg_gain / avg_loss
-        return 100 - (100 / (1 + rs))
+def calculate_rsi(data, window=9):
+    delta = data.diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(window=window).mean()
+    avg_loss = pd.Series(loss).rolling(window=window).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-    # Calcular la SMA de 20 períodos
-    half_hour_data['SMA_20'] = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: x.rolling(window=20).mean())
+def calculate_atr(df, window=14):
+    high_low = df['high'] - df['low']
+    high_close = np.abs(df['high'] - df['close'].shift())
+    low_close = np.abs(df['low'] - df['close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr = tr.rolling(window=window).mean()
+    return atr
 
-    # Calcular el RSI de 14 períodos
-    half_hour_data['RSI_14'] = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: calculate_rsi(x, window=14))
+def detect_macd_cross(df):
+    bullish_cross = (df['MACD'] > df['MACD_Signal']) & (df['MACD'].shift(1) <= df['MACD_Signal'].shift(1))
+    bearish_cross = (df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))
+    bullish_cross = bullish_cross & (df['MACD'] > 0)
+    bearish_cross = bearish_cross & (df['MACD'] < 0)
+    df['Bullish_MACD_Cross'] = bullish_cross
+    df['Bearish_MACD_Cross'] = bearish_cross
+    return df
 
-    # Calcular el MACD y su línea de señal
-    half_hour_data['EMA_12'] = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: x.ewm(span=12, adjust=False).mean())
-    half_hour_data['EMA_26'] = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: x.ewm(span=26, adjust=False).mean())
-    half_hour_data['MACD'] = half_hour_data['EMA_12'] - half_hour_data['EMA_26']
-    half_hour_data['MACD_Signal'] = half_hour_data.groupby('symbol')['MACD'].transform(lambda x: x.ewm(span=9, adjust=False).mean())
-
-    # Detectar cruces del MACD con filtro
-    def detect_macd_cross(df):
-        bullish_cross = (df['MACD'] > df['MACD_Signal']) & (df['MACD'].shift(1) <= df['MACD_Signal'].shift(1))
-        bearish_cross = (df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))
-        bullish_cross = bullish_cross & (df['MACD'] > 0)  # Filtro adicional
-        bearish_cross = bearish_cross & (df['MACD'] < 0)  # Filtro adicional
-        df['Bullish_MACD_Cross'] = bullish_cross
-        df['Bearish_MACD_Cross'] = bearish_cross
-        return df
-
-    half_hour_data = half_hour_data.groupby('symbol').apply(detect_macd_cross).reset_index(drop=True)
-
-    # Calcular la volatilidad como la desviación estándar de los cambios en el precio de cierre
-    half_hour_data['Volatility'] = half_hour_data.groupby('symbol')['close_price'].transform(lambda x: x.pct_change().rolling(window=20).std())
-
-    # Señales de compra y venta
-    half_hour_data['Long_Signal'] = (
-        (half_hour_data['close_price'] > half_hour_data['SMA_20']) & 
-        half_hour_data['Bullish_MACD_Cross'] & 
-        (half_hour_data['RSI_14'] < 70) &
-        (half_hour_data['Volatility'] > 0.00)
-    )
-    half_hour_data['Short_Signal'] = (
-        (half_hour_data['close_price'] < half_hour_data['SMA_20']) & 
-        half_hour_data['Bearish_MACD_Cross'] & 
-        (half_hour_data['RSI_14'] > 30) &
-        (half_hour_data['Volatility'] > 0.00)
-    )
-
-    # Establecer el Take Profit y Stop Loss
-    half_hour_data['Take_Profit'] = 3 * half_hour_data['Volatility']
-    half_hour_data['Stop_Loss'] = half_hour_data['Volatility']
-
-    # Guardar los datos en el archivo CSV
-    half_hour_data.to_csv('./archivos/indicadores.csv', index=False)
+def calculate_indicators(crypto_data):
+    complete_data = crypto_data[crypto_data['volume'] > 0].copy()
+    complete_data['SMA_10'] = complete_data.groupby('symbol')['close'].transform(lambda x: x.rolling(window=10).mean())
+    complete_data['RSI_9'] = complete_data.groupby('symbol')['close'].transform(lambda x: calculate_rsi(x, window=9))
+    complete_data['EMA_9'] = complete_data.groupby('symbol')['close'].transform(lambda x: x.ewm(span=9, adjust=False).mean())
+    complete_data['EMA_21'] = complete_data.groupby('symbol')['close'].transform(lambda x: x.ewm(span=21, adjust=False).mean())
+    complete_data['MACD'] = complete_data['EMA_9'] - complete_data['EMA_21']
+    complete_data['MACD_Signal'] = complete_data.groupby('symbol')['MACD'].transform(lambda x: x.ewm(span=7, adjust=False).mean())
+    complete_data = complete_data.groupby('symbol').apply(detect_macd_cross).reset_index(drop=True)
+    complete_data['ATR'] = complete_data.groupby('symbol').apply(lambda x: calculate_atr(x)).reset_index(drop=True)
+    complete_data['Avg_Volume'] = complete_data.groupby('symbol')['volume'].transform(lambda x: x.rolling(window=20).mean())
+    complete_data['Rel_Volume'] = complete_data['volume'] / complete_data['Avg_Volume']
     
-    return half_hour_data
+    complete_data['Long_Signal'] = (
+        (complete_data['close'] > complete_data['SMA_10']) & 
+        complete_data['Bullish_MACD_Cross'] & 
+        (complete_data['RSI_9'] < 70) &
+        (complete_data['Rel_Volume'] > 1.5)
+    )
+    complete_data['Short_Signal'] = (
+        (complete_data['close'] < complete_data['SMA_10']) & 
+        complete_data['Bearish_MACD_Cross'] & 
+        (complete_data['RSI_9'] > 30) &
+        (complete_data['Rel_Volume'] > 1.5)
+    )
 
-def ema_alert(currencie):
-    cruce_emas = indicator()
+    complete_data['Take_Profit'] = 3 * complete_data['ATR']
+    complete_data['Stop_Loss'] = complete_data['ATR']
+
+    complete_data.to_csv('./archivos/indicadores.csv', index=False)
+    
+    return complete_data
+
+def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
+    crypto_data = load_data(data_path)
+    if crypto_data is None:
+        return None, None
+
+    crypto_data = filter_duplicates(crypto_data)
+    cruce_emas = calculate_indicators(crypto_data)
     df_filtered = cruce_emas[cruce_emas['symbol'] == currencie]
 
     if df_filtered.empty:
         print(f"No hay datos para {currencie}")
         return None, None
 
-    price_last = df_filtered['close_price'].iloc[-1]
+    price_last = df_filtered['close'].iloc[-1]
 
     if df_filtered['Long_Signal'].iloc[-1]:
         return price_last, '=== Alerta de LONG ==='
