@@ -13,7 +13,7 @@ def load_data(filepath='./archivos/cripto_price.csv'):
 def filter_duplicates(crypto_data):
     return crypto_data.drop_duplicates(subset=['symbol', 'date'], keep='first')
 
-def calculate_rsi(data, window=9):
+def calculate_rsi(data, window=11):
     delta = data.diff()
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
@@ -22,7 +22,7 @@ def calculate_rsi(data, window=9):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def calculate_atr(df, window=14):
+def calculate_atr(df, window=13):
     high_low = df['high'] - df['low']
     high_close = np.abs(df['high'] - df['close'].shift())
     low_close = np.abs(df['low'] - df['close'].shift())
@@ -43,8 +43,8 @@ def calculate_indicators(crypto_data):
     complete_data = crypto_data[crypto_data['volume'] > 0].copy()
     complete_data['SMA_10'] = complete_data.groupby('symbol')['close'].transform(lambda x: x.rolling(window=10).mean())
     complete_data['RSI_9'] = complete_data.groupby('symbol')['close'].transform(lambda x: calculate_rsi(x, window=9))
-    complete_data['EMA_9'] = complete_data.groupby('symbol')['close'].transform(lambda x: x.ewm(span=9, adjust=False).mean())
-    complete_data['EMA_21'] = complete_data.groupby('symbol')['close'].transform(lambda x: x.ewm(span=21, adjust=False).mean())
+    complete_data['EMA_9'] = complete_data.groupby('symbol')['close'].transform(lambda x: x.ewm(span=5, adjust=False).mean())
+    complete_data['EMA_21'] = complete_data.groupby('symbol')['close'].transform(lambda x: x.ewm(span=22, adjust=False).mean())
     complete_data['MACD'] = complete_data['EMA_9'] - complete_data['EMA_21']
     complete_data['MACD_Signal'] = complete_data.groupby('symbol')['MACD'].transform(lambda x: x.ewm(span=7, adjust=False).mean())
     complete_data = complete_data.groupby('symbol').apply(detect_macd_cross).reset_index(drop=True)
