@@ -47,7 +47,7 @@ def calculate_indicators(crypto_data):
     complete_data['EMA_21'] = complete_data.groupby('symbol')['close'].transform(lambda x: x.ewm(span=22, adjust=False).mean())
     complete_data['MACD'] = complete_data['EMA_9'] - complete_data['EMA_21']
     complete_data['MACD_Signal'] = complete_data.groupby('symbol')['MACD'].transform(lambda x: x.ewm(span=7, adjust=False).mean())
-    complete_data = complete_data.groupby('symbol').apply(detect_macd_cross).reset_index(drop=True)
+    complete_data = complete_data.groupby('symbol', group_keys=False).apply(detect_macd_cross).reset_index(drop=True)
     complete_data['ATR'] = complete_data.groupby('symbol').apply(lambda x: calculate_atr(x)).reset_index(drop=True)
     complete_data['Avg_Volume'] = complete_data.groupby('symbol')['volume'].transform(lambda x: x.rolling(window=20).mean())
     complete_data['Rel_Volume'] = complete_data['volume'] / complete_data['Avg_Volume']
