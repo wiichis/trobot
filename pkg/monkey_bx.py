@@ -76,22 +76,27 @@ def resultado_PnL():
     df_data = pd.read_csv('./archivos/PnL.csv')
     npl = pkg.bingx.hystory_PnL()
     npl = json.loads(npl)
-    df = pd.DataFrame(npl['data'])
-    
-    # Convertir el campo "time" en formato de fecha y hora
-    df['time'] = pd.to_datetime(df['time'], unit='ms')
 
-    # Concatenar el DataFrame existente con los nuevos datos
-    df_concat = pd.concat([df_data, df])
+    # Verificar si 'data' tiene datos
+    if 'data' in npl and npl['data']:
+        df = pd.DataFrame(npl['data'])
 
-    # Eliminar duplicados basados en todas las columnas
-    df_unique = df_concat.drop_duplicates()
+        # Verificar si la columna 'time' ya está en formato datetime
+        if 'time' in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df['time']):
+                print("La columna 'time' ya está en formato datetime")
+            else:
+                df['time'] = pd.to_datetime(df['time'], unit='ms')
+        else:
+            raise KeyError("La columna 'time' no está presente en los datos obtenidos.")
+        
+        df_concat = pd.concat([df_data, df])
+        df_unique = df_concat.drop_duplicates()
+        df_limited = df_unique.tail(10000)
+        df_limited.to_csv('./archivos/PnL.csv', index=False)
+    else:
+        print("No hay datos nuevos para procesar en 'npl'.")
 
-    # Limitar el número de líneas a 10,000 (manteniendo las más recientes)
-    df_limited = df_unique.tail(10000)
-
-    # Guardar el DataFrame actualizado en el archivo CSV
-    df_limited.to_csv('./archivos/PnL.csv', index=False)
 
 
 def monkey_result():
