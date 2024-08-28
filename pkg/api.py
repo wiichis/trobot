@@ -20,22 +20,28 @@ def round_time(dt=None, round_to=1800):
     rounding = (seconds + round_to / 2) // round_to * round_to
     return dt + timedelta(0, rounding - seconds, -dt.microsecond)
 
-def fetch_candle(symbol, interval='30m'):
+def fetch_candle(symbol, interval='30m', limit=2):
     try:
-        json_str = pkg.bingx.get_candle(symbol, interval)
+        json_str = pkg.bingx.get_candle(symbol, interval, limit)
         data = json.loads(json_str)
-        last_candle = data["data"][0]  # La última vela (incompleta)
-        prev_candle = data["data"][1]  # La penúltima vela (completa)
+        candles_data = []
 
-        last_candle_data = {
-            'symbol': symbol,
-            'open': last_candle["open"],
-            'high': last_candle["high"],
-            'low': last_candle["low"],
-            'close': last_candle["close"],
-            'volume': last_candle["volume"],
-            'date': round_time(datetime.fromtimestamp(last_candle["closeTime"] / 1000))
-        }
+        for candle in data["data"]:
+            candle_data = {
+                'symbol': symbol,
+                'open': candle["open"],
+                'high': candle["high"],
+                'low': candle["low"],
+                'close': candle["close"],
+                'volume': candle["volume"],
+                'date': round_time(datetime.fromtimestamp(candle["time"] / 1000))
+            }
+            candles_data.append(candle_data)
+
+        return candles_data
+    except Exception as e:
+        logging.error(f"Error al obtener la vela para {symbol}: {e}")
+        return []
 
         prev_candle_data = {
             'symbol': symbol,
@@ -44,7 +50,8 @@ def fetch_candle(symbol, interval='30m'):
             'low': prev_candle["low"],
             'close': prev_candle["close"],
             'volume': prev_candle["volume"],
-            'date': round_time(datetime.fromtimestamp(prev_candle["closeTime"] / 1000))
+            # Usamos 'time' en lugar de 'closeTime'
+            'date': round_time(datetime.fromtimestamp(prev_candle["time"] / 1000))
         }
 
         return last_candle_data, prev_candle_data
@@ -61,19 +68,17 @@ def update_dataframe(existing_df, new_data):
     
     return combined_df
 
-def price_bingx():
+def price_bingx(limit=1):
     try:
         currencies = currencies_list()
         candle_data = []
 
         with ThreadPoolExecutor() as executor:
-            results = executor.map(fetch_candle, currencies)
+            results = executor.map(lambda symbol: fetch_candle(symbol, '30m', limit), currencies)
 
-        for last_candle, prev_candle in results:
-            if last_candle is not None:
-                candle_data.append(last_candle)
-            if prev_candle is not None:
-                candle_data.append(prev_candle)
+        for candles in results:
+            if candles:
+                candle_data.extend(candles)  # Añadir todas las velas obtenidas
 
         try:
             existing_df = pd.read_csv('./archivos/cripto_price.csv')
@@ -98,6 +103,6 @@ def price_bingx():
         logging.error(f"Error de conexión: {e}")
         logging.info("Reintentando la solicitud en 1 minuto...")
         time.sleep(30)
-        price_bingx()
+        price_bingx(limit)
     except Exception as e:
         logging.error(f"Ocurrió un error: {e}")

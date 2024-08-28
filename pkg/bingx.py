@@ -160,15 +160,15 @@ def hystory_PnL():
     return send_request(methed, path, paramsStr, payload)
 
 
-#Obter el valor de una vela
-def get_candle(symbol, interval):
+# Obtener el valor de múltiples velas
+def get_candle(symbol, interval, limit=2):
     payload = {}
-    path = '/openApi/swap/v1/market/markPriceKlines'
+    path = '/openApi/swap/v3/quote/klines'
     method = "GET"
     paramsMap = {
         "symbol": symbol,
         "interval": interval,
-        "limit": "2",
+        "limit": str(limit),  # Número de velas a obtener
         "timestamp": str(int(time.time() * 1000)) 
     }
     paramsStr = praseParam(paramsMap)

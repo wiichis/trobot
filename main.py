@@ -22,7 +22,7 @@ def posiciones_antiguas():
 
 
 if __name__ == '__main__':
-    schedule.every(2).minutes.do(run_bingx)
+    schedule.every(3).minutes.do(run_bingx)
     schedule.every(0.4).minutes.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
     schedule.every(1.5).minutes.do(posiciones_antiguas)    

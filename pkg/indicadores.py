@@ -20,10 +20,11 @@ def calculate_rsi(data, window=11):
     delta = data.diff()
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
-    avg_gain = pd.Series(gain).rolling(window=window).mean()
-    avg_loss = pd.Series(loss).rolling(window=window).mean()
+    avg_gain = pd.Series(gain, index=data.index).rolling(window=window).mean()
+    avg_loss = pd.Series(loss, index=data.index).rolling(window=window).mean()
     rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 def calculate_atr(df, window=13):
     high_low = df['high'] - df['low']
@@ -100,13 +101,6 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
         df_filtered.sort_values(by='date', inplace=True)
         price_last = df_filtered['close'].iloc[-1]
 
-        # Imprimir en consola el símbolo, la fecha, el precio de apertura y cierre de la vela evaluada
-        # symbol = df_filtered['symbol'].iloc[-1]
-        # date = df_filtered['date'].iloc[-1]
-        # open_price = df_filtered['open'].iloc[-1]
-        # close_price = df_filtered['close'].iloc[-1]
-        # print(f"Evaluando: Symbol={symbol}, Date={date}, Open={open_price}, Close={close_price}")
-
         if df_filtered['Long_Signal'].iloc[-1]:
             return price_last, '=== Alerta de LONG ==='
         elif df_filtered['Short_Signal'].iloc[-1]:
@@ -116,4 +110,3 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
     except Exception as e:
         print(f"Error en ema_alert: {e}")
         return None, None
-
