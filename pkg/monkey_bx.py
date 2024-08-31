@@ -20,17 +20,10 @@ def get_last_take_profit_stop_loss(symbol):
         take_profit = filtered_df['Take_Profit'].iloc[-1]
         stop_loss = filtered_df['Stop_Loss'].iloc[-1]
 
-        long_stop_lose = 1 - stop_loss
-        long_profit = 1 + take_profit
-        short_stop_lose = 1 + stop_loss
-        short_profit = 1 - take_profit
-
-
-        return long_stop_lose, long_profit, short_stop_lose, short_profit
+        return take_profit, stop_loss
     else:
         # Si no hay datos para ese símbolo, devolver None
-        return None, None, None, None
-
+        return None, None
 
 
 #Funcion Enviar Mensajes
@@ -271,25 +264,25 @@ def colocando_TK_SL():
                 pass
         #Obteniendo el valor de las posiciones reales
         try:
-            long_stop_lose, long_profit, short_stop_lose, short_profit = get_last_take_profit_stop_loss(symbol)
+            take_profit, stop_loss = get_last_take_profit_stop_loss(symbol)
             symbol, positionSide, price, positionAmt,unrealizedProfit = total_positions(symbol)
 
             if positionSide == 'LONG':
                 # Configurar la orden de stop loss
-                pkg.bingx.post_order(symbol, positionAmt, 0,  price * long_stop_lose, "LONG", "STOP_MARKET", "SELL")
+                pkg.bingx.post_order(symbol, positionAmt, 0, price - stop_loss, "LONG", "STOP_MARKET", "SELL")
                 time.sleep(1)
                 # Configurar la orden de take profit
-                pkg.bingx.post_order(symbol, positionAmt, 0, price * long_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
+                pkg.bingx.post_order(symbol, positionAmt, 0, price + take_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
 
                 #Borrando linea
                 df_posiciones.drop(index, inplace=True)
 
             elif positionSide == 'SHORT':
                 # Configurar la orden de stop loss
-                pkg.bingx.post_order(symbol, positionAmt, 0, price * short_stop_lose, "SHORT", "STOP_MARKET", "BUY")
+                pkg.bingx.post_order(symbol, positionAmt, 0, price + stop_loss, "SHORT", "STOP_MARKET", "BUY")
                 time.sleep(1)
                 # Configurar la orden de take profit
-                pkg.bingx.post_order(symbol, positionAmt, 0, price * short_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
+                pkg.bingx.post_order(symbol, positionAmt, 0, price - take_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
 
                 #Borrando linea
                 df_posiciones.drop(index, inplace=True)
@@ -387,14 +380,14 @@ def unrealized_profit_positions():
 
         if positionSide == 'LONG':
             # Lógica para posición larga
-            potencial_nuevo_sl = precio_actual * (1 - stop_loss )
+            potencial_nuevo_sl = precio_actual - stop_loss
             if potencial_nuevo_sl > last_stop_price:
                 pkg.bingx.cancel_order(symbol, orderId)
                 time.sleep(1)
                 pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
         elif positionSide == 'SHORT':
             # Lógica para posición corta
-            potencial_nuevo_sl = precio_actual * (1 + stop_loss)
+            potencial_nuevo_sl = precio_actual + stop_loss
             if potencial_nuevo_sl < last_stop_price:
                 pkg.bingx.cancel_order(symbol, orderId)
                 time.sleep(1)
@@ -402,7 +395,7 @@ def unrealized_profit_positions():
                 
         
         
-            
+            # Tengo que revisar el calculo de las SL variable, para que este acorde al nuevo caluclo del SL y TP, tambien hay que corregir los mensajes.
 
 
 
