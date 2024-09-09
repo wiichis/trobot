@@ -34,7 +34,7 @@ def calculate_atr(df, window=13):
     atr = tr.rolling(window=window).mean()
     return atr
 
-def detect_macd_cross(df):
+def detect_macd_cross(df):  #revisar si esta funcion aun se usa
     bullish_cross = (df['MACD'] > df['MACD_Signal']) & (df['MACD'].shift(1) <= df['MACD_Signal'].shift(1))
     bearish_cross = (df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))
     bullish_cross = bullish_cross & (df['MACD'] > 0)
@@ -48,28 +48,21 @@ def calculate_indicators(crypto_data):
     crypto_data.sort_values(by=['symbol', 'date'], inplace=True)
     
     complete_data = crypto_data[crypto_data['volume'] > 0].copy()
-    complete_data['SMA_10'] = complete_data.groupby('symbol')['close'].transform(lambda x: x.rolling(window=10).mean())
-    complete_data['RSI_6'] = complete_data.groupby('symbol')['close'].transform(lambda x: calculate_rsi(x, window=6))
-    complete_data['EMA_5'] = complete_data.groupby('symbol')['close'].transform(lambda x: x.ewm(span=5, adjust=False).mean())
-    complete_data['EMA_12'] = complete_data.groupby('symbol')['close'].transform(lambda x: x.ewm(span=12, adjust=False).mean())
-    complete_data['MACD'] = complete_data['EMA_5'] - complete_data['EMA_12']
-    complete_data['MACD_Signal'] = complete_data.groupby('symbol')['MACD'].transform(lambda x: x.ewm(span=5, adjust=False).mean())
-    complete_data = complete_data.groupby('symbol', group_keys=False).apply(detect_macd_cross).reset_index(drop=True)
+    
+    # Calcular solo los indicadores necesarios
+    complete_data['RSI_11'] = complete_data.groupby('symbol')['close'].transform(lambda x: calculate_rsi(x, window=11))
     complete_data['ATR'] = complete_data.groupby('symbol').apply(lambda x: calculate_atr(x, window=5)).reset_index(drop=True)
     complete_data['Avg_Volume'] = complete_data.groupby('symbol')['volume'].transform(lambda x: x.rolling(window=20).mean())
     complete_data['Rel_Volume'] = complete_data['volume'] / complete_data['Avg_Volume']
     
+    # Configurar las señales de compra y venta basadas en RSI y Volumen Relativo
     complete_data['Long_Signal'] = (
-        (complete_data['close'] > complete_data['SMA_10']) & 
-        complete_data['Bullish_MACD_Cross'] & 
-        (complete_data['RSI_6'] < 70) &
-        (complete_data['Rel_Volume'] > 1.2)  # Ajustar este umbral
+        (complete_data['RSI_11'] < 20) & 
+        (complete_data['Rel_Volume'] > 1.2)
     )
     complete_data['Short_Signal'] = (
-        (complete_data['close'] < complete_data['SMA_10']) & 
-        complete_data['Bearish_MACD_Cross'] & 
-        (complete_data['RSI_6'] > 30) &
-        (complete_data['Rel_Volume'] > 1.2)  # Ajustar este umbral
+        (complete_data['RSI_11'] > 70) & 
+        (complete_data['Rel_Volume'] > 1.2)
     )
 
     complete_data['Take_Profit'] = 4.5 * complete_data['ATR']
