@@ -26,12 +26,18 @@ def calculate_rsi(data, window=11):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-def calculate_atr(df, window=13):
+def calculate_atr(df, window=14):
+    # Calcular los rangos requeridos para el True Range (TR)
     high_low = df['high'] - df['low']
     high_close = np.abs(df['high'] - df['close'].shift())
     low_close = np.abs(df['low'] - df['close'].shift())
+
+    # Calcular el True Range (TR)
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    atr = tr.rolling(window=window).mean()
+
+    # Calcular el ATR usando una media móvil exponencial (EMA)
+    atr = tr.ewm(span=window, adjust=False).mean()
+
     return atr
 
 def detect_macd_cross(df):  #revisar si esta funcion aun se usa
@@ -51,7 +57,7 @@ def calculate_indicators(crypto_data):
     
     # Calcular solo los indicadores necesarios
     complete_data['RSI_11'] = complete_data.groupby('symbol')['close'].transform(lambda x: calculate_rsi(x, window=11))
-    complete_data['ATR'] = complete_data.groupby('symbol').apply(lambda x: calculate_atr(x, window=5)).reset_index(drop=True)
+    complete_data['ATR'] = complete_data.groupby('symbol').apply(lambda x: calculate_atr(x, window=14)).reset_index(drop=True)
     complete_data['Avg_Volume'] = complete_data.groupby('symbol')['volume'].transform(lambda x: x.rolling(window=20).mean())
     complete_data['Rel_Volume'] = complete_data['volume'] / complete_data['Avg_Volume']
     
