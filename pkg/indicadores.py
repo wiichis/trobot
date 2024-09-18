@@ -72,8 +72,8 @@ def calculate_indicators(crypto_data):
     )
 
     # Definir porcentajes para TP y SL
-    tp_percentage = 0.03  # 5% de ganancia esperada
-    sl_percentage = 0.01  # 2% de pérdida máxima aceptada
+    tp_percentage = 0.024  # 5% de ganancia esperada
+    sl_percentage = 0.008  # 2% de pérdida máxima aceptada
 
     # Calcular TP y SL basados en porcentajes del precio de cierre
     complete_data['Take_Profit'] = complete_data['close'] * tp_percentage
