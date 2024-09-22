@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import talib  # Asegúrate de que 'talib' esté correctamente instalado
 
 def load_data(filepath='./archivos/cripto_price.csv'):
     try:
@@ -16,74 +17,65 @@ def filter_duplicates(crypto_data):
     crypto_data = crypto_data[crypto_data['volume'] > 0]
     return crypto_data
 
-def calculate_rsi(data, window=11):
-    delta = data.diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    avg_gain = pd.Series(gain, index=data.index).rolling(window=window).mean()
-    avg_loss = pd.Series(loss, index=data.index).rolling(window=window).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+def calculate_indicators(data):
+    data.sort_values(by=['symbol', 'date'], inplace=True)
+    data = data.copy()
 
-def calculate_atr(df, window=14):
-    # Calcular los rangos requeridos para el True Range (TR)
-    high_low = df['high'] - df['low']
-    high_close = np.abs(df['high'] - df['close'].shift())
-    low_close = np.abs(df['low'] - df['close'].shift())
+    symbols = data['symbol'].unique()
 
-    # Calcular el True Range (TR)
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    for symbol in symbols:
+        df_symbol = data[data['symbol'] == symbol].copy()
 
-    # Calcular el ATR usando una media móvil exponencial (EMA)
-    atr = tr.ewm(span=window, adjust=False).mean()
+        # Calcular indicadores técnicos
+        df_symbol['RSI_11'] = talib.RSI(df_symbol['close'], timeperiod=11)
+        df_symbol['ATR'] = talib.ATR(df_symbol['high'], df_symbol['low'], df_symbol['close'], timeperiod=14)
+        df_symbol['OBV'] = talib.OBV(df_symbol['close'], df_symbol['volume'])
+        df_symbol['OBV_Slope'] = df_symbol['OBV'].diff()
 
-    return atr
+        # Medias Móviles Exponenciales
+        df_symbol['EMA_Short'] = talib.EMA(df_symbol['close'], timeperiod=12)
+        df_symbol['EMA_Long'] = talib.EMA(df_symbol['close'], timeperiod=26)
 
-def detect_macd_cross(df):  #revisar si esta funcion aun se usa
-    bullish_cross = (df['MACD'] > df['MACD_Signal']) & (df['MACD'].shift(1) <= df['MACD_Signal'].shift(1))
-    bearish_cross = (df['MACD'] < df['MACD_Signal']) & (df['MACD'].shift(1) >= df['MACD_Signal'].shift(1))
-    bullish_cross = bullish_cross & (df['MACD'] > 0)
-    bearish_cross = bearish_cross & (df['MACD'] < 0)
-    df['Bullish_MACD_Cross'] = bullish_cross
-    df['Bearish_MACD_Cross'] = bearish_cross
-    return df
+        # MACD
+        df_symbol['MACD'], df_symbol['MACD_Signal'], df_symbol['MACD_Hist'] = talib.MACD(df_symbol['close'], fastperiod=12, slowperiod=26, signalperiod=9)
+        df_symbol['MACD_Bullish'] = (df_symbol['MACD'] > df_symbol['MACD_Signal']) & (df_symbol['MACD'].shift(1) <= df_symbol['MACD_Signal'].shift(1))
+        df_symbol['MACD_Bearish'] = (df_symbol['MACD'] < df_symbol['MACD_Signal']) & (df_symbol['MACD'].shift(1) >= df_symbol['MACD_Signal'].shift(1))
 
-def calculate_indicators(crypto_data):
-    # Asegurarse de que los datos estén ordenados cronológicamente dentro de cada símbolo
-    crypto_data.sort_values(by=['symbol', 'date'], inplace=True)
-    
-    complete_data = crypto_data[crypto_data['volume'] > 0].copy()
-    
-    # Calcular los indicadores necesarios
-    complete_data['RSI_11'] = complete_data.groupby('symbol')['close'].transform(lambda x: calculate_rsi(x, window=11))
-    complete_data['ATR'] = complete_data.groupby('symbol').apply(lambda x: calculate_atr(x, window=14)).reset_index(level=0, drop=True)
-    complete_data['Avg_Volume'] = complete_data.groupby('symbol')['volume'].transform(lambda x: x.rolling(window=20).mean())
-    complete_data['Rel_Volume'] = complete_data['volume'] / complete_data['Avg_Volume']
-    
-    # Configurar las señales de compra y venta basadas en RSI y Volumen Relativo
-    complete_data['Long_Signal'] = (
-        (complete_data['RSI_11'] < 20) & 
-        (complete_data['Rel_Volume'] > 1.2)
+        # ADX
+        df_symbol['ADX'] = talib.ADX(df_symbol['high'], df_symbol['low'], df_symbol['close'], timeperiod=14)
+        df_symbol['Strong_Trend'] = df_symbol['ADX'] > 25
+
+        # Patrones de velas
+        df_symbol['Hammer'] = talib.CDLHAMMER(df_symbol['open'], df_symbol['high'], df_symbol['low'], df_symbol['close'])
+        df_symbol['ShootingStar'] = talib.CDLSHOOTINGSTAR(df_symbol['open'], df_symbol['high'], df_symbol['low'], df_symbol['close'])
+
+        # Actualizar el DataFrame principal
+        data.loc[df_symbol.index, df_symbol.columns] = df_symbol
+
+    # Definir señales de tendencia
+    data['Trend_Up'] = data['EMA_Short'] > data['EMA_Long']
+    data['Trend_Down'] = data['EMA_Short'] < data['EMA_Long']
+
+    # Señales combinadas
+    data['Long_Signal'] = (
+        ((data['Hammer'] != 0) & data['Trend_Up']) |  # Martillo en tendencia alcista
+        (data['MACD_Bullish'] & data['Strong_Trend'])  # Señal MACD con tendencia fuerte
     )
-    complete_data['Short_Signal'] = (
-        (complete_data['RSI_11'] > 70) & 
-        (complete_data['Rel_Volume'] > 1.2)
+
+    data['Short_Signal'] = (
+        ((data['ShootingStar'] != 0) & data['Trend_Down']) |  # Estrella Fugaz en tendencia bajista
+        (data['MACD_Bearish'] & data['Strong_Trend'])  # Señal MACD con tendencia fuerte
     )
 
     # Definir porcentajes para TP y SL
-    tp_percentage = 0.011  # 5% de ganancia esperada
-    sl_percentage = 0.004  # 2% de pérdida máxima aceptada
+    tp_percentage = 0.04  # 4% de ganancia esperada
+    sl_percentage = 0.02  # 2% de pérdida máxima aceptada
 
     # Calcular TP y SL basados en porcentajes del precio de cierre
-    complete_data['Take_Profit'] = complete_data['close'] * tp_percentage
-    complete_data['Stop_Loss'] = complete_data['close'] * sl_percentage
+    data['Take_Profit'] = data['close'] * (1 + tp_percentage)
+    data['Stop_Loss'] = data['close'] * (1 - sl_percentage)
 
-    # Ordenar por 'symbol' y 'date' antes de guardar
-    complete_data.sort_values(by=['symbol', 'date'], inplace=True)
-    complete_data.to_csv('./archivos/indicadores.csv', index=False)
-    
-    return complete_data
+    return data
 
 def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
     try:
