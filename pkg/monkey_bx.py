@@ -352,61 +352,83 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
 
 
 def unrealized_profit_positions():
-    # Obteniendo de indicadores los campos necesarios
+    # Cargar los indicadores desde 'indicadores.csv'
     df_indicadores = pd.read_csv('./archivos/indicadores.csv')
-
-    # Agrupar por 'symbol' y obtener la última fila de cada grupo
+    
+    # Verificar que las columnas necesarias existen
+    required_columns = ['symbol', 'close', 'Stop_Loss_Long', 'Stop_Loss_Short']
+    missing_columns = [col for col in required_columns if col not in df_indicadores.columns]
+    if missing_columns:
+        print(f"Las siguientes columnas faltan en df_indicadores: {missing_columns}")
+        return  # Salir de la función si faltan columnas
+    
+    # Obtener los valores más recientes por símbolo
     latest_values = df_indicadores.groupby('symbol').last().reset_index()
-
-    # Seleccionar las columnas requeridas
-    latest_values = latest_values[['symbol', 'close', 'Stop_Loss_Long', 'Stop_Loss_Short']]
-
-    # Obteniendo data filtrada de la función anterior
-    data_filtered = filtrando_posiciones_antiguas()
-
-    # Extraer las columnas 'symbol' en una lista
-    symbols = data_filtered['symbol'].tolist()
-
-    for symbol in symbols:
-        # Obteniendo de indicadores el último precio y los Stop Loss
+    
+    # Obtener las posiciones abiertas utilizando la función 'positions_open' del módulo 'bingx'
+    positions = pkg.bingx.positions_open()
+    
+    # Si no hay posiciones abiertas, no hay nada que hacer
+    if not positions:
+        print("No hay posiciones abiertas.")
+        return
+    
+    # Iterar sobre cada posición abierta
+    for position in positions:
+        symbol = position['symbol']
+        positionSide = position['positionSide']
+        print(f"Procesando posición para {symbol} ({positionSide})")
+        
+        # Obtener los datos del símbolo actual
         symbol_data = latest_values[latest_values['symbol'] == symbol]
+        
+        # Verificar si 'symbol_data' está vacío
+        if symbol_data.empty:
+            print(f"No se encontraron datos para el símbolo {symbol}")
+            continue  # Pasar al siguiente símbolo
+        
+        # Ahora podemos acceder de forma segura a los datos
         precio_actual = symbol_data['close'].iloc[0]
-
-        result = total_positions(symbol)
-
-        # Verificar si result recibió valores None
-        if result[0] is None:
-            print(f"No hay datos de posición para el símbolo: {symbol}")
-            continue  # Saltar a la siguiente iteración del bucle
-
-        # Desempaquetar el resultado
-        symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
-
-        # Obtener el último valor de 'stopPrice' para un símbolo específico
-        filtered_data = data_filtered[data_filtered['symbol'] == symbol]
-        last_stop_price = filtered_data['stopPrice'].iloc[-1]
-        orderId = filtered_data['orderId'].iloc[-1]
-
-        if positionSide == 'LONG':
-            stop_loss = symbol_data['Stop_Loss_Long'].iloc[0]
-            # Lógica para posición larga
-            potencial_nuevo_sl = stop_loss  # El Stop Loss es un nivel de precio absoluto
-            if potencial_nuevo_sl > last_stop_price:
-                pkg.bingx.cancel_order(symbol, orderId)
-                time.sleep(1)
-                pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
-        elif positionSide == 'SHORT':
-            stop_loss = symbol_data['Stop_Loss_Short'].iloc[0]
-            # Lógica para posición corta
-            potencial_nuevo_sl = stop_loss  # El Stop Loss es un nivel de precio absoluto
-            if potencial_nuevo_sl < last_stop_price:
-                pkg.bingx.cancel_order(symbol, orderId)
-                time.sleep(1)
-                pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
+        stop_loss_long = symbol_data['Stop_Loss_Long'].iloc[0]
+        stop_loss_short = symbol_data['Stop_Loss_Short'].iloc[0]
         
+        # Calcular el porcentaje de ganancia/pérdida no realizada
+        entryPrice = float(position['entryPrice'])
+        cantidad = float(position['positionAmt'])
+        unrealizedProfit = float(position['unrealizedProfit'])
         
-            # Tengo que revisar el calculo de las SL variable, para que este acorde al nuevo caluclo del SL y TP, tambien hay que corregir los mensajes.
-
-
-
-  
+        # Evitar división por cero
+        if entryPrice == 0:
+            print(f"El precio de entrada para {symbol} es cero. No se puede calcular el porcentaje de ganancia/pérdida.")
+            continue
+        
+        porcentaje_cambio = (precio_actual - entryPrice) / entryPrice * 100
+        if positionSide == 'SHORT':
+            porcentaje_cambio *= -1  # Invertir el signo para posiciones cortas
+        
+        print(f"Porcentaje de cambio para {symbol} ({positionSide}): {porcentaje_cambio:.2f}%")
+        
+        # Determinar si el porcentaje supera el umbral (por ejemplo, 50%)
+        umbral_porcentaje = 50
+        if porcentaje_cambio >= umbral_porcentaje:
+            print(f"Posición de {symbol} supera el umbral de {umbral_porcentaje}%.")
+            # Aquí puedes agregar la lógica para cerrar la posición o tomar alguna acción
+        else:
+            print(f"Posición de {symbol} no supera el umbral de {umbral_porcentaje}%.")
+        
+        # Actualizar Stop Loss si es necesario
+        try:
+            if positionSide == 'LONG':
+                nuevo_stop_loss = stop_loss_long
+            elif positionSide == 'SHORT':
+                nuevo_stop_loss = stop_loss_short
+            else:
+                print(f"positionSide desconocido para {symbol}: {positionSide}")
+                continue
+            
+            # Aquí puedes llamar a una función para actualizar el Stop Loss en tu plataforma
+            # pkg.bingx.update_stop_loss(symbol, nuevo_stop_loss, positionSide)
+            print(f"Stop Loss actualizado para {symbol} ({positionSide}): {nuevo_stop_loss}")
+        except Exception as e:
+            print(f"Error al actualizar el Stop Loss para {symbol}: {e}")
+            continue
