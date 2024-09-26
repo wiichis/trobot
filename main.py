@@ -12,8 +12,8 @@ def run_bingx():
     pkg.api.price_bingx()
     pkg.monkey_bx.obteniendo_ordenes_pendientes()
     pkg.monkey_bx.colocando_ordenes()
-
-
+    
+    
 def run_fast():
     pkg.monkey_bx.colocando_TK_SL()
 
@@ -22,7 +22,7 @@ def posiciones_antiguas():
 
 
 if __name__ == '__main__':
-    schedule.every(3).minutes.do(run_bingx)
+    schedule.every(2).minutes.do(run_bingx)
     schedule.every(0.4).minutes.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
     schedule.every(2).minutes.do(posiciones_antiguas)    

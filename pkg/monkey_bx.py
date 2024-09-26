@@ -241,56 +241,72 @@ def colocando_ordenes():
 
 
 def colocando_TK_SL():
-    #obteniendo posiciones sin SL o TP
+    # Obteniendo posiciones sin SL o TP
     df_posiciones = pd.read_csv('./archivos/position_id_register.csv')
     df_posiciones['counter'] += 1
 
-
-    #Oteniendo ordenes pendientes
+    # Obteniendo órdenes pendientes
     df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+
+    # Leer los últimos valores de indicadores
+    df_indicadores = pd.read_csv('./archivos/indicadores.csv')
+    latest_values = df_indicadores.groupby('symbol').last().reset_index()
 
     for index, row in df_posiciones.iterrows():
         symbol = row['symbol']
         counter = row['counter']
 
-        #aqui necesitamos el codigo de order_id
+        # Verificar si se debe cancelar la orden después de cierto tiempo
         if counter >= 30:
             # Filtrar el valor orderId del symbol 
             try:
                 orderId = df_ordenes[df_ordenes['symbol'] == symbol]['orderId'].iloc[0]
                 pkg.bingx.cancel_order(symbol, orderId)
                 df_posiciones.drop(index, inplace=True)
-            except:
+            except Exception as e:
+                print(f"Error al cancelar la orden para {symbol}: {e}")
                 pass
-        #Obteniendo el valor de las posiciones reales
+
+        # Obteniendo el valor de las posiciones reales
         try:
-            take_profit, stop_loss = get_last_take_profit_stop_loss(symbol)
-            symbol, positionSide, price, positionAmt,unrealizedProfit = total_positions(symbol)
+            # Obtener los detalles de la posición actual
+            result = total_positions(symbol)
+            if result[0] is None:
+                print(f"No hay datos de posición para el símbolo: {symbol}")
+                continue
+
+            symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
+
+            # Obtener los niveles de Take Profit y Stop Loss según el lado de la posición
+            symbol_data = latest_values[latest_values['symbol'] == symbol]
 
             if positionSide == 'LONG':
+                take_profit = symbol_data['Take_Profit_Long'].iloc[0]
+                stop_loss = symbol_data['Stop_Loss_Long'].iloc[0]
                 # Configurar la orden de stop loss
-                pkg.bingx.post_order(symbol, positionAmt, 0, price - stop_loss, "LONG", "STOP_MARKET", "SELL")
+                pkg.bingx.post_order(symbol, positionAmt, 0, stop_loss, "LONG", "STOP_MARKET", "SELL")
                 time.sleep(1)
                 # Configurar la orden de take profit
-                pkg.bingx.post_order(symbol, positionAmt, 0, price + take_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
-
-                #Borrando linea
+                pkg.bingx.post_order(symbol, positionAmt, 0, take_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
+                # Borrando línea
                 df_posiciones.drop(index, inplace=True)
 
             elif positionSide == 'SHORT':
+                take_profit = symbol_data['Take_Profit_Short'].iloc[0]
+                stop_loss = symbol_data['Stop_Loss_Short'].iloc[0]
                 # Configurar la orden de stop loss
-                pkg.bingx.post_order(symbol, positionAmt, 0, price + stop_loss, "SHORT", "STOP_MARKET", "BUY")
+                pkg.bingx.post_order(symbol, positionAmt, 0, stop_loss, "SHORT", "STOP_MARKET", "BUY")
                 time.sleep(1)
                 # Configurar la orden de take profit
-                pkg.bingx.post_order(symbol, positionAmt, 0, price - take_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
-
-                #Borrando linea
+                pkg.bingx.post_order(symbol, positionAmt, 0, take_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
+                # Borrando línea
                 df_posiciones.drop(index, inplace=True)
 
-        except:
+        except Exception as e:
+            print(f"Error al configurar SL/TP para {symbol}: {e}")
             pass
 
-    #Guardando Posiciones
+    # Guardando Posiciones
     df_posiciones.to_csv('./archivos/position_id_register.csv', index=False)
 
 
@@ -335,42 +351,35 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
 
 
 
-#Consultando margen actual
 def unrealized_profit_positions():
-    #Obteniendo de indicadores los campos SL y last_price
+    # Obteniendo de indicadores los campos necesarios
     df_indicadores = pd.read_csv('./archivos/indicadores.csv')
 
     # Agrupar por 'symbol' y obtener la última fila de cada grupo
     latest_values = df_indicadores.groupby('symbol').last().reset_index()
 
-    # Seleccionar solo las columnas requeridas: 'symbol', 'close', 'Stop_Loss'
-    latest_values = latest_values[['symbol', 'close', 'Stop_Loss']]
+    # Seleccionar las columnas requeridas
+    latest_values = latest_values[['symbol', 'close', 'Stop_Loss_Long', 'Stop_Loss_Short']]
 
-    # Obteniendo data filtrada de la funcion anterior
+    # Obteniendo data filtrada de la función anterior
     data_filtered = filtrando_posiciones_antiguas()
 
-    # Extraer las columnas 'symbol' en listas
+    # Extraer las columnas 'symbol' en una lista
     symbols = data_filtered['symbol'].tolist()
-    
-    currencies = pkg.api.currencies_list()
-    max_contador = int(len(currencies))
-    total_money = float(total_monkey())
-    trade = (total_money / max_contador)
-    
+
     for symbol in symbols:
-        #obteniendo de indicadores el Ultimo Precio y % de Sl
+        # Obteniendo de indicadores el último precio y los Stop Loss
         symbol_data = latest_values[latest_values['symbol'] == symbol]
         precio_actual = symbol_data['close'].iloc[0]
-        stop_loss = symbol_data['Stop_Loss'].iloc[0]
 
         result = total_positions(symbol)
-        
-        # Verificar si result recibió valores None, lo cual indica que no hay datos
+
+        # Verificar si result recibió valores None
         if result[0] is None:
             print(f"No hay datos de posición para el símbolo: {symbol}")
             continue  # Saltar a la siguiente iteración del bucle
 
-        # Desempaquetar el resultado ya que ahora estamos seguros de que tenemos datos
+        # Desempaquetar el resultado
         symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
 
         # Obtener el último valor de 'stopPrice' para un símbolo específico
@@ -379,20 +388,21 @@ def unrealized_profit_positions():
         orderId = filtered_data['orderId'].iloc[-1]
 
         if positionSide == 'LONG':
+            stop_loss = symbol_data['Stop_Loss_Long'].iloc[0]
             # Lógica para posición larga
-            potencial_nuevo_sl = precio_actual - stop_loss
+            potencial_nuevo_sl = stop_loss  # El Stop Loss es un nivel de precio absoluto
             if potencial_nuevo_sl > last_stop_price:
                 pkg.bingx.cancel_order(symbol, orderId)
                 time.sleep(1)
                 pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
         elif positionSide == 'SHORT':
+            stop_loss = symbol_data['Stop_Loss_Short'].iloc[0]
             # Lógica para posición corta
-            potencial_nuevo_sl = precio_actual + stop_loss
+            potencial_nuevo_sl = stop_loss  # El Stop Loss es un nivel de precio absoluto
             if potencial_nuevo_sl < last_stop_price:
                 pkg.bingx.cancel_order(symbol, orderId)
                 time.sleep(1)
                 pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
-                
         
         
             # Tengo que revisar el calculo de las SL variable, para que este acorde al nuevo caluclo del SL y TP, tambien hay que corregir los mensajes.
