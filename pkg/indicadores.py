@@ -80,8 +80,8 @@ def calculate_indicators(data, output_filepath='./archivos/indicadores.csv'):
                 df_symbol['high'], df_symbol['low'], df_symbol['close'], timeperiod=14)
             
             # Definir multiplicadores para el ATR
-            tp_multiplier = 3
-            sl_multiplier = 1
+            tp_multiplier = 2.4
+            sl_multiplier = 0.8
             
             # Calcular TP y SL basados en ATR para posiciones LARGAS
             df_symbol['Take_Profit_Long'] = df_symbol['close'] + (df_symbol['ATR'] * tp_multiplier)
@@ -162,7 +162,13 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
         elif df_filtered['Short_Signal'].iloc[-1]:
             return price_last, '=== Alerta de SHORT ==='
         else:
-            return None, None
+            return None, NoneTo github.com:wiichis/trobot.git
+ ! [rejected]        main -> main (non-fast-forward)
+error: failed to push some refs to 'github.com:wiichis/trobot.git'
+hint: Updates were rejected because the tip of your current branch is behind
+hint: its remote counterpart. Integrate the remote changes (e.g.
+hint: 'git pull ...') before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
     except Exception as e:
         print(f"Error en ema_alert: {e}")
         return None, None
