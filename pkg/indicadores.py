@@ -162,13 +162,7 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
         elif df_filtered['Short_Signal'].iloc[-1]:
             return price_last, '=== Alerta de SHORT ==='
         else:
-            return None, NoneTo github.com:wiichis/trobot.git
- ! [rejected]        main -> main (non-fast-forward)
-error: failed to push some refs to 'github.com:wiichis/trobot.git'
-hint: Updates were rejected because the tip of your current branch is behind
-hint: its remote counterpart. Integrate the remote changes (e.g.
-hint: 'git pull ...') before pushing again.
-hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+            return None, None
     except Exception as e:
         print(f"Error en ema_alert: {e}")
         return None, None
