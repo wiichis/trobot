@@ -80,8 +80,8 @@ def calculate_indicators(data, output_filepath='./archivos/indicadores.csv'):
                 df_symbol['high'], df_symbol['low'], df_symbol['close'], timeperiod=14)
             
             # Definir multiplicadores para el ATR
-            tp_multiplier = 2.4
-            sl_multiplier = 0.8
+            tp_multiplier = 6
+            sl_multiplier = 2
             
             # Calcular TP y SL basados en ATR para posiciones LARGAS
             df_symbol['Take_Profit_Long'] = df_symbol['close'] + (df_symbol['ATR'] * tp_multiplier)

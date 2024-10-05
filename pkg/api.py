@@ -11,7 +11,9 @@ from concurrent.futures import ThreadPoolExecutor
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def currencies_list():
-    return ['ADA-USDT', 'AVAX-USDT', 'CFX-USDT', 'DOT-USDT', 'MATIC-USDT', 'SHIB-USDT', 'NEAR-USDT', 'LTC-USDT', 'APT-USDT', 'HBAR-USDT']
+    return ['ADA-USDT', 'AVAX-USDT', 'CFX-USDT', 'DOT-USDT', 'BTC-USDT', 'SHIB-USDT', 'NEAR-USDT', 'LTC-USDT', 'APT-USDT', 'HBAR-USDT']
+
+    # No usar: Matic
 
 def round_time(dt=None, round_to=1800):
     if dt is None: 
