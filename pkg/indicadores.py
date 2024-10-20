@@ -1,22 +1,6 @@
 import pandas as pd
 import numpy as np
-import talib  # Asegúrate de que 'talib' esté correctamente instalado
-
-def load_data(filepath='./archivos/cripto_price.csv'):
-    try:
-        crypto_data = pd.read_csv(filepath, parse_dates=['date'])
-        crypto_data.sort_values(by='date', inplace=True)
-        return crypto_data
-    except Exception as e:
-        print(f"Error leyendo el archivo: {e}")
-        return None
-
-def filter_duplicates(crypto_data):
-    # Eliminar duplicados exactos y aquellos con volumen igual a 0
-    crypto_data = crypto_data.drop_duplicates()
-    crypto_data = crypto_data[crypto_data['volume'] > 0]
-    crypto_data = crypto_data.reset_index(drop=True)
-    return crypto_data
+import talib  # Asegúrate de que 'ta-lib' esté correctamente instalado
 
 # =============================
 # SECCIÓN DE VARIABLES
@@ -45,26 +29,43 @@ RSI_OVERBOUGHT = 70  # Nivel de sobrecompra para RSI
 # FIN DE LA SECCIÓN DE VARIABLES
 # =============================
 
+def load_data(filepath='./archivos/cripto_price.csv'):
+    try:
+        crypto_data = pd.read_csv(filepath, parse_dates=['date'])
+        crypto_data.sort_values(by='date', inplace=True)
+        return crypto_data
+    except Exception as e:
+        print(f"Error leyendo el archivo: {e}")
+        return None
+
+def filter_duplicates(crypto_data):
+    # Eliminar duplicados exactos y aquellos con volumen igual a 0
+    crypto_data = crypto_data.drop_duplicates()
+    crypto_data = crypto_data[crypto_data['volume'] > 0]
+    crypto_data = crypto_data.reset_index(drop=True)
+    return crypto_data
+
 def calculate_indicators(
     data,
-    rsi_period=RSI_PERIOD,
-    atr_period=ATR_PERIOD,
-    ema_short_period=EMA_SHORT_PERIOD,
-    ema_long_period=EMA_LONG_PERIOD,
-    adx_period=ADX_PERIOD,
-    tp_multiplier=TP_MULTIPLIER,
-    sl_multiplier=SL_MULTIPLIER,
-    volume_threshold=VOLUME_THRESHOLD,
-    volatility_threshold=VOLATILITY_THRESHOLD,
-    rsi_oversold=RSI_OVERSOLD,
-    rsi_overbought=RSI_OVERBOUGHT,
+    rsi_period=14,
+    atr_period=14,
+    ema_short_period=12,
+    ema_long_period=26,
+    adx_period=14,
+    tp_multiplier=4,
+    sl_multiplier=1.2,
+    volume_threshold=0.78,
+    volatility_threshold=1.07,
+    rsi_oversold=34,
+    rsi_overbought=70,
     output_filepath='./archivos/indicadores.csv'
 ):
     # Ordenar el DataFrame por símbolo y fecha
-    data.sort_values(by=['symbol', 'date'], inplace=True)
-    data = data.copy()
+    data = data.sort_values(by=['symbol', 'date']).copy()
     
     symbols = data['symbol'].unique()
+    
+    processed_symbols = []  # Lista para almacenar los DataFrames procesados
     
     for symbol in symbols:
         df_symbol = data[data['symbol'] == symbol].copy()
@@ -78,7 +79,7 @@ def calculate_indicators(
         df_symbol['volume'] = df_symbol['volume'].fillna(0)
         
         # Verificar si hay suficientes datos
-        required_periods = max(rsi_period, atr_period, ema_long_period, adx_period, 26)  # 26 es el período más largo usado en MACD
+        required_periods = max(rsi_period, atr_period, ema_long_period, adx_period, 26)
         if len(df_symbol) < required_periods:
             continue  # Saltar al siguiente símbolo si no hay suficientes datos
         
@@ -100,11 +101,11 @@ def calculate_indicators(
             df_symbol['MACD_Bullish'] = (
                 (df_symbol['MACD'] > df_symbol['MACD_Signal']) &
                 (df_symbol['MACD'].shift(1) <= df_symbol['MACD_Signal'].shift(1))
-            ).astype('boolean')
+            )
             df_symbol['MACD_Bearish'] = (
                 (df_symbol['MACD'] < df_symbol['MACD_Signal']) &
                 (df_symbol['MACD'].shift(1) >= df_symbol['MACD_Signal'].shift(1))
-            ).astype('boolean')
+            )
             
             # Patrones de velas
             df_symbol['Hammer'] = talib.CDLHAMMER(
@@ -125,8 +126,6 @@ def calculate_indicators(
             df_symbol['ADX'] = talib.ADX(
                 df_symbol['high'], df_symbol['low'], df_symbol['close'], timeperiod=adx_period)
             
-            # Definir multiplicadores para el ATR
-            # Aquí se aplican los nuevos multiplicadores TP_MULTIPLIER y SL_MULTIPLIER
             # Calcular TP y SL basados en ATR para posiciones LARGAS
             df_symbol['Take_Profit_Long'] = df_symbol['close'] + (df_symbol['ATR'] * tp_multiplier)
             df_symbol['Stop_Loss_Long'] = df_symbol['close'] - (df_symbol['ATR'] * sl_multiplier)
@@ -140,39 +139,48 @@ def calculate_indicators(
             # Reemplazar valores NaN
             df_symbol = df_symbol.ffill().fillna(0)
             
-            # Actualizar el DataFrame principal
-            data.loc[df_symbol.index, df_symbol.columns] = df_symbol
+            # Añadir df_symbol procesado a la lista
+            processed_symbols.append(df_symbol)
                 
         except Exception as e:
+            print(f"Error al calcular indicadores para {symbol}: {e}")
             continue  # Si ocurre un error, saltar al siguiente símbolo
-        
+    
+    # Concatenar todos los df_symbol procesados
+    if processed_symbols:
+        data = pd.concat(processed_symbols, ignore_index=True)
+    else:
+        data = pd.DataFrame()  # Si no hay símbolos procesados, devolver un DataFrame vacío
+
     # Definir señales de tendencia
     data['Trend_Up'] = data['EMA_Short'] > data['EMA_Long']
     data['Trend_Down'] = data['EMA_Short'] < data['EMA_Long']
 
+    # Convertir columnas booleanas al tipo 'bool' de NumPy
+    data['Trend_Up'] = data['Trend_Up'].astype('bool')
+    data['Trend_Down'] = data['Trend_Down'].astype('bool')
+    
     # Asegurarse de que no haya valores NaN en los indicadores
     data['Hammer'] = data['Hammer'].fillna(0)
     data['ShootingStar'] = data['ShootingStar'].fillna(0)
-    data['MACD_Bullish'] = data['MACD_Bullish'].fillna(False).astype('boolean')
-    data['MACD_Bearish'] = data['MACD_Bearish'].fillna(False).astype('boolean')
+    data['MACD_Bullish'] = data['MACD_Bullish'].fillna(False).astype('bool')
+    data['MACD_Bearish'] = data['MACD_Bearish'].fillna(False).astype('bool')
     data['ADX'] = data['ADX'].fillna(0)
     
-    # Convertir columnas booleanas al tipo correcto
-    data['Trend_Up'] = data['Trend_Up'].astype('boolean')
-    data['Trend_Down'] = data['Trend_Down'].astype('boolean')
-    
     # Filtrar períodos de bajo volumen y alta volatilidad
-    # Se aplican los nuevos umbrales VOLUME_THRESHOLD y VOLATILITY_THRESHOLD
     data['Low_Volume'] = data['Rel_Volume'] < volume_threshold
     data['High_Volatility'] = data['Rel_Volatility'] > volatility_threshold
+    data['Low_Volume'] = data['Low_Volume'].astype('bool')
+    data['High_Volatility'] = data['High_Volatility'].astype('bool')
 
     # Definir tendencia a largo plazo
     data['EMA_Long_Term'] = talib.EMA(data['close'], timeperiod=50)
     data['Trend_Up_Long_Term'] = data['EMA_Short'] > data['EMA_Long_Term']
     data['Trend_Down_Long_Term'] = data['EMA_Short'] < data['EMA_Long_Term']
+    data['Trend_Up_Long_Term'] = data['Trend_Up_Long_Term'].astype('bool')
+    data['Trend_Down_Long_Term'] = data['Trend_Down_Long_Term'].astype('bool')
     
     # Señales combinadas con filtrado de ruido y análisis de RSI
-    # Aquí se utilizan los nuevos niveles de RSI_OVERSOLD y RSI_OVERBOUGHT
     data['Long_Signal'] = (
         (
             ((data['Hammer'] != 0) & data['Trend_Up'] & data['Trend_Up_Long_Term'] & (data['RSI'] < rsi_oversold)) |
@@ -180,7 +188,7 @@ def calculate_indicators(
         ) &
         (~data['Low_Volume']) &
         (~data['High_Volatility'])
-    ).astype('boolean')
+    ).astype('bool')
     
     data['Short_Signal'] = (
         (
@@ -189,46 +197,57 @@ def calculate_indicators(
         ) &
         (~data['Low_Volume']) &
         (~data['High_Volatility'])
-    ).astype('boolean')
+    ).astype('bool')
     
-    # Restablecer índices si es necesario y retornar el DataFrame actualizado
-    data.reset_index(drop=True, inplace=True)
+    # Restablecer índices y ordenar por símbolo y fecha
+    data = data.sort_values(by=['symbol', 'date']).reset_index(drop=True)
     
     # Guardar el DataFrame resultante en 'indicadores.csv'
     data.to_csv(output_filepath, index=False)
     
     return data
-    
 
-
-    def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
-        try:
-            crypto_data = load_data(data_path)
-            if crypto_data is None:
-                return None, None
-
-            crypto_data = filter_duplicates(crypto_data)
-            cruce_emas = calculate_indicators(crypto_data)
-            
-            # Crear una copia explícita del DataFrame filtrado
-            df_filtered = cruce_emas[cruce_emas['symbol'] == currencie].copy()
-
-            if df_filtered.empty:
-                print(f"No hay datos para {currencie}")
-                return None, None
-
-            # Asegurarse de que los datos estén ordenados cronológicamente
-            df_filtered.sort_values(by='date', inplace=True)
-            price_last = df_filtered['close'].iloc[-1]
-
-            if df_filtered['Long_Signal'].iloc[-1]:
-                return price_last, '=== Alerta de LONG ==='
-            elif df_filtered['Short_Signal'].iloc[-1]:
-                return price_last, '=== Alerta de SHORT ==='
-            else:
-                return None, None
-        except Exception as e:
-            print(f"Error en ema_alert: {e}")
+def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
+    try:
+        crypto_data = load_data(data_path)
+        if crypto_data is None:
             return None, None
-    
 
+        crypto_data = filter_duplicates(crypto_data)
+        
+        # Asegurarse de pasar los parámetros actualizados
+        cruce_emas = calculate_indicators(
+            crypto_data,
+            rsi_period=RSI_PERIOD,
+            atr_period=ATR_PERIOD,
+            ema_short_period=EMA_SHORT_PERIOD,
+            ema_long_period=EMA_LONG_PERIOD,
+            adx_period=ADX_PERIOD,
+            tp_multiplier=TP_MULTIPLIER,
+            sl_multiplier=SL_MULTIPLIER,
+            volume_threshold=VOLUME_THRESHOLD,
+            volatility_threshold=VOLATILITY_THRESHOLD,
+            rsi_oversold=RSI_OVERSOLD,
+            rsi_overbought=RSI_OVERBOUGHT
+        )
+        
+        # Crear una copia explícita del DataFrame filtrado
+        df_filtered = cruce_emas[cruce_emas['symbol'] == currencie].copy()
+
+        if df_filtered.empty:
+            print(f"No hay datos para {currencie}")
+            return None, None
+
+        # Asegurarse de que los datos estén ordenados cronológicamente
+        df_filtered.sort_values(by='date', inplace=True)
+        price_last = df_filtered['close'].iloc[-1]
+
+        if df_filtered['Long_Signal'].iloc[-1]:
+            return price_last, '=== Alerta de LONG ==='
+        elif df_filtered['Short_Signal'].iloc[-1]:
+            return price_last, '=== Alerta de SHORT ==='
+        else:
+            return None, None
+    except Exception as e:
+        print(f"Error en ema_alert: {e}")
+        return None, None
