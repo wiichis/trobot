@@ -107,7 +107,7 @@ def price_bingx(limit=1):
         # Guardar el DataFrame resultante en el archivo CSV
         df_month.to_csv('./archivos/cripto_price.csv', index=False)
 
-        logging.info("Datos actualizados y guardados correctamente.")
+        #logging.info("Datos actualizados y guardados correctamente.")
 
     except requests.exceptions.ConnectionError as e:
         logging.error(f"Error de conexión: {e}")
