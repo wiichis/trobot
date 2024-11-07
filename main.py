@@ -1,4 +1,5 @@
 from calendar import month
+import pkg.calcular_pesos
 import pkg.monkey_bx
 import schedule
 import pkg
@@ -12,6 +13,7 @@ def run_bingx():
     pkg.api.price_bingx()
     pkg.monkey_bx.obteniendo_ordenes_pendientes()
     pkg.monkey_bx.colocando_ordenes()
+    pkg.calcular_pesos.pesos_ok()
     
     
 def run_fast():
@@ -22,7 +24,7 @@ def posiciones_antiguas():
 
 
 if __name__ == '__main__':
-    schedule.every(1.5).minutes.do(run_bingx)
+    schedule.every(1).minutes.do(run_bingx)
     schedule.every(0.4).minutes.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
     schedule.every(1.5).minutes.do(posiciones_antiguas)    
