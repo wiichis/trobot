@@ -3,11 +3,13 @@ import pandas as pd
 from datetime import datetime, timedelta
 import os
 
+import pkg.monkey_bx
+
 # =============================
 # SECCIÓN DE VARIABLES
 # =============================
 
-INCREMENTO_PESO = 0.01  # Porcentaje de incremento/decremento para ajustar los pesos (1% por defecto)
+INCREMENTO_PESO = 0.05  # Porcentaje de incremento/decremento para ajustar los pesos (1% por defecto)
 TRANSACTIONS_FILE_PATH = './archivos/PnL.csv'  # Ruta al archivo de transacciones
 PESOS_ACTUALIZADOS_PATH = './archivos/pesos_actualizados.csv'  # Ruta para guardar los pesos actualizados
 
@@ -21,12 +23,6 @@ currencies = pkg.api.currencies_list()
 def load_transaction_data(filepath=TRANSACTIONS_FILE_PATH):
     """
     Carga los datos de transacciones desde un archivo CSV.
-
-    Parámetros:
-    - filepath: Ruta al archivo CSV.
-
-    Retorna:
-    - DataFrame con los datos de transacciones.
     """
     try:
         df_transactions = pd.read_csv(filepath, parse_dates=['time'])
@@ -38,12 +34,6 @@ def load_transaction_data(filepath=TRANSACTIONS_FILE_PATH):
 def filter_last_30_days(df_transactions):
     """
     Filtra los datos para obtener las transacciones de los últimos 30 días.
-
-    Parámetros:
-    - df_transactions: DataFrame con los datos de transacciones.
-
-    Retorna:
-    - DataFrame filtrado con los datos de los últimos 30 días.
     """
     fecha_final = df_transactions['time'].max()
     fecha_inicial = fecha_final - timedelta(days=30)
@@ -55,12 +45,6 @@ def filter_last_30_days(df_transactions):
 def calculate_net_profit(df_transactions):
     """
     Calcula el rendimiento neto por cada criptomoneda.
-
-    Parámetros:
-    - df_transactions: DataFrame con los datos de transacciones.
-
-    Retorna:
-    - DataFrame con columnas ['symbol', 'net_profit']
     """
     # Filtrar solo las transacciones de ganancias y pérdidas realizadas
     df_pnl = df_transactions[df_transactions['incomeType'] == 'REALIZED_PNL'].copy()
@@ -76,33 +60,61 @@ def calculate_net_profit(df_transactions):
 
 def calculate_weights(df_net_profit, incremento=INCREMENTO_PESO):
     """
-    Calcula los pesos basados en el rendimiento neto.
-
-    Parámetros:
-    - df_net_profit: DataFrame con columnas ['symbol', 'net_profit']
-    - incremento: Porcentaje de incremento/decremento para ajustar los pesos.
-
-    Retorna:
-    - DataFrame con columnas ['symbol', 'peso_actualizado']
+    Calcula los pesos basados en el rendimiento neto y los pesos anteriores.
+    Retorna un DataFrame con columnas ['symbol', 'peso_actualizado', 'cambio']
     """
-    # Asignar peso inicial (1/n para cada criptomoneda)
-    num_symbols = df_net_profit['symbol'].nunique()
-    peso_inicial = 1.0 / num_symbols
-    df_net_profit['peso_actual'] = peso_inicial
+    # Intentar cargar los pesos anteriores
+    if os.path.exists(PESOS_ACTUALIZADOS_PATH):
+        df_pesos_previos = pd.read_csv(PESOS_ACTUALIZADOS_PATH)
+    else:
+        df_pesos_previos = pd.DataFrame(columns=['symbol', 'peso_actualizado'])
+
+    # Crear DataFrame con la lista de criptomonedas actuales
+    df_symbols = pd.DataFrame({'symbol': currencies})
+
+    # Merge con pesos previos
+    df_pesos = df_symbols.merge(df_pesos_previos, on='symbol', how='left')
+
+    # Asignar peso_actual: si hay peso previo, usarlo; si no, 10%
+    df_pesos['peso_actual'] = df_pesos['peso_actualizado'].fillna(0.10)
+    df_pesos.drop(columns=['peso_actualizado'], inplace=True)
+
+    # Combinar con net_profit
+    df = df_pesos.merge(df_net_profit, on='symbol', how='left')
+    df['net_profit'] = df['net_profit'].fillna(0)
 
     # Aplicar incremento o decremento basado en el rendimiento neto
-    df_net_profit['peso_actualizado'] = df_net_profit['peso_actual']
-    df_net_profit.loc[df_net_profit['net_profit'] > 0, 'peso_actualizado'] += df_net_profit['peso_actual'] * incremento
-    df_net_profit.loc[df_net_profit['net_profit'] < 0, 'peso_actualizado'] -= df_net_profit['peso_actual'] * incremento
+    df['peso_actualizado'] = df['peso_actual']
+    df.loc[df['net_profit'] > 0, 'peso_actualizado'] += df['peso_actual'] * incremento
+    df.loc[df['net_profit'] < 0, 'peso_actualizado'] -= df['peso_actual'] * incremento
 
     # Asegurarse de que los pesos no sean negativos
-    df_net_profit['peso_actualizado'] = df_net_profit['peso_actualizado'].clip(lower=0)
+    df['peso_actualizado'] = df['peso_actualizado'].clip(lower=0)
 
     # Normalizar los pesos para que sumen 1
-    suma_pesos = df_net_profit['peso_actualizado'].sum()
-    df_net_profit['peso_actualizado'] = df_net_profit['peso_actualizado'] / suma_pesos
+    suma_pesos = df['peso_actualizado'].sum()
+    df['peso_actualizado'] = df['peso_actualizado'] / suma_pesos
 
-    return df_net_profit[['symbol', 'peso_actualizado']]
+    # Determinar cambio respecto al peso anterior
+    df_prev_pesos = df_pesos_previos.set_index('symbol')['peso_actualizado'].to_dict()
+    cambios = []
+    for index, row in df.iterrows():
+        symbol = row['symbol']
+        peso_anterior = df_prev_pesos.get(symbol, 0.10)  # Si no existe, asumimos 10%
+        peso_actualizado = row['peso_actualizado']
+        if peso_actualizado > peso_anterior:
+            cambio = 'Subió'
+        elif peso_actualizado < peso_anterior:
+            cambio = 'Bajó'
+        else:
+            cambio = 'Sin cambio'
+        cambios.append(cambio)
+    df['cambio'] = cambios
+
+    # Ordenar por peso_actualizado descendente
+    df.sort_values(by='peso_actualizado', ascending=False, inplace=True)
+
+    return df[['symbol', 'peso_actualizado', 'cambio']]
 
 def pesos_ok():
     # Verificar si el archivo de transacciones existe
@@ -124,21 +136,39 @@ def pesos_ok():
     # Calcular el rendimiento neto por criptomoneda
     df_net_profit = calculate_net_profit(df_last_30_days)
 
-    # Crear DataFrame con la lista de criptomonedas
-    df_all_symbols = pd.DataFrame({'symbol': currencies})
-
-    # Combinar con los rendimientos netos
-    df_net_profit = df_all_symbols.merge(df_net_profit, on='symbol', how='left')
-    df_net_profit['net_profit'] = df_net_profit['net_profit'].fillna(0)
-
-    # Calcular los pesos basados en el rendimiento neto
+    # Calcular los pesos basados en el rendimiento neto y pesos previos
     df_pesos_actualizados = calculate_weights(df_net_profit)
 
-    # Mostrar los pesos actualizados
+
+    # Mostrar los pesos actualizados ordenados de mayor a menor
     print("Pesos actualizados basados en el rendimiento de los últimos 30 días:")
-    print(df_pesos_actualizados)
+    for index, row in df_pesos_actualizados.iterrows():
+        symbol = row['symbol']
+        peso = row['peso_actualizado']
+        cambio = row['cambio']
+        print(f"{symbol}: Peso = {peso*100:.2f}%, {cambio}")
+
+    # Preparar el mensaje para enviar con formato y emoticonos
+    mensaje = "*📊 Pesos actualizados basados en el rendimiento de los últimos 30 días:*\n"
+    for index, row in df_pesos_actualizados.iterrows():
+        symbol = row['symbol']
+        # Remover el sufijo '-USDT' del símbolo
+        symbol_clean = symbol.replace('-USDT', '')
+        peso = row['peso_actualizado']
+        cambio = row['cambio']
+        if cambio == 'Subió':
+            emoji = '📈'  # Flecha hacia arriba
+        elif cambio == 'Bajó':
+            emoji = '📉'  # Flecha hacia abajo
+        else:
+            emoji = '➡️'  # Sin cambio
+
+        # Aplicar formato en negrita y añadir emoticonos
+        mensaje += f"{emoji} *{symbol_clean}*: Peso = *{peso*100:.2f}%*, {cambio}\n"
+
+    # Enviar el mensaje usando bot_send_text
+    pkg.monkey_bx.bot_send_text(mensaje)
 
     # Guardar los pesos actualizados para referencia futura
-    df_pesos_actualizados.to_csv(PESOS_ACTUALIZADOS_PATH, index=False)
+    df_pesos_actualizados[['symbol', 'peso_actualizado']].to_csv(PESOS_ACTUALIZADOS_PATH, index=False)
     print(f"\nPesos actualizados guardados en {PESOS_ACTUALIZADOS_PATH}")
-
