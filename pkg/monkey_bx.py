@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import requests
 import json
 import time
+import os
 
 #Obtener los valores de SL TP
 
@@ -191,50 +192,85 @@ def obteniendo_ordenes_pendientes():
 
 def colocando_ordenes():
     currencies = pkg.api.currencies_list()
-    df = pd.read_csv('./archivos/order_id_register.csv')
+    df_orders = pd.read_csv('./archivos/order_id_register.csv')
     df_positions = pd.read_csv('./archivos/position_id_register.csv')
 
+    # Cargar los pesos actualizados
+    PESOS_ACTUALIZADOS_PATH = './archivos/pesos_actualizados.csv'
+    if os.path.exists(PESOS_ACTUALIZADOS_PATH):
+        df_pesos = pd.read_csv(PESOS_ACTUALIZADOS_PATH)
+    else:
+        # Si no hay pesos actualizados, asignar pesos iguales
+        df_pesos = pd.DataFrame({'symbol': currencies, 'peso_actualizado': [1.0 / len(currencies)] * len(currencies)})
+
+    # Obtener el total de fondos disponibles
+    total_money = float(pkg.monkey_bx.total_monkey())
+
     for currency in currencies:
-        # Verificar si la moneda ya está en el DataFrame
-        if currency in df['symbol'].values:
+        # Verificar si la moneda ya está en el DataFrame de órdenes
+        if currency in df_orders['symbol'].values:
             continue
 
-        contador =  float(len(df))
-        max_contador = float(len(currencies))
-        
         try:
+            # Obtener el peso actualizado de la moneda
+            peso = df_pesos.loc[df_pesos['symbol'] == currency, 'peso_actualizado'].values
+            if len(peso) == 0:
+                # Si no se encuentra el peso, asignar un peso por defecto
+                peso = 1.0 / len(currencies)
+            else:
+                peso = peso[0]
+
+            # Obtener precio y tipo de alerta
             price_last, tipo = pkg.indicadores.ema_alert(currency)
-            total_money = float(total_monkey())
-            trade = total_money / max_contador
+
+            # Verificar si se obtuvo una alerta válida
+            if tipo not in ['=== Alerta de LONG ===', '=== Alerta de SHORT ===']:
+                # No hay alerta para esta moneda, continuar con la siguiente
+                continue
+
+            # Validar price_last
+            if price_last is None:
+                # No se pudo obtener el precio, continuar con la siguiente moneda
+                continue
+            if not isinstance(price_last, (int, float)):
+                # price_last no es un número válido, continuar con la siguiente moneda
+                continue
+
+            trade = total_money * peso  # Monto a invertir basado en el peso
             currency_amount = trade / float(price_last)
 
+            # Definir factores de stop loss y profit
             if tipo == '=== Alerta de LONG ===':
-                # Colocando orden de compra
-                pkg.bingx.post_order(currency, currency_amount, price_last, 0, "LONG", "LIMIT", "BUY")
-                
-                # Guardando las posiciones
-                nueva_fila = pd.DataFrame({'symbol': [currency], 'tipo': ['LONG'], 'counter': [0]})
-                df_positions = pd.concat([df_positions, nueva_fila], ignore_index=True)
-
-                # Enviando Mensajes
-                alert = f'🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currency}* \n *Precio Actual:* {round(price_last, 3)} \n *Stop Loss* en: {round(price_last * 0.998, 3)} \n *Profit* en: {round(price_last * 1.006, 3)}\n *Trade:* {round(trade, 2)}\n *Contador:* {contador}'
-                bot_send_text(alert)
-
+                stop_loss_factor = 0.998
+                profit_factor = 1.006
+                order_side = "BUY"
+                position_side = "LONG"
             elif tipo == '=== Alerta de SHORT ===':
-                # Colocando orden de venta
-                pkg.bingx.post_order(currency, currency_amount, price_last, 0, "SHORT", "LIMIT", "SELL")
+                stop_loss_factor = 1.002
+                profit_factor = 0.994
+                order_side = "SELL"
+                position_side = "SHORT"
 
-                # Guardando las posiciones
-                nueva_fila = pd.DataFrame({'symbol': [currency], 'tipo': ['SHORT'], 'counter': [0]})
-                df_positions = pd.concat([df_positions, nueva_fila], ignore_index=True)
+            # Colocando la orden
+            pkg.bingx.post_order(currency, currency_amount, price_last, 0, position_side, "LIMIT", order_side)
 
-                # Enviando Mensajes
-                alert = f'🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currency}* \n *Precio Actual:* {round(price_last, 3)} \n *Stop Loss* en: {round(price_last * 1.002, 3)} \n *Profit* en: {round(price_last * 0.994, 3)}\n *Trade:* {round(trade, 2)}\n *Contador:* {contador}'
-                bot_send_text(alert)
+            # Guardando las posiciones
+            nueva_fila = pd.DataFrame({'symbol': [currency], 'tipo': [position_side], 'counter': [0]})
+            df_positions = pd.concat([df_positions, nueva_fila], ignore_index=True)
+
+            # Enviando Mensajes
+            alert = (
+                f'🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currency}* \n '
+                f'*Precio Actual:* {round(price_last, 3)} \n '
+                f'*Stop Loss* en: {round(price_last * stop_loss_factor, 3)} \n '
+                f'*Profit* en: {round(price_last * profit_factor, 3)}\n '
+                f'*Trade:* {round(trade, 2)}\n *Peso:* {peso*100:.2f}%'
+            )
+            pkg.monkey_bx.bot_send_text(alert)
 
         except Exception as e:
+            # Puedes registrar el error si lo deseas, o simplemente continuar
             pass
-            #print(f"Error al procesar {currency}: {e}")
 
     # Guardando Posiciones fuera del bucle
     df_positions.to_csv('./archivos/position_id_register.csv', index=False)
@@ -374,7 +410,7 @@ def unrealized_profit_positions():
     
     # Verificar si 'data_filtered' no está vacío
     if data_filtered.empty:
-        print("No hay posiciones antiguas para procesar.")
+        #print("No hay posiciones antiguas para procesar.")
         return
     
     # Convertir símbolos a mayúsculas
