@@ -201,10 +201,38 @@ def colocando_ordenes():
         df_pesos = pd.read_csv(PESOS_ACTUALIZADOS_PATH)
     else:
         # Si no hay pesos actualizados, asignar pesos iguales
-        df_pesos = pd.DataFrame({'symbol': currencies, 'peso_actualizado': [1.0 / len(currencies)] * len(currencies)})
+        df_pesos = pd.DataFrame({
+            'symbol': currencies,
+            'peso_actualizado': [1.0 / len(currencies)] * len(currencies)
+        })
+
+    # Aplicar límite máximo al peso individual (40% en normalización al 100%)
+    LIMITE_PESO_INDIVIDUAL = 0.40
+
+    # Aplicar límite máximo al peso en el DataFrame de pesos
+    df_pesos['peso_ajustado'] = df_pesos['peso_actualizado'].clip(
+        upper=LIMITE_PESO_INDIVIDUAL
+    )
+
+    # Normalizar los pesos ajustados al 100%
+    suma_pesos_ajustados = df_pesos['peso_ajustado'].sum()
+    df_pesos['peso_normalizado'] = df_pesos['peso_ajustado'] / suma_pesos_ajustados
+
+    # Normalizar los pesos al 200%
+    df_pesos['peso_normalizado'] *= 2
+
+    # Aplicar límite máximo al peso individual al 200% (80%)
+    LIMITE_PESO_INDIVIDUAL_200 = LIMITE_PESO_INDIVIDUAL * 2
+    df_pesos['peso_normalizado'] = df_pesos['peso_normalizado'].clip(
+        upper=LIMITE_PESO_INDIVIDUAL_200
+    )
 
     # Obtener el total de fondos disponibles
     total_money = float(pkg.monkey_bx.total_monkey())
+    capital_disponible = total_money
+
+    # Lista para almacenar las monedas con señales activas
+    active_currencies = []
 
     for currency in currencies:
         # Verificar si la moneda ya está en el DataFrame de órdenes
@@ -212,11 +240,11 @@ def colocando_ordenes():
             continue
 
         try:
-            # Obtener el peso actualizado de la moneda
-            peso = df_pesos.loc[df_pesos['symbol'] == currency, 'peso_actualizado'].values
+            # Obtener el peso normalizado de la moneda
+            peso = df_pesos.loc[df_pesos['symbol'] == currency, 'peso_normalizado'].values
             if len(peso) == 0:
-                # Si no se encuentra el peso, asignar un peso por defecto
-                peso = 1.0 / len(currencies)
+                peso = (1.0 / len(currencies)) * 2  # Peso por defecto normalizado al 200%
+                peso = min(peso, LIMITE_PESO_INDIVIDUAL_200)
             else:
                 peso = peso[0]
 
@@ -225,56 +253,102 @@ def colocando_ordenes():
 
             # Verificar si se obtuvo una alerta válida
             if tipo not in ['=== Alerta de LONG ===', '=== Alerta de SHORT ===']:
-                # No hay alerta para esta moneda, continuar con la siguiente
-                continue
+                continue  # No hay alerta para esta moneda
 
             # Validar price_last
-            if price_last is None:
-                # No se pudo obtener el precio, continuar con la siguiente moneda
-                continue
-            if not isinstance(price_last, (int, float)):
-                # price_last no es un número válido, continuar con la siguiente moneda
+            if price_last is None or not isinstance(price_last, (int, float)):
                 continue
 
-            trade = total_money * peso  # Monto a invertir basado en el peso
-            currency_amount = trade / float(price_last)
-
-            # Definir factores de stop loss y profit
-            if tipo == '=== Alerta de LONG ===':
-                stop_loss_factor = 0.998
-                profit_factor = 1.006
-                order_side = "BUY"
-                position_side = "LONG"
-            elif tipo == '=== Alerta de SHORT ===':
-                stop_loss_factor = 1.002
-                profit_factor = 0.994
-                order_side = "SELL"
-                position_side = "SHORT"
-
-            # Colocando la orden
-            pkg.bingx.post_order(currency, currency_amount, price_last, 0, position_side, "LIMIT", order_side)
-
-            # Guardando las posiciones
-            nueva_fila = pd.DataFrame({'symbol': [currency], 'tipo': [position_side], 'counter': [0]})
-            df_positions = pd.concat([df_positions, nueva_fila], ignore_index=True)
-
-            # Enviando Mensajes
-            alert = (
-                f'🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currency}* \n '
-                f'*Precio Actual:* {round(price_last, 3)} \n '
-                f'*Stop Loss* en: {round(price_last * stop_loss_factor, 3)} \n '
-                f'*Profit* en: {round(price_last * profit_factor, 3)}\n '
-                f'*Trade:* {round(trade, 2)}\n *Peso:* {peso*100:.2f}%'
-            )
-            pkg.monkey_bx.bot_send_text(alert)
+            # Añadir a la lista de monedas activas
+            active_currencies.append({
+                'symbol': currency,
+                'tipo': tipo,
+                'price_last': price_last,
+                'peso': peso
+            })
 
         except Exception as e:
-            # Puedes registrar el error si lo deseas, o simplemente continuar
-            pass
+            pass  # Manejo de excepciones
+
+    # Si no hay monedas activas, terminar la función
+    if not active_currencies:
+        print("No hay señales activas en este momento.")
+        return
+
+    # Calcular la suma de los pesos de las monedas activas
+    suma_pesos_activos = sum(item['peso'] for item in active_currencies)
+
+    # Reajustar los pesos para que la suma de los pesos activos no exceda 200%
+    factor_ajuste = min(2.0, suma_pesos_activos) / suma_pesos_activos
+    for item in active_currencies:
+        item['peso_ajustado'] = item['peso'] * factor_ajuste
+
+    # Calcular el capital asignado a cada moneda y verificar que no exceda el capital disponible
+    total_capital_asignado = 0
+    for item in active_currencies:
+        peso = item['peso_ajustado']
+        trade = total_money * peso
+        # Verificar si el capital asignado excede el capital disponible
+        if total_capital_asignado + trade > capital_disponible:
+            # Ajustar el trade para no exceder el capital disponible
+            trade = capital_disponible - total_capital_asignado
+            # Si no queda capital disponible, no colocar la orden
+            if trade <= 0:
+                print(f"No hay capital disponible para {item['symbol']}.")
+                continue
+        total_capital_asignado += trade
+        item['trade'] = trade
+
+    # Colocar las órdenes
+    for item in active_currencies:
+        if 'trade' not in item:
+            continue  # Si no se asignó capital, pasar a la siguiente moneda
+
+        currency = item['symbol']
+        tipo = item['tipo']
+        price_last = item['price_last']
+        trade = item['trade']
+        peso = item['peso_ajustado']
+
+        currency_amount = trade / price_last
+
+        # Definir factores de stop loss y profit
+        if tipo == '=== Alerta de LONG ===':
+            stop_loss_factor = 0.998
+            profit_factor = 1.006
+            order_side = "BUY"
+            position_side = "LONG"
+        elif tipo == '=== Alerta de SHORT ===':
+            stop_loss_factor = 1.002
+            profit_factor = 0.994
+            order_side = "SELL"
+            position_side = "SHORT"
+
+        # Colocando la orden
+        pkg.bingx.post_order(
+            currency, currency_amount, price_last, 0, position_side, "LIMIT", order_side
+        )
+
+        # Guardando las posiciones
+        nueva_fila = pd.DataFrame({
+            'symbol': [currency],
+            'tipo': [position_side],
+            'counter': [0]
+        })
+        df_positions = pd.concat([df_positions, nueva_fila], ignore_index=True)
+
+        # Enviando Mensajes
+        alert = (
+            f'🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currency}* \n '
+            f'*Precio Actual:* {round(price_last, 3)} \n '
+            f'*Stop Loss* en: {round(price_last * stop_loss_factor, 3)} \n '
+            f'*Profit* en: {round(price_last * profit_factor, 3)}\n '
+            f'*Trade:* {round(trade, 2)}\n *Peso:* {peso*100:.2f}%'
+        )
+        pkg.monkey_bx.bot_send_text(alert)
 
     # Guardando Posiciones fuera del bucle
     df_positions.to_csv('./archivos/position_id_register.csv', index=False)
-
 
 def colocando_TK_SL():
     # Obteniendo posiciones sin SL o TP
