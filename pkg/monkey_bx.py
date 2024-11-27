@@ -42,12 +42,14 @@ def total_monkey():
     monkey = pkg.bingx.get_balance()
     monkey = json.loads(monkey)
 
-    balance = 0
+    balance = 0.0
 
     try:
-        balance = monkey['data']['balance']['balance']
-    except KeyError as e:
-        print(f"Clave no encontrada: {e}")
+        balance = float(monkey['data']['balance']['balance'])
+    except (KeyError, ValueError, TypeError) as e:
+        print(f"Error al obtener el balance: {e}")
+        balance = 0.0  # Valor predeterminado en caso de error
+
     datenow = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     data = {'date': [datenow], 'balance': [balance]}
@@ -55,15 +57,19 @@ def total_monkey():
 
     # Ruta del archivo
     file_path = './archivos/ganancias.csv'
-    
-    # Añade los nuevos datos al final y se queda con las últimas 10000 filas
-    df_old = pd.read_csv(file_path)
-    df_total = pd.concat([df_old, df_new])
-    df_total = df_total.tail(10000)  # Mantiene solo las últimas 10000 filas
 
-    # Guarda el DataFrame en un archivo csv
+    # Añade los nuevos datos al final y se queda con las últimas 10000 filas
+    try:
+        df_old = pd.read_csv(file_path)
+        df_total = pd.concat([df_old, df_new])
+        df_total = df_total.tail(10000)  # Mantiene solo las últimas 10000 filas
+    except FileNotFoundError:
+        # Si el archivo no existe, se crea con el nuevo DataFrame
+        df_total = df_new
+
+    # Guarda el DataFrame en un archivo CSV
     df_total.to_csv(file_path, index=False)
-    
+
     return balance
 
 def resultado_PnL():
@@ -272,7 +278,7 @@ def colocando_ordenes():
 
     # Si no hay monedas activas, terminar la función
     if not active_currencies:
-        print("No hay señales activas en este momento.")
+        #print("No hay señales activas en este momento.")
         return
 
     # Calcular la suma de los pesos de las monedas activas

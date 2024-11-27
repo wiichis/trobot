@@ -89,11 +89,11 @@ def calculate_weights(df_net_profit, incremento=INCREMENTO_PESO):
     df.loc[df['net_profit'] < 0, 'peso_actualizado'] -= df['peso_actual'] * incremento
 
     # Asegurarse de que los pesos no sean negativos
-    df['peso_actualizado'] = df['peso_actualizado'].clip(lower=0)
+    df['peso_actualizado'] = df['peso_actualizado'].clip(lower=0, upper=0.80)
 
     # Normalizar los pesos para que sumen 1
-    suma_pesos = df['peso_actualizado'].sum()
-    df['peso_actualizado'] = df['peso_actualizado'] / suma_pesos
+    #suma_pesos = df['peso_actualizado'].sum()
+    #df['peso_actualizado'] = df['peso_actualizado'] / suma_pesos
 
     # Determinar cambio respecto al peso anterior
     df_prev_pesos = df_pesos_previos.set_index('symbol')['peso_actualizado'].to_dict()

@@ -13,6 +13,7 @@ def run_bingx():
     pkg.api.price_bingx()
     pkg.monkey_bx.obteniendo_ordenes_pendientes()
     pkg.monkey_bx.colocando_ordenes()
+
     
 def pesos():
     pkg.calcular_pesos.pesos_ok()
@@ -30,7 +31,7 @@ if __name__ == '__main__':
     schedule.every(0.4).minutes.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
     schedule.every(1.5).minutes.do(posiciones_antiguas)
-    schedule.every().saturday.at("15:00").do(pesos)    
+    schedule.every().saturday.at("01:00").do(pesos)    
   
     hours = list(map(lambda x: str(x).zfill(2), range(0, 24)))
     for hour in hours:
