@@ -10,12 +10,12 @@ import talib  # Asegúrate de que 'ta-lib' esté correctamente instalado
 RSI_PERIOD = 12  # Período del RSI
 ATR_PERIOD = 12  # Período del ATR
 EMA_SHORT_PERIOD = 10  # Período de la EMA corta
-EMA_LONG_PERIOD = 26  # Período de la EMA larga
-ADX_PERIOD = 16  # Período del ADX
+EMA_LONG_PERIOD = 25  # Período de la EMA larga
+ADX_PERIOD = 8  # Período del ADX
 
 # Multiplicadores para TP y SL basados en ATR
-TP_MULTIPLIER = 5.2  # Multiplicador para el Take Profit
-SL_MULTIPLIER = 1.1  # Multiplicador para el Stop Loss
+TP_MULTIPLIER = 4  # Multiplicador para el Take Profit
+SL_MULTIPLIER = 2  # Multiplicador para el Stop Loss
 
 # Umbrales para filtrar ruido del mercado
 VOLUME_THRESHOLD = 0.68  # Umbral para volumen bajo (78% del volumen promedio)
