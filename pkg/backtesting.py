@@ -1,9 +1,9 @@
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import talib
 import logging
+import itertools
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 # Si las funciones están en otro archivo llamado 'indicadores.py', asegúrate de importarlas correctamente.
 # En caso contrario, puedes definirlas en este mismo archivo.
@@ -20,23 +20,23 @@ INITIAL_BALANCE = 300  # Balance inicial en dólares
 POSITION_SIZE_PERCENTAGE = 0.1  # Porcentaje del balance para cada posición
 
 # Parámetros de indicadores
-RSI_PERIOD = 12  # Período del RSI
-ATR_PERIOD = 12  # Período del ATR
-EMA_SHORT_PERIOD = 10  # Período de la EMA corta
-EMA_LONG_PERIOD = 25  # Período de la EMA larga
-ADX_PERIOD = 8  # Período del ADX
+RSI_PERIOD = 14  # Período del RSI
+ATR_PERIOD = 14  # Período del ATR
+EMA_SHORT_PERIOD = 8  # Período de la EMA corta
+EMA_LONG_PERIOD = 20  # Período de la EMA larga
+ADX_PERIOD = 7  # Período del ADX
 
 # Multiplicadores para TP y SL basados en ATR
-TP_MULTIPLIER = 4  # Multiplicador para el Take Profit
-SL_MULTIPLIER = 2 # Multiplicador para el Stop Loss
+TP_MULTIPLIER = 5  # Multiplicador para el Take Profit
+SL_MULTIPLIER = 2,5 # Multiplicador para el Stop Loss
 
 # Umbrales para filtrar ruido del mercado
 VOLUME_THRESHOLD = 0.68 # Umbral para volumen bajo (80% del volumen promedio)
 VOLATILITY_THRESHOLD = 1.07  # Umbral para volatilidad alta (120% de la volatilidad promedio)
 
 # Niveles de RSI para señales
-RSI_OVERSOLD = 34  # Nivel de sobreventa para RSI
-RSI_OVERBOUGHT = 69  # Nivel de sobrecompra para RSI
+RSI_OVERSOLD = 30  # Nivel de sobreventa para RSI
+RSI_OVERBOUGHT = 73  # Nivel de sobrecompra para RSI
 
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
@@ -274,6 +274,10 @@ def calculate_indicators(
             # Reemplazar valores NaN
             df_symbol = df_symbol.ffill().fillna(0)
 
+            # Convertir columnas booleanas a float para evitar conflictos de dtype
+            bool_cols = df_symbol.select_dtypes(include=['boolean']).columns
+            df_symbol[bool_cols] = df_symbol[bool_cols].astype(float)
+
             # Actualizar el DataFrame principal
             data.loc[df_symbol.index, df_symbol.columns] = df_symbol
 
@@ -326,78 +330,162 @@ def calculate_indicators(
     # Restablecer índices si es necesario y retornar el DataFrame actualizado
     data.reset_index(drop=True, inplace=True)
 
-    # Guardar el DataFrame resultante en 'indicadores.csv'
-    data.to_csv(output_filepath, index=False)
-
     return data
 
-# Ejecución del backtesting
-if __name__ == "__main__":
+def plot_simulation_results(csv_file='./archivos/backtesting_results.csv'):
+    # Leer el CSV con los resultados del backtesting
+    df = pd.read_csv(csv_file)
+    
+    # Agrupar por moneda y sumar el profit de cada una
+    resultados = df.groupby('symbol')['profit'].sum().reset_index()
+    resultados = resultados.sort_values('profit', ascending=False)
+    
+    # Crear gráfico de barras
+    plt.figure(figsize=(10,6))
+    plt.bar(resultados['symbol'], resultados['profit'], color='skyblue')
+    plt.xlabel('Moneda')
+    plt.ylabel('Resultado Global ($)')
+    plt.title('Resultado Global de la Simulación por Moneda')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+def run_backtest(params, data):
+    # Aquí ajustas tus variables globales según `params`
+    (rsi, atr, ema_short, ema_long, adx, tp_mult, sl_mult, rsi_os, rsi_ob) = params
+    global RSI_PERIOD, ATR_PERIOD, EMA_SHORT_PERIOD, EMA_LONG_PERIOD, ADX_PERIOD
+    global TP_MULTIPLIER, SL_MULTIPLIER, RSI_OVERSOLD, RSI_OVERBOUGHT
+
+    RSI_PERIOD       = rsi
+    ATR_PERIOD       = atr
+    EMA_SHORT_PERIOD = ema_short
+    EMA_LONG_PERIOD  = ema_long
+    ADX_PERIOD       = adx
+    TP_MULTIPLIER    = tp_mult
+    SL_MULTIPLIER    = sl_mult
+    RSI_OVERSOLD     = rsi_os
+    RSI_OVERBOUGHT   = rsi_ob
+
+    final_balance, _, _ = backtest_strategy(data)
+    profit = final_balance - INITIAL_BALANCE
+    return profit, params
+
+def main():
+    data = load_data('./archivos/cripto_price.csv')
+    if data is None:
+        print("No se pudo cargar data, revisa tu CSV.")
+        return
+
+    # Generamos combinaciones
+    combinations = list(itertools.product(
+        [10, 12, 14],   # RSI_PERIOD
+        [10, 12, 14],   # ATR_PERIOD
+        [8, 10, 12],    # EMA_SHORT_PERIOD
+        [20, 25, 30],   # EMA_LONG_PERIOD
+        [7, 8, 10],     # ADX_PERIOD
+        [3, 4, 5],      # TP_MULTIPLIER
+        [1.5, 2, 2.5],  # SL_MULTIPLIER
+        [30, 34, 38],   # RSI_OVERSOLD
+        [65, 69, 73]    # RSI_OVERBOUGHT
+    ))
+
+    best_profit = -float("inf")
+    best_params = None
+    
+    total_combinations = len(combinations)  # <-- Agrega esta línea
+    completed = 0  # <-- Y esta
+
+    with ProcessPoolExecutor() as executor:
+        futures = {executor.submit(run_backtest, params, data): params for params in combinations}
+        for future in as_completed(futures):
+            completed += 1  # <-- Incrementas aquí
+            progress = (completed / total_combinations) * 100  # Calculas porcentaje
+            print(f"Progreso: {progress:.2f}% completado")  # Imprimes
+
+            try:
+                profit, params = future.result()
+                if profit > best_profit:
+                    best_profit = profit
+                    best_params = params
+            except Exception as e:
+                print(f"Error en la combinación {futures[future]}: {e}")
+
+    print(f"Mejor ganancia: {best_profit}")
+    print(f"Mejor combinación: {best_params}")
+
+    # Llamada final a tu estrategia con parámetros por defecto
+    final_balance, trades, equity_curve = backtest_strategy(data)
+
+    # Guardas resultados
+    df_trades = pd.DataFrame(trades)
+    df_trades.to_csv('./archivos/backtesting_results.csv', index=False)
+    df_equity = pd.DataFrame(equity_curve)
+    df_equity.to_csv('./archivos/equity_curve.csv', index=False)
+
+    # Métricas adicionales
+    total_trades = len(df_trades)
+    winning_trades = df_trades[df_trades['profit'] > 0]
+    losing_trades = df_trades[df_trades['profit'] <= 0]
+    win_rate = len(winning_trades) / total_trades * 100 if total_trades > 0 else 0
+
+    df_equity['balance'] = df_equity['balance'].astype(float)
+    df_equity['cummax'] = df_equity['balance'].cummax()
+    df_equity['drawdown'] = df_equity['balance'] - df_equity['cummax']
+    max_drawdown = df_equity['drawdown'].min()
+    total_return = (final_balance - INITIAL_BALANCE) / INITIAL_BALANCE * 100
+
+    days = (pd.to_datetime(df_equity['date'].iloc[-1]) - pd.to_datetime(df_equity['date'].iloc[0])).days
+    annualized_return = (1 + total_return/100) ** (365/days) - 1 if days > 0 else 0
+
+    logging.info("\n--- Resultados del Backtesting ---")
+    logging.info(f"Balance inicial: ${INITIAL_BALANCE:.2f}")
+    logging.info(f"Balance final: ${final_balance:.2f}")
+    logging.info(f"Ganancia/Pérdida total: ${final_balance - INITIAL_BALANCE:.2f} ({total_return:.2f}%)")
+    logging.info(f"Retorno anualizado: {annualized_return * 100:.2f}%")
+    logging.info(f"Máximo drawdown: ${max_drawdown:.2f}")
+    logging.info(f"Número total de trades: {total_trades}")
+    logging.info(f"Trades ganadores: {len(winning_trades)}")
+    logging.info(f"Trades perdedores: {len(losing_trades)}")
+    logging.info(f"Porcentaje de aciertos: {win_rate:.2f}%")
+    logging.info("----------------------------------\n")
+
+    plot_simulation_results()
+
+
+def run_best_params():
+    # 1) La mejor combinación (ajusta si la tuya es distinta)
+    best_params = (14, 14, 12, 30, 8, 4, 2, 34, 65)
+    (rsi, atr, ema_short, ema_long, adx, tp_mult, sl_mult, rsi_os, rsi_ob) = best_params
+    
+    # 2) Ajustar variables globales
+    global RSI_PERIOD, ATR_PERIOD, EMA_SHORT_PERIOD, EMA_LONG_PERIOD, ADX_PERIOD
+    global TP_MULTIPLIER, SL_MULTIPLIER, RSI_OVERSOLD, RSI_OVERBOUGHT
+
+    RSI_PERIOD       = rsi
+    ATR_PERIOD       = atr
+    EMA_SHORT_PERIOD = ema_short
+    EMA_LONG_PERIOD  = ema_long
+    ADX_PERIOD       = adx
+    TP_MULTIPLIER    = tp_mult
+    SL_MULTIPLIER    = sl_mult
+    RSI_OVERSOLD     = rsi_os
+    RSI_OVERBOUGHT   = rsi_ob
+
+    # 3) Cargar datos
     data = load_data('./archivos/cripto_price.csv')
 
-    if data is not None:
-        final_balance, trades, equity_curve = backtest_strategy(data)
+    # 4) Correr el backtest con estos parámetros
+    final_balance, trades, equity_curve = backtest_strategy(data)
 
-        df_trades = pd.DataFrame(trades)
-        df_trades.to_csv('./archivos/backtesting_results.csv', index=False)
+    # 5) Guardar resultados para graficar
+    df_trades = pd.DataFrame(trades)
+    df_trades.to_csv('./archivos/backtesting_results.csv', index=False)
+    df_equity = pd.DataFrame(equity_curve)
+    df_equity.to_csv('./archivos/equity_curve.csv', index=False)
 
-        df_equity = pd.DataFrame(equity_curve)
-        df_equity.to_csv('./archivos/equity_curve.csv', index=False)
+    # 6) Mostrar el gráfico
+    plot_simulation_results('./archivos/backtesting_results.csv')
 
-        # Cálculo de métricas adicionales
-        total_trades = len(df_trades)
-        winning_trades = df_trades[df_trades['profit'] > 0]
-        losing_trades = df_trades[df_trades['profit'] <= 0]
-        win_rate = len(winning_trades) / total_trades * 100 if total_trades > 0 else 0
-
-        # Cálculo del drawdown máximo
-        df_equity['balance'] = df_equity['balance'].astype(float)
-        df_equity['cummax'] = df_equity['balance'].cummax()
-        df_equity['drawdown'] = df_equity['balance'] - df_equity['cummax']
-        max_drawdown = df_equity['drawdown'].min()
-
-        # Cálculo del rendimiento total y anualizado
-        total_return = (final_balance - INITIAL_BALANCE) / INITIAL_BALANCE * 100
-        days = (pd.to_datetime(df_equity['date'].iloc[-1]) - pd.to_datetime(df_equity['date'].iloc[0])).days
-        annualized_return = (1 + total_return/100) ** (365/days) - 1 if days > 0 else 0
-
-        # Mensajes de resultados detallados
-        logging.info("\n--- Resultados del Backtesting ---")
-        logging.info(f"Balance inicial: ${INITIAL_BALANCE:.2f}")
-        logging.info(f"Balance final: ${final_balance:.2f}")
-        logging.info(f"Ganancia/Pérdida total: ${final_balance - INITIAL_BALANCE:.2f} ({total_return:.2f}%)")
-        logging.info(f"Retorno anualizado: {annualized_return * 100:.2f}%")
-        logging.info(f"Máximo drawdown: ${max_drawdown:.2f}")
-        logging.info(f"Número total de trades: {total_trades}")
-        logging.info(f"Trades ganadores: {len(winning_trades)}")
-        logging.info(f"Trades perdedores: {len(losing_trades)}")
-        logging.info(f"Porcentaje de aciertos: {win_rate:.2f}%")
-        logging.info("----------------------------------\n")
-
-        # Generar y personalizar el gráfico de la curva de equity
-        df_equity['date'] = pd.to_datetime(df_equity['date'])
-        plt.figure(figsize=(14, 7))
-        plt.plot(df_equity['date'], df_equity['balance'], label='Balance')
-        plt.title('Curva de Equity')
-        plt.xlabel('Fecha')
-        plt.ylabel('Balance ($)')
-        plt.grid(True)
-
-        # Anotaciones de máximos y mínimos
-        max_balance = df_equity['balance'].max()
-        min_balance = df_equity['balance'].min()
-        max_balance_date = df_equity[df_equity['balance'] == max_balance]['date'].iloc[0]
-        min_balance_date = df_equity[df_equity['balance'] == min_balance]['date'].iloc[0]
-
-        plt.annotate(f'Balance Máximo: ${max_balance:.2f}', xy=(max_balance_date, max_balance),
-                     xytext=(max_balance_date, max_balance + INITIAL_BALANCE * 0.1),
-                     arrowprops=dict(facecolor='green', shrink=0.05), fontsize=10, ha='center')
-
-        plt.annotate(f'Balance Mínimo: ${min_balance:.2f}', xy=(min_balance_date, min_balance),
-                     xytext=(min_balance_date, min_balance - INITIAL_BALANCE * 0.1),
-                     arrowprops=dict(facecolor='red', shrink=0.05), fontsize=10, ha='center')
-
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig('./archivos/equity_curve.png')  # Guarda el gráfico como PNG
-        plt.show()
+if __name__ == "__main__":
+        #main()
+        run_best_params()
