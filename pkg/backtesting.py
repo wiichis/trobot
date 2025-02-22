@@ -36,7 +36,7 @@ VOLATILITY_THRESHOLD = 1.07  # Umbral para volatilidad alta (120% de la volatili
 
 # Niveles de RSI para señales
 RSI_OVERSOLD = 30  # Nivel de sobreventa para RSI
-RSI_OVERBOUGHT = 73  # Nivel de sobrecompra para RSI
+RSI_OVERBOUGHT = 65  # Nivel de sobrecompra para RSI
 
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
