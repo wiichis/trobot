@@ -454,7 +454,7 @@ def main():
 
 def run_best_params():
     # 1) La mejor combinación (ajusta si la tuya es distinta)
-    best_params = (14, 14, 12, 30, 8, 4, 2, 34, 65)
+    best_params = (14, 14, 10, 20, 7, 4.5, 2, 30, 69)
     (rsi, atr, ema_short, ema_long, adx, tp_mult, sl_mult, rsi_os, rsi_ob) = best_params
     
     # 2) Ajustar variables globales
