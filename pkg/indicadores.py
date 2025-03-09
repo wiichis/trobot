@@ -7,14 +7,14 @@ import talib  # Asegúrate de que 'ta-lib' esté correctamente instalado
 # =============================
 
 # Parámetros de indicadores
-RSI_PERIOD = 14  # Período del RSI
+RSI_PERIOD = 8  # Período del RSI
 ATR_PERIOD = 14  # Período del ATR
-EMA_SHORT_PERIOD = 10  # Período de la EMA corta
-EMA_LONG_PERIOD = 20  # Período de la EMA larga
-ADX_PERIOD = 7  # Período del ADX
+EMA_SHORT_PERIOD = 12  # Período de la EMA corta
+EMA_LONG_PERIOD = 30  # Período de la EMA larga
+ADX_PERIOD = 8  # Período del ADX
 
 # Multiplicadores para TP y SL basados en ATR
-TP_MULTIPLIER = 4.5  # Multiplicador para el Take Profit
+TP_MULTIPLIER = 7  # Multiplicador para el Take Profit
 SL_MULTIPLIER = 2  # Multiplicador para el Stop Loss
 
 # Umbrales para filtrar ruido del mercado
@@ -22,8 +22,8 @@ VOLUME_THRESHOLD = 0.68  # Umbral para volumen bajo (78% del volumen promedio)
 VOLATILITY_THRESHOLD = 1.07  # Umbral para volatilidad alta (107% de la volatilidad promedio)
 
 # Niveles de RSI para señales
-RSI_OVERSOLD = 30  # Nivel de sobreventa para RSI
-RSI_OVERBOUGHT = 69  # Nivel de sobrecompra para RSI
+RSI_OVERSOLD = 34  # Nivel de sobreventa para RSI
+RSI_OVERBOUGHT = 65  # Nivel de sobrecompra para RSI
 
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
