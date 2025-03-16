@@ -8,9 +8,9 @@ import talib  # Asegúrate de que 'ta-lib' esté correctamente instalado
 
 # Parámetros de indicadores
 RSI_PERIOD = 8  # Período del RSI
-ATR_PERIOD = 14  # Período del ATR
+ATR_PERIOD = 10  # Período del ATR
 EMA_SHORT_PERIOD = 12  # Período de la EMA corta
-EMA_LONG_PERIOD = 30  # Período de la EMA larga
+EMA_LONG_PERIOD = 25  # Período de la EMA larga
 ADX_PERIOD = 8  # Período del ADX
 
 # Multiplicadores para TP y SL basados en ATR
@@ -23,7 +23,7 @@ VOLATILITY_THRESHOLD = 1.07  # Umbral para volatilidad alta (107% de la volatili
 
 # Niveles de RSI para señales
 RSI_OVERSOLD = 34  # Nivel de sobreventa para RSI
-RSI_OVERBOUGHT = 65  # Nivel de sobrecompra para RSI
+RSI_OVERBOUGHT = 69  # Nivel de sobrecompra para RSI
 
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
@@ -245,7 +245,7 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
         if df_filtered['Long_Signal'].iloc[-1]:
             return price_last, '=== Alerta de LONG ==='
         elif df_filtered['Short_Signal'].iloc[-1]:
-            return price_last, '=== Alerta de SHORT ==='
+            return price_last, '=== Alerta de SHORT ==='ave
         else:
             return None, None
     except Exception as e:
