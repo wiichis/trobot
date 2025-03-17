@@ -245,7 +245,7 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
         if df_filtered['Long_Signal'].iloc[-1]:
             return price_last, '=== Alerta de LONG ==='
         elif df_filtered['Short_Signal'].iloc[-1]:
-            return price_last, '=== Alerta de SHORT ==='ave
+            return price_last, '=== Alerta de SHORT ==='
         else:
             return None, None
     except Exception as e:
