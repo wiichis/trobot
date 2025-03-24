@@ -342,8 +342,8 @@ def optimize_parameters(data, max_evals=50):
     ema_short_options = [8, 10, 12]
     ema_long_options = [18, 25, 30]
     adx_options = [7, 8, 10]
-    tp_mult_options = [1, 4, 7]
-    sl_mult_options = [0.6, 2, 3]
+    tp_mult_options = [1, 4, 10]
+    sl_mult_options = [0.5, 2, 5]
     rsi_os_options = [25, 34, 38]
     rsi_ob_options = [65, 69, 73]
     
