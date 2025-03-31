@@ -7,23 +7,26 @@ import talib  # Asegúrate de que 'ta-lib' esté correctamente instalado
 # =============================
 
 # Parámetros de indicadores
-RSI_PERIOD = 8  # Período del RSI
-ATR_PERIOD = 12  # Período del ATR
+RSI_PERIOD = 12  # Período del RSI
+ATR_PERIOD = 14  # Período del ATR
 EMA_SHORT_PERIOD = 10  # Período de la EMA corta
-EMA_LONG_PERIOD = 30  # Período de la EMA larga
-ADX_PERIOD = 7  # Período del ADX
+EMA_LONG_PERIOD = 18  # Período de la EMA larga
+ADX_PERIOD = 8  # Período del ADX
 
 # Multiplicadores para TP y SL basados en ATR
-TP_MULTIPLIER = 1  # Multiplicador para el Take Profit
-SL_MULTIPLIER = 2  # Multiplicador para el Stop Loss
+TP_MULTIPLIER = 15  # Multiplicador para el Take Profit
+SL_MULTIPLIER = 5  # Multiplicador para el Stop Loss
 
 # Umbrales para filtrar ruido del mercado
 VOLUME_THRESHOLD = 0.68  # Umbral para volumen bajo (78% del volumen promedio)
 VOLATILITY_THRESHOLD = 1.07  # Umbral para volatilidad alta (107% de la volatilidad promedio)
 
 # Niveles de RSI para señales
-RSI_OVERSOLD = 38  # Nivel de sobreventa para RSI
+RSI_OVERSOLD = 25  # Nivel de sobreventa para RSI
 RSI_OVERBOUGHT = 65  # Nivel de sobrecompra para RSI
+
+# Lista de monedas deshabilitadas para ignorar en el cálculo de indicadores
+DISABLED_COINS = ["HBAR-USDT", "DOT-USDT", "LTC-USDT", "AVAX-USDT", "ADA-USDT"]
 
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
@@ -64,6 +67,9 @@ def calculate_indicators(
     data = data.sort_values(by=['symbol', 'date']).copy()
     
     symbols = data['symbol'].unique()
+    
+    # Filtrar símbolos deshabilitados
+    symbols = [s for s in symbols if s not in DISABLED_COINS]
     
     processed_symbols = []  # Lista para almacenar los DataFrames procesados
     
@@ -209,6 +215,10 @@ def calculate_indicators(
 
 def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
     try:
+        if currencie in DISABLED_COINS:
+            print(f"La moneda {currencie} está deshabilitada para alertas.")
+            return None, None
+        
         crypto_data = load_data(data_path)
         if crypto_data is None:
             return None, None

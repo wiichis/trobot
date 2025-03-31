@@ -3,6 +3,11 @@ import matplotlib.pyplot as plt
 import talib
 import logging
 from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
+import random
+import numpy as np
+
+random.seed(42)
+np.random.seed(42)
 
 # Configuración del logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -27,7 +32,16 @@ VOLUME_THRESHOLD = 0.68
 VOLATILITY_THRESHOLD = 1.07  
 
 RSI_OVERSOLD = 30  
-RSI_OVERBOUGHT = 65  
+RSI_OVERBOUGHT = 65
+
+# Comisión en futuros de BingX (suponiendo que se opera como taker: 0.04% en entrada y salida)
+COMMISSION_RATE = 0.0004
+
+# Nuevo parámetro: solo operar monedas con rendimiento acumulado >= PERFORMANCE_THRESHOLD
+PERFORMANCE_THRESHOLD = 0  
+
+# Lista de monedas deshabilitadas para no operar en la simulación (monedas con bajo rendimiento)
+DISABLED_COINS = ["HBAR-USDT", "DOT-USDT", "LTC-USDT", "AVAX-USDT", "ADA-USDT"]
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
 # =============================
@@ -47,10 +61,13 @@ def filter_duplicates(crypto_data):
     crypto_data = crypto_data.reset_index(drop=True)
     return crypto_data
 
-def backtest_strategy(data):
+def backtest_strategy(data, use_dynamic_sl=True):
     balance = INITIAL_BALANCE
     equity_curve = []
     trade_log = []
+    
+    # Nuevo diccionario para acumular rendimiento por moneda
+    coin_performance = {}
 
     # Preprocesamiento y cálculo de indicadores
     data = filter_duplicates(data)
@@ -97,8 +114,8 @@ def backtest_strategy(data):
                     elif low_price <= position['take_profit']:
                         exit_price = position['take_profit']
 
-                # Ajustar trailing stop con la siguiente vela
-                if exit_price is None:
+                # Ajustar trailing stop con la siguiente vela solo si se usa SL dinámico
+                if exit_price is None and use_dynamic_sl:
                     if 'trailing_distance' not in position:
                         if position['type'] == 'LONG':
                             position['trailing_distance'] = position['entry_price'] - position['stop_loss']
@@ -118,20 +135,40 @@ def backtest_strategy(data):
                             position['stop_loss'] = new_sl
 
                 if exit_price is not None:
+                    # Calcular ganancia bruta y luego restar comisiones en entrada y salida
                     if position['type'] == 'LONG':
-                        profit = (exit_price - position['entry_price']) * position['size']
+                        raw_profit = (exit_price - position['entry_price']) * position['size']
                     else:
-                        profit = (position['entry_price'] - exit_price) * position['size']
+                        raw_profit = (position['entry_price'] - exit_price) * position['size']
+                    commission_cost = (position['entry_price'] + exit_price) * position['size'] * COMMISSION_RATE
+                    profit = raw_profit - commission_cost
+                    position['commission'] = commission_cost
+
                     balance += profit
                     position['is_open'] = False
                     position['exit_date'] = next_row['date']
                     position['exit_price'] = exit_price
                     position['profit'] = profit
                     trade_log.append(position)
+                    
+                    # Actualizar rendimiento acumulado para la moneda
+                    if sym in coin_performance:
+                        coin_performance[sym] += profit
+                    else:
+                        coin_performance[sym] = profit
+
                     del open_positions[sym]
 
         # Filtrar períodos con bajo volumen o alta volatilidad
         if current_row.get('Low_Volume', False) or current_row.get('High_Volatility', False):
+            continue
+
+        # Nuevo: solo abrir posición si la moneda cumple el rendimiento mínimo
+        if symbol in coin_performance and coin_performance[symbol] < PERFORMANCE_THRESHOLD:
+            continue
+
+        # Nuevo: omitir apertura de nuevas posiciones para monedas deshabilitadas
+        if symbol in DISABLED_COINS and symbol not in open_positions:
             continue
 
         # Abrir nuevas posiciones si no hay posición abierta para el símbolo
@@ -178,15 +215,25 @@ def backtest_strategy(data):
         if position['is_open']:
             current_price = last_row['close']
             if position['type'] == 'LONG':
-                profit = (current_price - position['entry_price']) * position['size']
+                raw_profit = (current_price - position['entry_price']) * position['size']
             else:
-                profit = (position['entry_price'] - current_price) * position['size']
+                raw_profit = (position['entry_price'] - current_price) * position['size']
+            commission_cost = (position['entry_price'] + current_price) * position['size'] * COMMISSION_RATE
+            profit = raw_profit - commission_cost
+            position['commission'] = commission_cost
+
             balance += profit
             position['is_open'] = False
             position['exit_date'] = date
             position['exit_price'] = current_price
             position['profit'] = profit
             trade_log.append(position)
+            
+            # Actualizar rendimiento acumulado para la moneda en la última vela
+            if sym in coin_performance:
+                coin_performance[sym] += profit
+            else:
+                coin_performance[sym] = profit
 
     return balance, trade_log, equity_curve
 
@@ -294,13 +341,22 @@ def calculate_indicators(
 
 def plot_simulation_results(csv_file='./archivos/backtesting_results.csv'):
     df = pd.read_csv(csv_file)
-    resultados = df.groupby('symbol')['profit'].sum().reset_index()
+    # Agrupar sumando profit y commission
+    resultados = df.groupby('symbol').agg({'profit': 'sum', 'commission': 'sum'}).reset_index()
     resultados = resultados.sort_values('profit', ascending=False)
-    plt.figure(figsize=(10,6))
-    plt.bar(resultados['symbol'], resultados['profit'], color='skyblue')
-    plt.xlabel('Moneda')
-    plt.ylabel('Resultado Global ($)')
-    plt.title('Resultado Global de la Simulación por Moneda')
+
+    x = range(len(resultados))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(10,6))
+    ax.bar([p - width/2 for p in x], resultados['profit'], width, label='Profit')
+    ax.bar([p + width/2 for p in x], resultados['commission'], width, label='Comisión')
+    ax.set_xticks(x)
+    ax.set_xticklabels(resultados['symbol'])
+    ax.set_xlabel('Moneda')
+    ax.set_ylabel('Monto ($)')
+    ax.set_title('Resultado Global y Comisiones por Moneda')
+    ax.legend()
     plt.xticks(rotation=45)
     plt.tight_layout()
     plt.show()
@@ -321,28 +377,33 @@ def optimize_parameters(data, max_evals=50):
         final_balance, _, _ = backtest_strategy(data)
         profit = final_balance - INITIAL_BALANCE
         return {'loss': -profit, 'status': STATUS_OK}
-
+    
     space = {
         'rsi': hp.choice('rsi', [8, 12, 14]),
         'atr': hp.choice('atr', [10, 12, 14]),
-        'ema_short': hp.choice('ema_short', [8, 10, 12]),
-        'ema_long': hp.choice('ema_long', [18, 25, 30]),
-        'adx': hp.choice('adx', [7, 8, 10]),
-        'tp_mult': hp.choice('tp_mult', [1, 4, 7]),
-        'sl_mult': hp.choice('sl_mult', [0.6, 2, 3]),
+        'ema_short': hp.choice('ema_short', [5, 10, 16]),
+        'ema_long': hp.choice('ema_long', [10, 25, 30]),
+        'adx': hp.choice('adx', [5, 8, 10]),
+        'tp_mult': hp.choice('tp_mult', [1, 4, 15]),
+        'sl_mult': hp.choice('sl_mult', [0.5, 2, 7]),
         'rsi_os': hp.choice('rsi_os', [25, 34, 38]),
-        'rsi_ob': hp.choice('rsi_ob', [65, 69, 73])
+        'rsi_ob': hp.choice('rsi_ob', [65, 69, 76])
     }
     
     trials = Trials()
-    best = fmin(fn=objective, space=space, algo=tpe.suggest, max_evals=max_evals, trials=trials)
+    best = fmin(fn=objective, 
+                space=space, 
+                algo=tpe.suggest, 
+                max_evals=max_evals, 
+                trials=trials, 
+                rstate=np.random.default_rng(42))
     
     rsi_options = [8, 12, 14]
     atr_options = [10, 12, 14]
     ema_short_options = [8, 10, 12]
     ema_long_options = [18, 25, 30]
     adx_options = [7, 8, 10]
-    tp_mult_options = [1, 4, 10]
+    tp_mult_options = [1, 4, 15]
     sl_mult_options = [0.5, 2, 5]
     rsi_os_options = [25, 34, 38]
     rsi_ob_options = [65, 69, 73]
@@ -382,18 +443,16 @@ def main():
     RSI_OVERSOLD     = best_params['rsi_os']
     RSI_OVERBOUGHT   = best_params['rsi_ob']
 
-    # Ejecutar backtest final con parámetros optimizados
-    final_balance, trades, equity_curve = backtest_strategy(data)
-    print("Balance final:", final_balance)
-
-    # Guardar resultados
-    df_trades = pd.DataFrame(trades)
-    df_trades.to_csv('./archivos/backtesting_results.csv', index=False)
-    df_equity = pd.DataFrame(equity_curve)
-    df_equity.to_csv('./archivos/equity_curve.csv', index=False)
-
-    # Mostrar gráfico de resultados
-    plot_simulation_results('./archivos/backtesting_results.csv')
+    # Ejecutar backtest con SL dinámico
+    final_balance_dynamic, trades_dynamic, equity_curve_dynamic = backtest_strategy(data, use_dynamic_sl=True)
+    print("Balance final con SL dinámico:", final_balance_dynamic)
+    df_trades_dynamic = pd.DataFrame(trades_dynamic)
+    df_trades_dynamic.to_csv('./archivos/backtesting_results_dynamic.csv', index=False)
+    df_equity_dynamic = pd.DataFrame(equity_curve_dynamic)
+    df_equity_dynamic.to_csv('./archivos/equity_curve_dynamic.csv', index=False)
+    
+    # Mostrar gráfico de resultados para la versión dinámica (opcional)
+    plot_simulation_results('./archivos/backtesting_results_dynamic.csv')
 
 if __name__ == "__main__":
     main()

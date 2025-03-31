@@ -95,7 +95,7 @@ def price_bingx(limit=1):
         updated_df['date'] = pd.to_datetime(updated_df['date'])
 
         # Definir el número de registros a mantener por símbolo
-        N = 1440  # Por ejemplo, para 30 días de datos con intervalos de 30 minutos
+        N = 2800  # Por ejemplo, para 30 días de datos con intervalos de 30 minutos
 
         # Mantener los últimos N registros por símbolo
         df_month = updated_df.groupby('symbol', group_keys=False).apply(lambda x: x.sort_values('date').tail(N))
