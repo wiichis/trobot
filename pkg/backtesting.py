@@ -41,7 +41,7 @@ COMMISSION_RATE = 0.0004
 PERFORMANCE_THRESHOLD = 0  
 
 # Lista de monedas deshabilitadas para no operar en la simulación (monedas con bajo rendimiento)
-DISABLED_COINS = ["HBAR-USDT", "DOT-USDT", "NEAR-USDT", "AVAX-USDT", "ADA-USDT"]
+DISABLED_COINS = ["HBAR-USDT", "DOT-USDT", "LTC-USDT", "ADA-USDT"]
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
 # =============================
@@ -430,7 +430,7 @@ def main():
         return
 
     # Optimizar parámetros usando hyperopt
-    best_params = optimize_parameters(data, max_evals=75)
+    best_params = optimize_parameters(data, max_evals=50)
     global RSI_PERIOD, ATR_PERIOD, EMA_SHORT_PERIOD, EMA_LONG_PERIOD, ADX_PERIOD
     global TP_MULTIPLIER, SL_MULTIPLIER, RSI_OVERSOLD, RSI_OVERBOUGHT
     RSI_PERIOD       = best_params['rsi']
