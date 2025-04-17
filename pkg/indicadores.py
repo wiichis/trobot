@@ -7,8 +7,8 @@ import talib  # Asegúrate de que 'ta-lib' esté correctamente instalado
 # =============================
 
 # Parámetros de indicadores
-RSI_PERIOD = 12  # Período del RSI
-ATR_PERIOD = 14  # Período del ATR
+RSI_PERIOD = 8  # Período del RSI
+ATR_PERIOD = 10  # Período del ATR
 EMA_SHORT_PERIOD = 8  # Período de la EMA corta
 EMA_LONG_PERIOD = 18  # Período de la EMA larga
 ADX_PERIOD = 8  # Período del ADX
@@ -26,7 +26,7 @@ RSI_OVERSOLD = 25  # Nivel de sobreventa para RSI
 RSI_OVERBOUGHT = 69  # Nivel de sobrecompra para RSI
 
 # Lista de monedas deshabilitadas para ignorar en el cálculo de indicadores
-DISABLED_COINS = ["HBAR-USDT", "DOT-USDT", "LTC-USDT", "AVAX-USDT", "ADA-USDT"]
+DISABLED_COINS = ["ADA-USDT", "HBAR-USDT", "DOT-USDT", "NEAR-USDT", "LTC-USDT", "SHIB-USDT"]
 
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
