@@ -14,9 +14,6 @@ from urllib3.util.retry import Retry
 
 import pkg.monkey_bx
 
-# Bandera para detectar la primera ejecución tras un reinicio
-_first_run = True
-
 # Sesión con reintentos para requests
 session = requests.Session()
 retry_strategy = Retry(
@@ -117,23 +114,24 @@ def price_bingx(limit=1, max_retries=3, retry_delay=30):
             except FileNotFoundError:
                 existing_df = pd.DataFrame(columns=['symbol', 'open', 'high', 'low', 'close', 'volume', 'date'])
 
-            # Calcular límites de fetch por símbolo
-            global _first_run
-            if limit > 1 and _first_run:
-                # Primera ejecución con parámetro limit amplio
-                symbol_limits = {symbol: limit for symbol in currencies}
-                _first_run = False
-            else:
-                now = datetime.utcnow()
-                threshold = now - timedelta(hours=2)
-                symbol_limits = {}
-                for symbol in currencies:
-                    if not existing_df.empty and symbol in existing_df['symbol'].values:
-                        last_date = pd.to_datetime(existing_df.loc[existing_df['symbol'] == symbol, 'date']).max()
-                    else:
-                        last_date = None
-                        #Configuracion para traer mas velas en caso de reinicio de sismtema
-                    symbol_limits[symbol] = 36 if (last_date is None or last_date < threshold) else 1
+            # Calcular dinámicamente cuántas velas pedir para cada símbolo
+            now = datetime.utcnow()
+            threshold = now - timedelta(hours=2)
+            symbol_limits = {}
+            for symbol in currencies:
+                if not existing_df.empty and symbol in existing_df['symbol'].values:
+                    last_date = pd.to_datetime(existing_df.loc[existing_df['symbol'] == symbol, 'date']).max()
+                else:
+                    last_date = None
+                # Límite mínimo: 4 velas si faltan o están desactualizadas, si no 1
+                limit_for_symbol = 4 if (last_date is None or last_date < threshold) else 1
+                if last_date is not None:
+                    # Ajustar según hueco real de 30m
+                    delta = now - last_date
+                    gap_intervals = int(delta.total_seconds() // (30 * 60))
+                    if gap_intervals > limit_for_symbol:
+                        limit_for_symbol = gap_intervals
+                symbol_limits[symbol] = limit_for_symbol
 
             with ThreadPoolExecutor(max_workers=5) as executor:
                 results = executor.map(lambda symbol: fetch_candle(symbol, '30m', symbol_limits.get(symbol, 1)), currencies)
