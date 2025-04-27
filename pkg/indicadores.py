@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import talib  # Asegúrate de que 'ta-lib' esté correctamente instalado
+import concurrent.futures
 
 # =============================
 # SECCIÓN DE VARIABLES
@@ -71,11 +72,9 @@ def calculate_indicators(
     # Filtrar símbolos deshabilitados
     symbols = [s for s in symbols if s not in DISABLED_COINS]
     
-    processed_symbols = []  # Lista para almacenar los DataFrames procesados
-    
-    for symbol in symbols:
+    # Procesar símbolos en paralelo
+    def _process_symbol(symbol):
         df_symbol = data[data['symbol'] == symbol].copy()
-        
         # Validación y limpieza de datos
         df_symbol = df_symbol[df_symbol['close'] > 0]
         df_symbol['close'] = df_symbol['close'].ffill()
@@ -83,25 +82,17 @@ def calculate_indicators(
         df_symbol['high'] = df_symbol['high'].ffill()
         df_symbol['low'] = df_symbol['low'].ffill()
         df_symbol['volume'] = df_symbol['volume'].fillna(0)
-        
-        # Verificar si hay suficientes datos
         required_periods = max(rsi_period, atr_period, ema_long_period, adx_period, 26)
         if len(df_symbol) < required_periods:
-            continue  # Saltar al siguiente símbolo si no hay suficientes datos
-        
+            return None
         try:
             # Calcular indicadores técnicos
             df_symbol['RSI'] = talib.RSI(df_symbol['close'], timeperiod=rsi_period)
-            df_symbol['ATR'] = talib.ATR(
-                df_symbol['high'], df_symbol['low'], df_symbol['close'], timeperiod=atr_period)
+            df_symbol['ATR'] = talib.ATR(df_symbol['high'], df_symbol['low'], df_symbol['close'], timeperiod=atr_period)
             df_symbol['OBV'] = talib.OBV(df_symbol['close'], df_symbol['volume'])
             df_symbol['OBV_Slope'] = df_symbol['OBV'].diff()
-            
-            # Medias Móviles Exponenciales
             df_symbol['EMA_Short'] = talib.EMA(df_symbol['close'], timeperiod=ema_short_period)
             df_symbol['EMA_Long'] = talib.EMA(df_symbol['close'], timeperiod=ema_long_period)
-            
-            # MACD
             df_symbol['MACD'], df_symbol['MACD_Signal'], df_symbol['MACD_Hist'] = talib.MACD(
                 df_symbol['close'], fastperiod=12, slowperiod=26, signalperiod=9)
             df_symbol['MACD_Bullish'] = (
@@ -112,51 +103,39 @@ def calculate_indicators(
                 (df_symbol['MACD'] < df_symbol['MACD_Signal']) &
                 (df_symbol['MACD'].shift(1) >= df_symbol['MACD_Signal'].shift(1))
             )
-            
-            # Patrones de velas
             df_symbol['Hammer'] = talib.CDLHAMMER(
                 df_symbol['open'], df_symbol['high'], df_symbol['low'], df_symbol['close'])
             df_symbol['ShootingStar'] = talib.CDLSHOOTINGSTAR(
                 df_symbol['open'], df_symbol['high'], df_symbol['low'], df_symbol['close'])
-            
-            # Calcular Volumen Promedio y Volumen Relativo
             df_symbol['Avg_Volume'] = df_symbol['volume'].rolling(window=20).mean()
             df_symbol['Rel_Volume'] = df_symbol['volume'] / df_symbol['Avg_Volume']
-            
-            # Calcular Volatilidad (usando el ATR)
             df_symbol['Volatility'] = df_symbol['ATR']
             df_symbol['Avg_Volatility'] = df_symbol['Volatility'].rolling(window=20).mean()
             df_symbol['Rel_Volatility'] = df_symbol['Volatility'] / df_symbol['Avg_Volatility']
-            
-            # Calcular ADX
             df_symbol['ADX'] = talib.ADX(
                 df_symbol['high'], df_symbol['low'], df_symbol['close'], timeperiod=adx_period)
-            
-            # Calcular TP y SL basados en ATR para posiciones LARGAS
             df_symbol['Take_Profit_Long'] = df_symbol['close'] + (df_symbol['ATR'] * tp_multiplier)
             df_symbol['Stop_Loss_Long'] = df_symbol['close'] - (df_symbol['ATR'] * sl_multiplier)
             df_symbol['Stop_Loss_Long'] = df_symbol['Stop_Loss_Long'].clip(lower=1e-8)
-            
-            # Calcular TP y SL basados en ATR para posiciones CORTAS
             df_symbol['Take_Profit_Short'] = df_symbol['close'] - (df_symbol['ATR'] * tp_multiplier)
             df_symbol['Stop_Loss_Short'] = df_symbol['close'] + (df_symbol['ATR'] * sl_multiplier)
             df_symbol['Take_Profit_Short'] = df_symbol['Take_Profit_Short'].clip(lower=1e-8)
-            
-            # Reemplazar valores NaN
             df_symbol = df_symbol.ffill().fillna(0)
-            
-            # Añadir df_symbol procesado a la lista
-            processed_symbols.append(df_symbol)
-                
+            return df_symbol
         except Exception as e:
             print(f"Error al calcular indicadores para {symbol}: {e}")
-            continue  # Si ocurre un error, saltar al siguiente símbolo
+            return None
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        results = executor.map(_process_symbol, symbols)
+    processed_symbols = [df for df in results if df is not None]
     
     # Concatenar todos los df_symbol procesados
     if processed_symbols:
         data = pd.concat(processed_symbols, ignore_index=True)
     else:
         data = pd.DataFrame()  # Si no hay símbolos procesados, devolver un DataFrame vacío
+
 
     # Definir señales de tendencia
     data['Trend_Up'] = data['EMA_Short'] > data['EMA_Long']
@@ -207,7 +186,22 @@ def calculate_indicators(
     
     # Restablecer índices y ordenar por símbolo y fecha
     data = data.sort_values(by=['symbol', 'date']).reset_index(drop=True)
-    
+
+    # Optimización de memoria: reducir tipos de datos y eliminar columnas intermedias
+    # Convertir floats de 64-bit a 32-bit
+    float_cols = data.select_dtypes(include=['float64']).columns
+    for col in float_cols:
+        data[col] = pd.to_numeric(data[col], downcast='float')
+    # Convertir ints de 64-bit a 32-bit
+    int_cols = data.select_dtypes(include=['int64']).columns
+    for col in int_cols:
+        data[col] = pd.to_numeric(data[col], downcast='integer')
+    # Eliminar columnas intermedias que no son necesarias tras generar señales
+    drop_cols = ['ATR', 'OBV', 'OBV_Slope', 'Avg_Volume', 'Rel_Volume', 'Volatility', 'Avg_Volatility', 'Rel_Volatility']
+    existing_drops = [c for c in drop_cols if c in data.columns]
+    if existing_drops:
+        data.drop(columns=existing_drops, inplace=True)
+
     # Guardar el DataFrame resultante en 'indicadores.csv'
     data.to_csv(output_filepath, index=False)
     
@@ -216,7 +210,6 @@ def calculate_indicators(
 def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
     try:
         if currencie in DISABLED_COINS:
-            print(f"La moneda {currencie} está deshabilitada para alertas.")
             return None, None
         
         crypto_data = load_data(data_path)
