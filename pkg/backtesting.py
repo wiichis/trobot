@@ -41,7 +41,7 @@ COMMISSION_RATE = 0.0004
 PERFORMANCE_THRESHOLD = 0  
 
 # Lista de monedas deshabilitadas para no operar en la simulación (monedas con bajo rendimiento)
-DISABLED_COINS = ["ADA-USDT", "HBAR-USDT", "DOT-USDT", "NEAR-USDT", "LTC-USDT", "SHIB-USDT"]
+DISABLED_COINS = ["ADA-USDT", "DOT-USDT", "AVAX-USDT", "APT-USDT","LTC-USDT", "BTC-USDT"]
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
 # =============================
@@ -85,6 +85,9 @@ def backtest_strategy(data, use_dynamic_sl=True):
         rsi_oversold=RSI_OVERSOLD,
         rsi_overbought=RSI_OVERBOUGHT
     )
+    # Asegurar orden cronológico de los datos tras indicadores
+    data.sort_values(by='date', inplace=True)
+    data.reset_index(drop=True, inplace=True)
 
     open_positions = {}
 
@@ -114,8 +117,8 @@ def backtest_strategy(data, use_dynamic_sl=True):
                     elif low_price <= position['take_profit']:
                         exit_price = position['take_profit']
 
-                # Ajustar trailing stop con la siguiente vela solo si se usa SL dinámico
-                if exit_price is None and use_dynamic_sl:
+                # Ajustar trailing stop solo con vela siguiente del mismo símbolo
+                if exit_price is None and use_dynamic_sl and next_row['symbol'] == sym:
                     if 'trailing_distance' not in position:
                         if position['type'] == 'LONG':
                             position['trailing_distance'] = position['entry_price'] - position['stop_loss']
@@ -207,29 +210,29 @@ def backtest_strategy(data, use_dynamic_sl=True):
 
         equity_curve.append({'date': date, 'balance': balance})
 
-    # Procesar la última vela
-    last_row = data.iloc[-1]
-    date = last_row['date']
-    for sym in list(open_positions.keys()):
-        position = open_positions[sym]
+    # Procesar cierre de posiciones abiertas al final de los datos por símbolo
+    for sym, position in list(open_positions.items()):
         if position['is_open']:
-            current_price = last_row['close']
+            # Obtener última fila de datos de ese símbolo
+            sym_data = data[data['symbol'] == sym]
+            last_sym_row = sym_data.iloc[-1]
+            exit_price = last_sym_row['close']
+            exit_date = last_sym_row['date']
+            # Calcular ganancia bruta y restar comisiones en entrada y salida
             if position['type'] == 'LONG':
-                raw_profit = (current_price - position['entry_price']) * position['size']
+                raw_profit = (exit_price - position['entry_price']) * position['size']
             else:
-                raw_profit = (position['entry_price'] - current_price) * position['size']
-            commission_cost = (position['entry_price'] + current_price) * position['size'] * COMMISSION_RATE
+                raw_profit = (position['entry_price'] - exit_price) * position['size']
+            commission_cost = (position['entry_price'] + exit_price) * position['size'] * COMMISSION_RATE
             profit = raw_profit - commission_cost
             position['commission'] = commission_cost
-
             balance += profit
             position['is_open'] = False
-            position['exit_date'] = date
-            position['exit_price'] = current_price
+            position['exit_date'] = exit_date
+            position['exit_price'] = exit_price
             position['profit'] = profit
             trade_log.append(position)
-            
-            # Actualizar rendimiento acumulado para la moneda en la última vela
+            # Actualizar rendimiento acumulado para la moneda
             if sym in coin_performance:
                 coin_performance[sym] += profit
             else:
@@ -420,7 +423,11 @@ def optimize_parameters(data, max_evals=50):
         'rsi_ob': rsi_ob_options[best['rsi_ob']]
     }
     
-    print('Best parameters found:', best_params)
+    # Impresión formateada de parámetros óptimos
+    print("\n=== Parámetros Óptimos Encontrados ===")
+    for param, value in best_params.items():
+        print(f"{param:12}: {value}")
+    print("====================================\n")
     return best_params
 
 def main():
@@ -430,7 +437,7 @@ def main():
         return
 
     # Optimizar parámetros usando hyperopt
-    best_params = optimize_parameters(data, max_evals=50)
+    best_params = optimize_parameters(data, max_evals=75)
     global RSI_PERIOD, ATR_PERIOD, EMA_SHORT_PERIOD, EMA_LONG_PERIOD, ADX_PERIOD
     global TP_MULTIPLIER, SL_MULTIPLIER, RSI_OVERSOLD, RSI_OVERBOUGHT
     RSI_PERIOD       = best_params['rsi']
@@ -443,11 +450,47 @@ def main():
     RSI_OVERSOLD     = best_params['rsi_os']
     RSI_OVERBOUGHT   = best_params['rsi_ob']
 
+    # Impresión de datos de simulación final
+    print("\n=== DATOS PARA SIMULACIÓN FINAL ===")
+    print(f"Filas cargadas      : {len(data):,}")
+    print(f"Símbolos únicos     : {data['symbol'].nunique()}")
+    print("============================\n")
     # Ejecutar backtest con SL dinámico
     final_balance_dynamic, trades_dynamic, equity_curve_dynamic = backtest_strategy(data, use_dynamic_sl=True)
-    print("Balance final con SL dinámico:", final_balance_dynamic)
+    # Impresión formateada de resultados finales
+    print("\n=== RESULTADOS FINALES ===")
+    print(f"Balance final con SL dinámico: USD {final_balance_dynamic:,.2f}\n")
     df_trades_dynamic = pd.DataFrame(trades_dynamic)
     df_trades_dynamic.to_csv('./archivos/backtesting_results_dynamic.csv', index=False)
+
+    # Debug: resumen de trades por moneda
+    summary = df_trades_dynamic.groupby('symbol')['profit'].agg(['count', 'sum', 'mean'])
+    summary = summary.sort_values(by='sum', ascending=False)
+    # Impresión formateada del resumen de trades
+    print("----- Resumen de trades por moneda (ordenado por profit desc) -----")
+    print(summary.to_string(
+        float_format=lambda x: f"{x:,.4f}",
+        header=True,
+        index_names=False,
+        justify='center'
+    ))
+    print("-------------------------------------------------------------\n")
+    # Debug: detalles de trades para NEAR-USDT
+    if 'NEAR-USDT' in summary.index:
+        near_stats = summary.loc['NEAR-USDT']
+        print(f"\nNEAR-USDT -> Trades: {int(near_stats['count'])}, Ganancia total: {near_stats['sum']:.2f}, Ganancia promedio: {near_stats['mean']:.4f}")
+        print("\nDetalles de NEAR-USDT trades:")
+        near_trades = df_trades_dynamic[df_trades_dynamic['symbol'] == 'NEAR-USDT']
+        print(near_trades[['entry_date', 'entry_price', 'exit_price', 'size', 'profit']])
+
+    # Mantener debug para HBAR-USDT
+    if 'HBAR-USDT' in summary.index:
+        hbar_stats = summary.loc['HBAR-USDT']
+        print(f"\nHBAR-USDT -> Trades: {int(hbar_stats['count'])}, Ganancia total: {hbar_stats['sum']:.2f}, Ganancia promedio: {hbar_stats['mean']:.4f}")
+        print("\nDetalles de HBAR-USDT trades:")
+        hbar_trades = df_trades_dynamic[df_trades_dynamic['symbol'] == 'HBAR-USDT']
+        print(hbar_trades[['entry_date', 'entry_price', 'exit_price', 'size', 'profit']])
+
     df_equity_dynamic = pd.DataFrame(equity_curve_dynamic)
     df_equity_dynamic.to_csv('./archivos/equity_curve_dynamic.csv', index=False)
     
