@@ -29,9 +29,6 @@ session.mount("http://", adapter)
 # Configuración de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def currencies_list():
-    return ['XRP-USDT', 'AVAX-USDT', 'CFX-USDT', 'DOT-USDT', 'BTC-USDT', 'SHIB-USDT', 'NEAR-USDT', 'LTC-USDT', 'APT-USDT', 'HBAR-USDT']
-    # No usar: MATIC, ADA
 
 def round_time(dt=None, round_to=300):
     """
@@ -96,6 +93,28 @@ def update_dataframe(existing_df, new_data):
 
     return combined_df
 
+def load_recent_csv(path, days=180, chunksize=100000):
+    """
+    Carga las filas de un CSV cuya columna 'date' sea >= ahora - days.
+    Devuelve un DataFrame vacío si no existe o está vacío.
+    """
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        chunks = pd.read_csv(
+            path,
+            parse_dates=['date'],
+            usecols=['symbol', 'open', 'high', 'low', 'close', 'volume', 'date'],
+            iterator=True,
+            chunksize=chunksize
+        )
+        df = pd.concat(
+            [chunk[chunk['date'] >= cutoff] for chunk in chunks],
+            ignore_index=True
+        )
+    except (FileNotFoundError, pd.errors.EmptyDataError):
+        df = pd.DataFrame(columns=['symbol', 'open', 'high', 'low', 'close', 'volume', 'date'])
+    return df
+
 def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
     """
     Función principal price_bingx_5m para obtener y actualizar datos de velas de 5m con control de reintentos.
@@ -106,26 +125,11 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
     while attempt < max_retries:
         logging.info(f"Working directory: {os.getcwd()}")
         try:
-            currencies = currencies_list()
+            currencies = pkg.api.currencies_list()
             logging.info(f"Currencies to fetch: {currencies}")
             candle_data = []
 
-            try:
-                # Leer solo los últimos 6 meses en chunks para ahorrar memoria
-                cutoff = datetime.utcnow() - timedelta(days=180)
-                chunks = pd.read_csv(
-                    './archivos/cripto_price_5m.csv',
-                    parse_dates=['date'],
-                    usecols=['symbol','open','high','low','close','volume','date'],
-                    iterator=True,
-                    chunksize=100000
-                )
-                existing_df = pd.concat(
-                    [chunk[chunk['date'] >= cutoff] for chunk in chunks],
-                    ignore_index=True
-                )
-            except (FileNotFoundError, pd.errors.EmptyDataError):
-                existing_df = pd.DataFrame(columns=['symbol', 'open', 'high', 'low', 'close', 'volume', 'date'])
+            existing_df = load_recent_csv('./archivos/cripto_price_5m.csv', days=180)
 
             now = datetime.utcnow()
             threshold = now - timedelta(hours=2)
@@ -156,22 +160,7 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
                 logging.error("No se obtuvieron datos de velas para ninguna moneda.")
                 return
 
-            try:
-                # Leer solo los últimos 6 meses en chunks para ahorrar memoria
-                cutoff = datetime.utcnow() - timedelta(days=180)
-                chunks = pd.read_csv(
-                    './archivos/cripto_price_5m.csv',
-                    parse_dates=['date'],
-                    usecols=['symbol','open','high','low','close','volume','date'],
-                    iterator=True,
-                    chunksize=100000
-                )
-                existing_df = pd.concat(
-                    [chunk[chunk['date'] >= cutoff] for chunk in chunks],
-                    ignore_index=True
-                )
-            except (FileNotFoundError, pd.errors.EmptyDataError):
-                existing_df = pd.DataFrame(columns=['symbol', 'open', 'high', 'low', 'close', 'volume', 'date'])
+            existing_df = load_recent_csv('./archivos/cripto_price_5m.csv', days=180)
 
             updated_df = update_dataframe(existing_df, candle_data)
 
