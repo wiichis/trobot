@@ -27,7 +27,7 @@ RSI_OVERSOLD = 25  # Nivel de sobreventa para RSI
 RSI_OVERBOUGHT = 69  # Nivel de sobrecompra para RSI
 
 # Lista de monedas deshabilitadas para ignorar en el cálculo de indicadores
-DISABLED_COINS = ["ADA-USDT", "AVAX-USDT", "APT-USDT","LTC-USDT", "CFX-USDT", "HBAR-USDT"]
+DISABLED_COINS = ["ADA-USDT", "AVAX-USDT", "CFX-USDT", "NEAR-USDT", "SHIB-USDT", "BTC-USDT"]
 
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
