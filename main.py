@@ -1,4 +1,5 @@
 from calendar import month
+import os
 import pkg.api_backtesting
 import pkg.calcular_pesos
 import pkg.monkey_bx
