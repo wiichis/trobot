@@ -21,6 +21,10 @@ def pesos():
     
     
 def run_fast():
+    path = './archivos/indicadores.csv'
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        print("❌ indicadores.csv no existe o está vacío. Se omite run_fast.")
+        return
     pkg.monkey_bx.colocando_TK_SL()
 
 def posiciones_antiguas():
