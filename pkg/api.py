@@ -30,8 +30,8 @@ session.mount("http://", adapter)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def currencies_list():
-    return ['XRP-USDT', 'AVAX-USDT', 'CFX-USDT', 'DOT-USDT', 'BTC-USDT', 'SHIB-USDT', 'NEAR-USDT', 'LTC-USDT', 'APT-USDT', 'HBAR-USDT']
-    # No usar: MATIC, ADA
+    return ['XRP-USDT', 'AVAX-USDT', 'CFX-USDT', 'DOT-USDT', 'BTC-USDT', 'NEAR-USDT', 'LTC-USDT', 'APT-USDT', 'HBAR-USDT', "BNB_USDT"]
+    # No usar: MATIC, ADA, SHIB
 
 def round_time(dt=None, round_to=1800):
     """

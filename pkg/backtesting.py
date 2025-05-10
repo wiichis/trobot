@@ -41,8 +41,8 @@ COMMISSION_RATE = 0.0004
 PERFORMANCE_THRESHOLD = 0  
 
 # Lista de monedas deshabilitadas para no operar en la simulación (monedas con bajo rendimiento)
-DISABLED_COINS = ["ADA-USDT", "AVAX-USDT", "APT-USDT","LTC-USDT", "CFX-USDT", "HBAR-USDT"]
-                  
+DISABLED_COINS = ["ADA-USDT", "AVAX-USDT", "CFX-USDT", "NEAR-USDT", "SHIB-USDT", "BTC-USDT"]
+#ADA, SHIB
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
 # =============================
