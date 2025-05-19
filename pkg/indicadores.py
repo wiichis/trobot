@@ -19,8 +19,8 @@ TP_MULTIPLIER = 15  # Multiplicador para el Take Profit
 SL_MULTIPLIER = 2  # Multiplicador para el Stop Loss
 
 # Umbrales para filtrar ruido del mercado
-VOLUME_THRESHOLD = 0.68  # Umbral para volumen bajo (78% del volumen promedio)
-VOLATILITY_THRESHOLD = 1.07  # Umbral para volatilidad alta (107% de la volatilidad promedio)
+VOLUME_THRESHOLD = 0.5  # Umbral para volumen bajo (78% del volumen promedio)
+VOLATILITY_THRESHOLD = 1.2  # Umbral para volatilidad alta (107% de la volatilidad promedio)
 
 # Niveles de RSI para señales
 RSI_OVERSOLD = 34  # Nivel de sobreventa para RSI
@@ -36,14 +36,13 @@ DISABLED_COINS = ["ADA-USDT", "SHIB-USDT", "BTC-USDT", "AVAX-USDT", "CFX-USDT", 
 def load_data(filepath='./archivos/cripto_price.csv'):
     try:
         crypto_data = pd.read_csv(filepath, parse_dates=['date'])
-        crypto_data.sort_values(by='date', inplace=True)
+        crypto_data.sort_values(by='date', inplace=True)    
         return crypto_data
     except Exception as e:
         print(f"Error leyendo el archivo: {e}")
         return None
 
 def filter_duplicates(crypto_data):
-    # Eliminar duplicados exactos y aquellos con volumen igual a 0
     crypto_data = crypto_data.drop_duplicates()
     crypto_data = crypto_data[crypto_data['volume'] > 0]
     crypto_data = crypto_data.reset_index(drop=True)
@@ -64,29 +63,18 @@ def calculate_indicators(
     rsi_overbought=70,
     output_filepath='./archivos/indicadores.csv'
 ):
-    # Ordenar el DataFrame por símbolo y fecha
     data = data.sort_values(by=['symbol', 'date']).copy()
-    
-    symbols = data['symbol'].unique()
-    
-    # Filtrar símbolos deshabilitados
-    symbols = [s for s in symbols if s not in DISABLED_COINS]
-    
-    # Procesar símbolos en paralelo
+    symbols = [s for s in data['symbol'].unique() if s not in DISABLED_COINS]
+
     def _process_symbol(symbol):
         df_symbol = data[data['symbol'] == symbol].copy()
-        # Validación y limpieza de datos
         df_symbol = df_symbol[df_symbol['close'] > 0]
-        df_symbol['close'] = df_symbol['close'].ffill()
-        df_symbol['open'] = df_symbol['open'].ffill()
-        df_symbol['high'] = df_symbol['high'].ffill()
-        df_symbol['low'] = df_symbol['low'].ffill()
+        df_symbol[['close','open','high','low']] = df_symbol[['close','open','high','low']].ffill()
         df_symbol['volume'] = df_symbol['volume'].fillna(0)
         required_periods = max(rsi_period, atr_period, ema_long_period, adx_period, 26)
         if len(df_symbol) < required_periods:
             return None
         try:
-            # Calcular indicadores técnicos
             df_symbol['RSI'] = talib.RSI(df_symbol['close'], timeperiod=rsi_period)
             df_symbol['ATR'] = talib.ATR(df_symbol['high'], df_symbol['low'], df_symbol['close'], timeperiod=atr_period)
             df_symbol['OBV'] = talib.OBV(df_symbol['close'], df_symbol['volume'])
@@ -127,98 +115,59 @@ def calculate_indicators(
             return None
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        results = executor.map(_process_symbol, symbols)
-    processed_symbols = [df for df in results if df is not None]
-    
-    # Concatenar todos los df_symbol procesados
-    if processed_symbols:
-        data = pd.concat(processed_symbols, ignore_index=True)
-    else:
-        data = pd.DataFrame()  # Si no hay símbolos procesados, devolver un DataFrame vacío
+        processed = [df for df in executor.map(_process_symbol, symbols) if df is not None]
+    data = pd.concat(processed, ignore_index=True) if processed else pd.DataFrame()
 
+    data['Trend_Up'] = (data['EMA_Short'] > data['EMA_Long']).astype('bool')
+    data['Trend_Down'] = (data['EMA_Short'] < data['EMA_Long']).astype('bool')
 
-    # Definir señales de tendencia
-    data['Trend_Up'] = data['EMA_Short'] > data['EMA_Long']
-    data['Trend_Down'] = data['EMA_Short'] < data['EMA_Long']
-
-    # Convertir columnas booleanas al tipo 'bool' de NumPy
-    data['Trend_Up'] = data['Trend_Up'].astype('bool')
-    data['Trend_Down'] = data['Trend_Down'].astype('bool')
-    
-    # Asegurarse de que no haya valores NaN en los indicadores
     data['Hammer'] = data['Hammer'].fillna(0)
     data['ShootingStar'] = data['ShootingStar'].fillna(0)
     data['MACD_Bullish'] = data['MACD_Bullish'].fillna(False).astype('bool')
     data['MACD_Bearish'] = data['MACD_Bearish'].fillna(False).astype('bool')
     data['ADX'] = data['ADX'].fillna(0)
-    
-    # Filtrar períodos de bajo volumen y alta volatilidad
-    data['Low_Volume'] = data['Rel_Volume'] < volume_threshold
-    data['High_Volatility'] = data['Rel_Volatility'] > volatility_threshold
+
+    data['Low_Volume'] = (data['volume'] / data['volume'].rolling(20).mean()) < volume_threshold
+    data['High_Volatility'] = (data['ATR'] / data['ATR'].rolling(20).mean()) > volatility_threshold
     data['Low_Volume'] = data['Low_Volume'].astype('bool')
     data['High_Volatility'] = data['High_Volatility'].astype('bool')
 
-    # Definir tendencia a largo plazo
     data['EMA_Long_Term'] = talib.EMA(data['close'], timeperiod=50)
-    data['Trend_Up_Long_Term'] = data['EMA_Short'] > data['EMA_Long_Term']
-    data['Trend_Down_Long_Term'] = data['EMA_Short'] < data['EMA_Long_Term']
-    data['Trend_Up_Long_Term'] = data['Trend_Up_Long_Term'].astype('bool')
-    data['Trend_Down_Long_Term'] = data['Trend_Down_Long_Term'].astype('bool')
-    
-    # Señales combinadas con filtrado de ruido y análisis de RSI
-    data['Long_Signal'] = (
-        (
-            ((data['Hammer'] != 0) & data['Trend_Up'] & data['Trend_Up_Long_Term'] & (data['RSI'] < rsi_oversold)) |
-            (data['MACD_Bullish'] & (data['ADX'] > 25) & data['Trend_Up_Long_Term'] & (data['RSI'] < rsi_overbought))
-        ) &
-        (~data['Low_Volume']) &
-        (~data['High_Volatility'])
-    ).astype('bool')
-    
-    data['Short_Signal'] = (
-        (
-            ((data['ShootingStar'] != 0) & data['Trend_Down'] & data['Trend_Down_Long_Term'] & (data['RSI'] > rsi_overbought)) |
-            (data['MACD_Bearish'] & (data['ADX'] > 25) & data['Trend_Down_Long_Term'] & (data['RSI'] > rsi_oversold))
-        ) &
-        (~data['Low_Volume']) &
-        (~data['High_Volatility'])
-    ).astype('bool')
-    
-    # Restablecer índices y ordenar por símbolo y fecha
+    data['Trend_Up_Long_Term'] = (data['EMA_Short'] > data['EMA_Long_Term']).astype('bool')
+    data['Trend_Down_Long_Term'] = (data['EMA_Short'] < data['EMA_Long_Term']).astype('bool')
+
+    # Reintegrar filtro de ruido: descartar sólo si ambas condiciones coinciden
+    signal_long = (
+        ((data['Hammer'] != 0) & data['Trend_Up'] & data['Trend_Up_Long_Term'] & (data['RSI'] < rsi_oversold)) |
+        (data['MACD_Bullish'] & (data['ADX'] > 25) & data['Trend_Up_Long_Term'] & (data['RSI'] < rsi_overbought))
+    )
+    data['Long_Signal'] = (signal_long & ~(data['Low_Volume'] & data['High_Volatility'])).astype('bool')
+
+    # Reintegrar filtro de ruido: descartar sólo si ambas condiciones coinciden
+    signal_short = (
+        ((data['ShootingStar'] != 0) & data['Trend_Down'] & data['Trend_Down_Long_Term'] & (data['RSI'] > rsi_overbought)) |
+        (data['MACD_Bearish'] & (data['ADX'] > 25) & data['Trend_Down_Long_Term'] & (data['RSI'] > rsi_oversold))
+    )
+    data['Short_Signal'] = (signal_short & ~(data['Low_Volume'] & data['High_Volatility'])).astype('bool')
+
     data = data.sort_values(by=['symbol', 'date']).reset_index(drop=True)
-
-    # Optimización de memoria: reducir tipos de datos y eliminar columnas intermedias
-    # Convertir floats de 64-bit a 32-bit
-    float_cols = data.select_dtypes(include=['float64']).columns
-    for col in float_cols:
+    # Optimización de memoria
+    for col in data.select_dtypes(include=['float64']).columns:
         data[col] = pd.to_numeric(data[col], downcast='float')
-    # Convertir ints de 64-bit a 32-bit
-    int_cols = data.select_dtypes(include=['int64']).columns
-    for col in int_cols:
+    for col in data.select_dtypes(include=['int64']).columns:
         data[col] = pd.to_numeric(data[col], downcast='integer')
-    # Eliminar columnas intermedias que no son necesarias tras generar señales
-    drop_cols = ['ATR', 'OBV', 'OBV_Slope', 'Avg_Volume', 'Rel_Volume', 'Volatility', 'Avg_Volatility', 'Rel_Volatility']
-    existing_drops = [c for c in drop_cols if c in data.columns]
-    if existing_drops:
-        data.drop(columns=existing_drops, inplace=True)
-
-    # Guardar el DataFrame resultante en 'indicadores.csv'
+    data.drop(columns=[c for c in ['ATR','OBV','OBV_Slope','Avg_Volume','Rel_Volume','Volatility','Avg_Volatility','Rel_Volatility'] if c in data.columns], inplace=True)
     data.to_csv(output_filepath, index=False)
-    
     return data
 
 def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
     try:
         if currencie in DISABLED_COINS:
             return None, None
-        
         crypto_data = load_data(data_path)
         if crypto_data is None:
             return None, None
-
         crypto_data = filter_duplicates(crypto_data)
-        
-        # Asegurarse de pasar los parámetros actualizados
         cruce_emas = calculate_indicators(
             crypto_data,
             rsi_period=RSI_PERIOD,
@@ -233,22 +182,16 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
             rsi_oversold=RSI_OVERSOLD,
             rsi_overbought=RSI_OVERBOUGHT
         )
-        
-        # Crear una copia explícita del DataFrame filtrado
         df_filtered = cruce_emas[cruce_emas['symbol'] == currencie].copy()
-
         if df_filtered.empty:
-            print(f"No hay datos para {currencie}")
             return None, None
-
-        # Asegurarse de que los datos estén ordenados cronológicamente
         df_filtered.sort_values(by='date', inplace=True)
-        price_last = df_filtered['close'].iloc[-1]
-
-        if df_filtered['Long_Signal'].iloc[-1]:
-            return price_last, '=== Alerta de LONG ==='
-        elif df_filtered['Short_Signal'].iloc[-1]:
-            return price_last, '=== Alerta de SHORT ==='
+        signals = df_filtered[df_filtered['Long_Signal'] | df_filtered['Short_Signal']]
+        if not signals.empty:
+            last_signal = signals.iloc[-1]
+            sig_type = 'LONG' if last_signal['Long_Signal'] else 'SHORT'
+            alert_msg = f"=== Alerta de {sig_type} en {last_signal['date']} (precio: {last_signal['close']}) ==="
+            return last_signal['close'], alert_msg
         else:
             return None, None
     except Exception as e:

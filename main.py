@@ -37,8 +37,8 @@ def run_candles_5m():
 
 
 if __name__ == '__main__':
-    schedule.every(1).minutes.do(run_bingx)
-    schedule.every(0.4).minutes.do(run_fast)
+    schedule.every(1).minute.do(run_bingx)
+    schedule.every(0.24).seconds.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
     schedule.every(25).minutes.do(posiciones_antiguas)
     schedule.every().saturday.at("01:00").do(pesos)    
