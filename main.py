@@ -4,6 +4,7 @@ import pkg.api_backtesting
 import pkg.calcular_pesos
 import pkg.monkey_bx
 import schedule
+import time
 import pkg
 
 def monkey_result():
@@ -22,10 +23,6 @@ def pesos():
     
     
 def run_fast():
-    path = './archivos/indicadores.csv'
-    if not os.path.exists(path) or os.path.getsize(path) == 0:
-        print("❌ indicadores.csv no existe o está vacío. Se omite run_fast.")
-        return
     pkg.monkey_bx.colocando_TK_SL()
 
 def posiciones_antiguas():
@@ -38,7 +35,7 @@ def run_candles_5m():
 
 if __name__ == '__main__':
     schedule.every(1).minute.do(run_bingx)
-    schedule.every(0.24).seconds.do(run_fast)
+    schedule.every(25).seconds.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
     schedule.every(25).minutes.do(posiciones_antiguas)
     schedule.every().saturday.at("01:00").do(pesos)    
@@ -52,3 +49,4 @@ if __name__ == '__main__':
 
     while True:
         schedule.run_pending()
+        time.sleep(1)
