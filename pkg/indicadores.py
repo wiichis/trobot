@@ -150,12 +150,6 @@ def calculate_indicators(
     )
     data['Short_Signal'] = (signal_short & ~(data['Low_Volume'] & data['High_Volatility'])).astype('bool')
 
-    # DEBUG: conteo de señales crudas y filtradas
-    orig_long = int(signal_long.sum())
-    orig_short = int(signal_short.sum())
-    filt_long = int(data['Long_Signal'].sum())
-    filt_short = int(data['Short_Signal'].sum())
-    print(f"DEBUG INDICATORS: Señales crudas LONG={orig_long}, SHORT={orig_short}; filtradas LONG={filt_long}, SHORT={filt_short}")
 
     data = data.sort_values(by=['symbol', 'date']).reset_index(drop=True)
     # Optimización de memoria
