@@ -27,7 +27,7 @@ RSI_OVERSOLD = 34  # Nivel de sobreventa para RSI
 RSI_OVERBOUGHT = 69  # Nivel de sobrecompra para RSI
 
 # Lista de monedas deshabilitadas para ignorar en el cálculo de indicadores
-DISABLED_COINS = ["ADA-USDT", "SHIB-USDT", "BTC-USDT", "AVAX-USDT", "CFX-USDT", "LTC-USDT", "DOT-USDT"]
+DISABLED_COINS = ["ADA-USDT", "SHIB-USDT"]
 
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
@@ -139,14 +139,14 @@ def calculate_indicators(
     # Reintegrar filtro de ruido: descartar sólo si ambas condiciones coinciden
     signal_long = (
         ((data['Hammer'] != 0) & data['Trend_Up'] & data['Trend_Up_Long_Term'] & (data['RSI'] < rsi_oversold)) |
-        (data['MACD_Bullish'] & (data['ADX'] > 25) & data['Trend_Up_Long_Term'] & (data['RSI'] < rsi_overbought))
+        (data['MACD_Bullish'] & data['Trend_Up_Long_Term'] & (data['RSI'] < rsi_overbought))
     )
     data['Long_Signal'] = (signal_long & ~(data['Low_Volume'] & data['High_Volatility'])).astype('bool')
 
     # Reintegrar filtro de ruido: descartar sólo si ambas condiciones coinciden
     signal_short = (
         ((data['ShootingStar'] != 0) & data['Trend_Down'] & data['Trend_Down_Long_Term'] & (data['RSI'] > rsi_overbought)) |
-        (data['MACD_Bearish'] & (data['ADX'] > 25) & data['Trend_Down_Long_Term'] & (data['RSI'] > rsi_oversold))
+        (data['MACD_Bearish'] & data['Trend_Down_Long_Term'] & (data['RSI'] > rsi_oversold))
     )
     data['Short_Signal'] = (signal_short & ~(data['Low_Volume'] & data['High_Volatility'])).astype('bool')
 
