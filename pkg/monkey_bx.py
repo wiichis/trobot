@@ -257,8 +257,11 @@ def colocando_ordenes():
             # Obtener precio y tipo de alerta
             price_last, tipo = pkg.indicadores.ema_alert(currency)
 
-            # Verificar si se obtuvo una alerta válida
-            if tipo not in ['=== Alerta de LONG ===', '=== Alerta de SHORT ===']:
+            # [DEBUG] Print tipo para cada moneda antes del chequeo de alerta
+            print(f"[DEBUG] tipo para {currency}: '{tipo}'")
+
+            # Verificar si se obtuvo una alerta válida (nueva condición)
+            if "Alerta de LONG" not in str(tipo) and "Alerta de SHORT" not in str(tipo):
                 continue  # No hay alerta para esta moneda
 
             # Validar price_last
@@ -319,16 +322,18 @@ def colocando_ordenes():
         currency_amount = trade / price_last
 
         # Definir factores de stop loss y profit
-        if tipo == '=== Alerta de LONG ===':
+        if "LONG" in str(tipo):
             stop_loss_factor = 0.998
             profit_factor = 1.006
             order_side = "BUY"
             position_side = "LONG"
-        elif tipo == '=== Alerta de SHORT ===':
+        elif "SHORT" in str(tipo):
             stop_loss_factor = 1.002
             profit_factor = 0.994
             order_side = "SELL"
             position_side = "SHORT"
+        else:
+            continue  # Si no es ninguno, no colocar la orden
 
         # Colocando la orden
         pkg.bingx.post_order(

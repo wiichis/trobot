@@ -41,7 +41,7 @@ if __name__ == '__main__':
     schedule.every(1).minute.do(run_bingx)
     schedule.every(25).seconds.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
-    schedule.every(25).minutes.do(posiciones_antiguas)
+    schedule.every(5).minutes.do(posiciones_antiguas)
     schedule.every().saturday.at("01:00").do(pesos)    
     
     # Programar actualización diaria de velas de 5m a la medianoche

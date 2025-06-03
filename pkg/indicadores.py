@@ -9,8 +9,8 @@ import concurrent.futures
 
 # Parámetros de indicadores
 RSI_PERIOD = 14  # Período del RSI
-ATR_PERIOD = 10  # Período del ATR
-EMA_SHORT_PERIOD = 10  # Período de la EMA corta
+ATR_PERIOD = 14  # Período del ATR
+EMA_SHORT_PERIOD = 8  # Período de la EMA corta
 EMA_LONG_PERIOD = 18  # Período de la EMA larga
 ADX_PERIOD = 7  # Período del ADX
 
@@ -23,11 +23,11 @@ VOLUME_THRESHOLD = 0.5  # Umbral para volumen bajo (78% del volumen promedio)
 VOLATILITY_THRESHOLD = 1.2  # Umbral para volatilidad alta (107% de la volatilidad promedio)
 
 # Niveles de RSI para señales
-RSI_OVERSOLD = 34  # Nivel de sobreventa para RSI
-RSI_OVERBOUGHT = 69  # Nivel de sobrecompra para RSI
+RSI_OVERSOLD = 38  # Nivel de sobreventa para RSI
+RSI_OVERBOUGHT = 73  # Nivel de sobrecompra para RSI
 
 # Lista de monedas deshabilitadas para ignorar en el cálculo de indicadores
-DISABLED_COINS = ["ADA-USDT", "SHIB-USDT"]
+DISABLED_COINS = ["ADA-USDT", "SHIB-USDT", "AVAX-USDT", "BTC-USDT","XRP-USDT","LTC-USDT"]
 
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
@@ -59,8 +59,8 @@ def calculate_indicators(
     sl_multiplier=1.2,
     volume_threshold=0.78,
     volatility_threshold=1.07,
-    rsi_oversold=34,
-    rsi_overbought=70,
+    rsi_oversold=100,
+    rsi_overbought=0,
     output_filepath='./archivos/indicadores.csv'
 ):
     data = data.sort_values(by=['symbol', 'date']).copy()
@@ -136,14 +136,13 @@ def calculate_indicators(
     data['Trend_Up_Long_Term'] = (data['EMA_Short'] > data['EMA_Long_Term']).astype('bool')
     data['Trend_Down_Long_Term'] = (data['EMA_Short'] < data['EMA_Long_Term']).astype('bool')
 
-    # Reintegrar filtro de ruido: descartar sólo si ambas condiciones coinciden
+    # Señales con condiciones originales
     signal_long = (
         ((data['Hammer'] != 0) & data['Trend_Up'] & data['Trend_Up_Long_Term'] & (data['RSI'] < rsi_oversold)) |
         (data['MACD_Bullish'] & data['Trend_Up_Long_Term'] & (data['RSI'] < rsi_overbought))
     )
     data['Long_Signal'] = (signal_long & ~(data['Low_Volume'] & data['High_Volatility'])).astype('bool')
 
-    # Reintegrar filtro de ruido: descartar sólo si ambas condiciones coinciden
     signal_short = (
         ((data['ShootingStar'] != 0) & data['Trend_Down'] & data['Trend_Down_Long_Term'] & (data['RSI'] > rsi_overbought)) |
         (data['MACD_Bearish'] & data['Trend_Down_Long_Term'] & (data['RSI'] > rsi_oversold))
@@ -178,20 +177,24 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
             adx_period=ADX_PERIOD,
             tp_multiplier=TP_MULTIPLIER,
             sl_multiplier=SL_MULTIPLIER,
-            volume_threshold=VOLUME_THRESHOLD,
-            volatility_threshold=VOLATILITY_THRESHOLD,
-            rsi_oversold=RSI_OVERSOLD,
-            rsi_overbought=RSI_OVERBOUGHT
+            volume_threshold=0.78,
+            volatility_threshold=1.07,
+            rsi_oversold=34,
+            rsi_overbought=69
         )
         df_filtered = cruce_emas[cruce_emas['symbol'] == currencie].copy()
         if df_filtered.empty:
             return None, None
         df_filtered.sort_values(by='date', inplace=True)
-        # Revisar las dos últimas velas
-        last_n = 2
+        # Revisar las últimas 10 velas
+        last_n = 10
         recent_rows = df_filtered.tail(last_n)
+        print("Ultimas filas analizadas:")
+        print(recent_rows[['date', 'Long_Signal', 'Short_Signal', 'close']])
         # Buscar si alguna tiene señal
         recent_signals = recent_rows[recent_rows['Long_Signal'] | recent_rows['Short_Signal']]
+        print("Filas con señal encontrada:")
+        print(recent_signals[['date', 'Long_Signal', 'Short_Signal', 'close']])
         if not recent_signals.empty:
             last_signal = recent_signals.iloc[-1]
             sig_type = 'LONG' if last_signal['Long_Signal'] else 'SHORT'
