@@ -273,11 +273,7 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
         df_filtered.sort_values(by='date', inplace=True)
         last_n = 2
         recent_rows = df_filtered.tail(last_n)
-        print("Ultimas filas analizadas:")
-        print(recent_rows[['date', 'Long_Signal', 'Short_Signal', 'close']])
         recent_signals = recent_rows[recent_rows['Long_Signal'] | recent_rows['Short_Signal']]
-        print("Filas con señal encontrada:")
-        print(recent_signals[['date', 'Long_Signal', 'Short_Signal', 'close']])
         if not recent_signals.empty:
             last_signal = recent_signals.iloc[-1]
             sig_type = 'LONG' if last_signal['Long_Signal'] else 'SHORT'

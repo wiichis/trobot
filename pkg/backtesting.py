@@ -558,14 +558,15 @@ def optimize_parameters(data, max_evals=50):
         'adx': adx_options[best['adx']],
         'tp_mult': tp_mult_options[best['tp_mult']],
         'sl_mult': sl_mult_options[best['sl_mult']],
+        'volume_threshold': round(best['volume_threshold'], 4),
+        'volatility_threshold': round(best['volatility_threshold'], 4),
         'rsi_os': rsi_os_options[best['rsi_os']],
         'rsi_ob': rsi_ob_options[best['rsi_ob']],
         'ema_short_5m': ema_short_5m_options[best['ema_short_5m']],
         'ema_long_5m': ema_long_5m_options[best['ema_long_5m']],
         'rsi_5m': rsi_5m_options[best['rsi_5m']],
         'min_confirm_5m': min_confirm_5m_options[best['min_confirm_5m']],
-        'volume_threshold': best['volume_threshold'],
-        'volatility_threshold': best['volatility_threshold']
+
     }
 
     print("\n=== Parámetros Óptimos Encontrados ===")
@@ -664,8 +665,13 @@ def main():
     ))
     print("-------------------------------------------------------------\n")
 
+    # Imprimir lista de monedas con bajo rendimiento (profit negativo)
+    coins_negativos = summary[summary['sum'] < 0].index.tolist()
+    print("\nMonedas con bajo rendimiento (profit negativo):")
+    print(coins_negativos)
+
     # Mostrar detalles para las 3 monedas con mayor ganancia
-    top_n = 3
+    top_n = 5
     top_symbols = summary.head(top_n).index.tolist()
     for symbol in top_symbols:
         stats = summary.loc[symbol]
@@ -689,10 +695,11 @@ def main():
     print(f"ADX_PERIOD = {best_params['adx']}")
     print(f"TP_MULTIPLIER = {best_params['tp_mult']}")
     print(f"SL_MULTIPLIER = {best_params['sl_mult']}")
-    print(f"RSI_OVERSOLD = {best_params['rsi_os']}")
-    print(f"RSI_OVERBOUGHT = {best_params['rsi_ob']}")
     print(f"VOLUME_THRESHOLD = {best_params['volume_threshold']:.4f}")
     print(f"VOLATILITY_THRESHOLD = {best_params['volatility_threshold']:.4f}")
+    print(f"RSI_OVERSOLD = {best_params['rsi_os']}")
+    print(f"RSI_OVERBOUGHT = {best_params['rsi_ob']}")
+
 
     # Velas 5 minutos
     print(f"FIVE_MIN_EMA_SHORT = {best_params['ema_short_5m']}")
@@ -700,15 +707,6 @@ def main():
     print(f"FIVE_MIN_RSI = {best_params['rsi_5m']}")
     print(f"FIVE_MIN_MIN_CONFIRM = {best_params['min_confirm_5m']}")
 
-    # Monedas deshabilitadas por bajo rendimiento (todas con ganancia negativa)
-    summary.columns = summary.columns.str.strip()  # Quita espacios de nombres de columna
-    if 'sum' in summary.columns and not summary.empty:
-        disabled_symbols = summary[summary['sum'] < 0].index.tolist()
-    else:
-        disabled_symbols = []
-    coins_repr = "[" + ", ".join([f'\"{c}\"' for c in disabled_symbols]) + "]"
-    print(f"DISABLED_COINS = {coins_repr}  # Monedas deshabilitadas por bajo rendimiento")
-    print("\n=== FIN DEL BLOQUE ===\n")
 
 if __name__ == "__main__":
     main()

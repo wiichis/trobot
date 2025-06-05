@@ -123,10 +123,8 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
     attempt = 0
 
     while attempt < max_retries:
-        logging.info(f"Working directory: {os.getcwd()}")
         try:
             currencies = pkg.api.currencies_list()
-            logging.info(f"Currencies to fetch: {currencies}")
             candle_data = []
 
             existing_df = load_recent_csv('./archivos/cripto_price_5m.csv', days=180)
@@ -146,15 +144,12 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
                     if gap_intervals > limit_for_symbol:
                         limit_for_symbol = gap_intervals
                 symbol_limits[symbol] = limit_for_symbol
-            logging.info(f"symbol_limits: {symbol_limits}")
 
             with ThreadPoolExecutor(max_workers=5) as executor:
                 results = executor.map(lambda symbol: fetch_candle(symbol, '5m', symbol_limits[symbol]), currencies)
             for symbol, candles in zip(currencies, results):
-                logging.info(f"Fetched {len(candles)} candles for {symbol}")
                 if candles:
                     candle_data.extend(candles)
-            logging.info(f"Total candles fetched across symbols: {len(candle_data)}")
 
             if not candle_data:
                 logging.error("No se obtuvieron datos de velas para ninguna moneda.")
@@ -179,9 +174,6 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
             new_rows = df_month[~df_month.apply(lambda r: (r['symbol'], r['date']) in existing_index, axis=1)]
             if not new_rows.empty:
                 new_rows.to_csv(csv_path, mode='a', index=False, header=not os.path.exists(csv_path))
-                logging.info(f"Appended {len(new_rows)} new rows to '{csv_path}'")
-            else:
-                logging.info("No new rows to append. CSV is up to date.")
 
             return
 
@@ -194,7 +186,6 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
                 f"❌ {e}"
             ))
             if attempt < max_retries:
-                logging.info(f"Reintentando en {retry_delay} segundos...")
                 time.sleep(retry_delay)
             else:
                 logging.error("Max retries alcanzados. Abortando.")
