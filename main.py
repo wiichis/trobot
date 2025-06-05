@@ -13,8 +13,8 @@ def monkey_result():
     pkg.monkey_bx.bot_send_text(monkey_USD)
     
 def run_bingx():
-    pkg.api.price_bingx()
     pkg.api_backtesting.price_bingx_5m()
+    pkg.api.price_bingx()
     pkg.monkey_bx.obteniendo_ordenes_pendientes()
     pkg.monkey_bx.colocando_ordenes()
 
@@ -36,7 +36,7 @@ def posiciones_antiguas():
 
 
 if __name__ == '__main__':
-    schedule.every(30).minutes.at(":00").do(run_bingx)
+    schedule.every(30).minutes.at(":02").do(run_bingx)
     schedule.every(25).seconds.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
     schedule.every(5).minutes.do(posiciones_antiguas)
