@@ -27,7 +27,7 @@ session.mount("https://", adapter)
 session.mount("http://", adapter)
 
 # Configuración de logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 def round_time(dt=None, round_to=300):

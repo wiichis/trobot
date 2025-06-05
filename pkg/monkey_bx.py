@@ -257,8 +257,6 @@ def colocando_ordenes():
             # Obtener precio y tipo de alerta
             price_last, tipo = pkg.indicadores.ema_alert(currency)
 
-            # [DEBUG] Print tipo para cada moneda antes del chequeo de alerta
-            print(f"[DEBUG] tipo para {currency}: '{tipo}'")
 
             # Verificar si se obtuvo una alerta válida (nueva condición)
             if "Alerta de LONG" not in str(tipo) and "Alerta de SHORT" not in str(tipo):
@@ -281,7 +279,7 @@ def colocando_ordenes():
 
     # Si no hay monedas activas, terminar la función
     if not active_currencies:
-        #print("No hay señales activas en este momento.")
+        # Silenciado: print("No hay señales activas en este momento.")
         return
 
     # Calcular la suma de los pesos de las monedas activas
@@ -348,13 +346,18 @@ def colocando_ordenes():
         })
         df_positions = pd.concat([df_positions, nueva_fila], ignore_index=True)
 
-        # Enviando Mensajes
+        # Enviando Mensajes con formato mejorado
         alert = (
-            f'🚨 🤖 🚨 \n *{tipo}* \n 🚧 *{currency}* \n '
-            f'*Precio Actual:* {round(price_last, 3)} \n '
-            f'*Stop Loss* en: {round(price_last * stop_loss_factor, 3)} \n '
-            f'*Profit* en: {round(price_last * profit_factor, 3)}\n '
-            f'*Trade:* {round(trade, 2)}\n *Peso:* {peso*100:.2f}%'
+            "🚨 *SEÑAL DE TRADING DETECTADA* 🚨\n"
+            "──────────────────────────────\n"
+            f"*Tipo:* {tipo.replace('Alerta de ', '').upper()}\n"
+            f"*Símbolo:* `{currency}`\n"
+            f"*Precio Entrada:* `{round(price_last, 4)}`\n"
+            f"*Take Profit:* `{round(price_last * profit_factor, 4)}`\n"
+            f"*Stop Loss:* `{round(price_last * stop_loss_factor, 4)}`\n"
+            f"*Trade:* `${round(trade, 2)}`\n"
+            f"*Peso:* `{peso*100:.2f}%`\n"
+            "──────────────────────────────"
         )
         pkg.monkey_bx.bot_send_text(alert)
 
@@ -378,12 +381,17 @@ def colocando_TK_SL():
         counter = row['counter']
 
         # Verificar si se debe cancelar la orden después de cierto tiempo
-        if counter >= 30:
+        if counter >= 70:
             # Filtrar el valor orderId del symbol 
             try:
                 orderId = df_ordenes[df_ordenes['symbol'] == symbol]['orderId'].iloc[0]
                 pkg.bingx.cancel_order(symbol, orderId)
                 df_posiciones.drop(index, inplace=True)
+                # Mensaje solo cuando realmente se cancela la orden por timeout
+                print(f"Orden cancelada por timeout para {symbol}.")
+                pkg.monkey_bx.bot_send_text(
+                    f"❌ Orden cancelada por timeout para {symbol}. No se ejecutó en el tiempo límite."
+                )
             except Exception as e:
                 print(f"Error al cancelar la orden para {symbol}: {e}")
                 pass
@@ -393,7 +401,7 @@ def colocando_TK_SL():
             # Obtener los detalles de la posición actual
             result = total_positions(symbol)
             if result[0] is None:
-                print(f"No hay datos de posición para el símbolo: {symbol}")
+                # print(f"No hay datos de posición para el símbolo: {symbol}")
                 continue
 
             symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
@@ -495,7 +503,7 @@ def unrealized_profit_positions():
     
     # Verificar si 'data_filtered' no está vacío
     if data_filtered.empty:
-        #print("No hay posiciones antiguas para procesar.")
+        # Silenciado: print("No hay posiciones antiguas para procesar.")
         return
     
     # Convertir símbolos a mayúsculas
@@ -505,14 +513,14 @@ def unrealized_profit_positions():
     symbols = data_filtered['symbol'].tolist()
     
     for symbol in symbols:
-        print(f"Procesando símbolo: {symbol}")
+        # Silenciado: print(f"Procesando símbolo: {symbol}")
         
         # Obtener datos del símbolo en 'latest_values'
         symbol_data = latest_values[latest_values['symbol'] == symbol]
         
         # Verificar si 'symbol_data' está vacío
         if symbol_data.empty:
-            print(f"No hay datos de indicadores para el símbolo: {symbol}")
+            # Silenciado: print(f"No hay datos de indicadores para el símbolo: {symbol}")
             continue
         
         # Obtener el precio actual
@@ -523,7 +531,7 @@ def unrealized_profit_positions():
         
         # Verificar si 'result' es None o no tiene suficientes datos
         if not result or result[0] is None:
-            print(f"No hay datos de posición para el símbolo: {symbol}")
+            # Silenciado: print(f"No hay datos de posición para el símbolo: {symbol}")
             continue  # Saltar a la siguiente iteración del bucle
         
         # Desempaquetar el resultado
@@ -534,7 +542,7 @@ def unrealized_profit_positions():
         
         # Verificar si 'filtered_data' está vacío
         if filtered_data.empty:
-            print(f"No se encontraron datos de 'order_id_register.csv' para el símbolo: {symbol}")
+            # Silenciado: print(f"No se encontraron datos de 'order_id_register.csv' para el símbolo: {symbol}")
             continue
         
         # Acceder de forma segura a 'stopPrice' y 'orderId'
@@ -545,7 +553,7 @@ def unrealized_profit_positions():
         try:
             positionAmt = float(positionAmt)
         except ValueError:
-            print(f"Cantidad de posición inválida para {symbol}: {positionAmt}")
+            # Silenciado: print(f"Cantidad de posición inválida para {symbol}: {positionAmt}")
             continue
         
         if positionSide == 'LONG':
@@ -573,6 +581,6 @@ def unrealized_profit_positions():
                 except Exception as e:
                     print(f"Error al actualizar el Stop Loss para {symbol}: {e}")
         else:
-            print(f"positionSide desconocido para {symbol}: {positionSide}")
+            # Silenciado: print(f"positionSide desconocido para {symbol}: {positionSide}")
             continue
   

@@ -14,6 +14,7 @@ def monkey_result():
     
 def run_bingx():
     pkg.api.price_bingx()
+    pkg.api_backtesting.price_bingx_5m()
     pkg.monkey_bx.obteniendo_ordenes_pendientes()
     pkg.monkey_bx.colocando_ordenes()
 
@@ -32,20 +33,15 @@ def run_fast():
 def posiciones_antiguas():
     pkg.monkey_bx.unrealized_profit_positions()
 
-def run_candles_5m():
-    # Ejecuta la actualización de velas de 5m una vez al día
-    pkg.api_backtesting.price_bingx_5m()
 
 
 if __name__ == '__main__':
-    schedule.every(1).minute.do(run_bingx)
+    schedule.every(30).minutes.at(":00").do(run_bingx)
     schedule.every(25).seconds.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
     schedule.every(5).minutes.do(posiciones_antiguas)
     schedule.every().saturday.at("01:00").do(pesos)    
-    
-    # Programar actualización diaria de velas de 5m a la medianoche
-    schedule.every().day.at("21:30").do(run_candles_5m)
+
   
     hours = list(map(lambda x: str(x).zfill(2), range(0, 24)))
     for hour in hours:

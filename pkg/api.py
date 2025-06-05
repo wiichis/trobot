@@ -151,7 +151,7 @@ def price_bingx(limit=1, max_retries=3, retry_delay=30):
 
             updated_df = update_dataframe(existing_df, candle_data)
 
-            N = 2800
+            N = 8640
             df_month = updated_df.groupby('symbol', group_keys=False).apply(lambda x: x.sort_values('date').tail(N))
             df_month.sort_values(['symbol', 'date'], inplace=True)
             df_month.reset_index(drop=True, inplace=True)

@@ -1,37 +1,31 @@
+#
+# ========== PARÁMETROS PRINCIPALES ==========
+# Velas 30 minutos
+RSI_PERIOD = 8
+ATR_PERIOD = 14
+EMA_SHORT_PERIOD = 16
+EMA_LONG_PERIOD = 10
+ADX_PERIOD = 5
+TP_MULTIPLIER = 15
+SL_MULTIPLIER = 0.5
+VOLUME_THRESHOLD = 0.88176667
+VOLATILITY_THRESHOLD = 1.2444826
+RSI_OVERSOLD = 25
+RSI_OVERBOUGHT = 76
+
+# Velas 5 minutos
+FIVE_MIN_DATA_PATH = './archivos/cripto_price_5m.csv'
+FIVE_MIN_EMA_SHORT = 3
+FIVE_MIN_EMA_LONG = 7
+FIVE_MIN_RSI = 14
+FIVE_MIN_MIN_CONFIRM = 4
+
 import pandas as pd
 import numpy as np
 import talib  # Asegúrate de que 'ta-lib' esté correctamente instalado
 import concurrent.futures
 
-# =============================
-# SECCIÓN DE VARIABLES
-# =============================
-
-# Parámetros de indicadores
-RSI_PERIOD = 14  # Período del RSI
-ATR_PERIOD = 14  # Período del ATR
-EMA_SHORT_PERIOD = 8  # Período de la EMA corta
-EMA_LONG_PERIOD = 18  # Período de la EMA larga
-ADX_PERIOD = 7  # Período del ADX
-
-# Multiplicadores para TP y SL basados en ATR
-TP_MULTIPLIER = 15  # Multiplicador para el Take Profit
-SL_MULTIPLIER = 2  # Multiplicador para el Stop Loss
-
-# Umbrales para filtrar ruido del mercado
-VOLUME_THRESHOLD = 0.5  # Umbral para volumen bajo (78% del volumen promedio)
-VOLATILITY_THRESHOLD = 1.2  # Umbral para volatilidad alta (107% de la volatilidad promedio)
-
-# Niveles de RSI para señales
-RSI_OVERSOLD = 38  # Nivel de sobreventa para RSI
-RSI_OVERBOUGHT = 73  # Nivel de sobrecompra para RSI
-
-# Lista de monedas deshabilitadas para ignorar en el cálculo de indicadores
-DISABLED_COINS = ["ADA-USDT", "SHIB-USDT", "AVAX-USDT", "BTC-USDT","XRP-USDT","LTC-USDT"]
-
-# =============================
-# FIN DE LA SECCIÓN DE VARIABLES
-# =============================
+DISABLED_COINS = ["APT-USDT", "CFX-USDT", "DOT-USDT", "BNB-USDT", "HBAR-USDT"]
 
 def load_data(filepath='./archivos/cripto_price.csv'):
     try:
@@ -50,17 +44,17 @@ def filter_duplicates(crypto_data):
 
 def calculate_indicators(
     data,
-    rsi_period=14,
-    atr_period=14,
-    ema_short_period=12,
-    ema_long_period=26,
-    adx_period=14,
-    tp_multiplier=4,
-    sl_multiplier=1.2,
-    volume_threshold=0.78,
-    volatility_threshold=1.07,
-    rsi_oversold=100,
-    rsi_overbought=0,
+    rsi_period=RSI_PERIOD,
+    atr_period=ATR_PERIOD,
+    ema_short_period=EMA_SHORT_PERIOD,
+    ema_long_period=EMA_LONG_PERIOD,
+    adx_period=ADX_PERIOD,
+    tp_multiplier=TP_MULTIPLIER,
+    sl_multiplier=SL_MULTIPLIER,
+    volume_threshold=VOLUME_THRESHOLD,
+    volatility_threshold=VOLATILITY_THRESHOLD,
+    rsi_oversold=RSI_OVERSOLD,
+    rsi_overbought=RSI_OVERBOUGHT,
     output_filepath='./archivos/indicadores.csv'
 ):
     data = data.sort_values(by=['symbol', 'date']).copy()
@@ -109,6 +103,42 @@ def calculate_indicators(
             df_symbol['Stop_Loss_Short'] = df_symbol['close'] + (df_symbol['ATR'] * sl_multiplier)
             df_symbol['Take_Profit_Short'] = df_symbol['Take_Profit_Short'].clip(lower=1e-8)
             df_symbol = df_symbol.ffill().fillna(0)
+
+            # Señales idénticas a backtesting.py
+            # Condiciones para señal Long:
+            long_cond_1 = (df_symbol['Hammer'] != 0)
+            long_cond_2 = (df_symbol['MACD_Bullish'])
+            long_cond_3 = (df_symbol['RSI'] < rsi_oversold)
+            long_cond_4 = (df_symbol['EMA_Short'] > df_symbol['EMA_Long'])
+            long_cond_5 = (df_symbol['ADX'] > 25)
+            long_cond_6 = (df_symbol['Rel_Volume'] > volume_threshold)
+            long_cond_7 = (df_symbol['Rel_Volatility'] < volatility_threshold)
+            df_symbol['Long_Signal'] = (
+                (long_cond_1 | long_cond_2) &
+                long_cond_3 &
+                long_cond_4 &
+                long_cond_5 &
+                long_cond_6 &
+                long_cond_7
+            )
+
+            # Condiciones para señal Short:
+            short_cond_1 = (df_symbol['ShootingStar'] != 0)
+            short_cond_2 = (df_symbol['MACD_Bearish'])
+            short_cond_3 = (df_symbol['RSI'] > rsi_overbought)
+            short_cond_4 = (df_symbol['EMA_Short'] < df_symbol['EMA_Long'])
+            short_cond_5 = (df_symbol['ADX'] > 25)
+            short_cond_6 = (df_symbol['Rel_Volume'] > volume_threshold)
+            short_cond_7 = (df_symbol['Rel_Volatility'] < volatility_threshold)
+            df_symbol['Short_Signal'] = (
+                (short_cond_1 | short_cond_2) &
+                short_cond_3 &
+                short_cond_4 &
+                short_cond_5 &
+                short_cond_6 &
+                short_cond_7
+            )
+
             return df_symbol
         except Exception as e:
             print(f"Error al calcular indicadores para {symbol}: {e}")
@@ -118,47 +148,102 @@ def calculate_indicators(
         processed = [df for df in executor.map(_process_symbol, symbols) if df is not None]
     data = pd.concat(processed, ignore_index=True) if processed else pd.DataFrame()
 
-    data['Trend_Up'] = (data['EMA_Short'] > data['EMA_Long']).astype('bool')
-    data['Trend_Down'] = (data['EMA_Short'] < data['EMA_Long']).astype('bool')
-
-    data['Hammer'] = data['Hammer'].fillna(0)
-    data['ShootingStar'] = data['ShootingStar'].fillna(0)
-    data['MACD_Bullish'] = data['MACD_Bullish'].fillna(False).astype('bool')
-    data['MACD_Bearish'] = data['MACD_Bearish'].fillna(False).astype('bool')
-    data['ADX'] = data['ADX'].fillna(0)
-
-    data['Low_Volume'] = (data['volume'] / data['volume'].rolling(20).mean()) < volume_threshold
-    data['High_Volatility'] = (data['ATR'] / data['ATR'].rolling(20).mean()) > volatility_threshold
-    data['Low_Volume'] = data['Low_Volume'].astype('bool')
-    data['High_Volatility'] = data['High_Volatility'].astype('bool')
-
-    data['EMA_Long_Term'] = talib.EMA(data['close'], timeperiod=50)
-    data['Trend_Up_Long_Term'] = (data['EMA_Short'] > data['EMA_Long_Term']).astype('bool')
-    data['Trend_Down_Long_Term'] = (data['EMA_Short'] < data['EMA_Long_Term']).astype('bool')
-
-    # Señales con condiciones originales
-    signal_long = (
-        ((data['Hammer'] != 0) & data['Trend_Up'] & data['Trend_Up_Long_Term'] & (data['RSI'] < rsi_oversold)) |
-        (data['MACD_Bullish'] & data['Trend_Up_Long_Term'] & (data['RSI'] < rsi_overbought))
-    )
-    data['Long_Signal'] = (signal_long & ~(data['Low_Volume'] & data['High_Volatility'])).astype('bool')
-
-    signal_short = (
-        ((data['ShootingStar'] != 0) & data['Trend_Down'] & data['Trend_Down_Long_Term'] & (data['RSI'] > rsi_overbought)) |
-        (data['MACD_Bearish'] & data['Trend_Down_Long_Term'] & (data['RSI'] > rsi_oversold))
-    )
-    data['Short_Signal'] = (signal_short & ~(data['Low_Volume'] & data['High_Volatility'])).astype('bool')
-
-
     data = data.sort_values(by=['symbol', 'date']).reset_index(drop=True)
+
+    # Confirmación con velas de 5 minutos
+    data = get_5m_confirmation(data)
+
     # Optimización de memoria
     for col in data.select_dtypes(include=['float64']).columns:
         data[col] = pd.to_numeric(data[col], downcast='float')
     for col in data.select_dtypes(include=['int64']).columns:
         data[col] = pd.to_numeric(data[col], downcast='integer')
-    data.drop(columns=[c for c in ['ATR','OBV','OBV_Slope','Avg_Volume','Rel_Volume','Volatility','Avg_Volatility','Rel_Volatility'] if c in data.columns], inplace=True)
+
+    # Eliminar columnas intermedias no necesarias para producción
+    drop_cols = ['OBV', 'OBV_Slope', 'Avg_Volume', 'Rel_Volume', 'Volatility', 'Avg_Volatility', 'Rel_Volatility']
+    data.drop(columns=[c for c in drop_cols if c in data.columns], inplace=True)
+
     data.to_csv(output_filepath, index=False)
     return data
+
+
+# Confirmación de señales usando velas de 5 minutos
+def get_5m_confirmation(df_30m,
+                        five_min_data_path=FIVE_MIN_DATA_PATH,
+                        ema_short=FIVE_MIN_EMA_SHORT,
+                        ema_long=FIVE_MIN_EMA_LONG,
+                        rsi_5m=FIVE_MIN_RSI,
+                        min_confirm_5m=FIVE_MIN_MIN_CONFIRM):
+    """
+    Para cada señal Long/Short en df_30m, busca confirmación en las 5 velas completas de 5m siguientes.
+    Solo mantiene la señal si hay al menos min_confirm_5m velas con cruce de EMAs correspondiente (alcista para Long, bajista para Short)
+    y RSI bajo (para Long) o sobre (para Short) el valor definido.
+    """
+    try:
+        df_5m = pd.read_csv(five_min_data_path, parse_dates=['date'])
+        df_5m.sort_values(by=['symbol', 'date'], inplace=True)
+    except Exception as e:
+        print(f"Error cargando archivo de 5m: {e}")
+        # Si no se puede cargar, desactiva todas las señales
+        df_30m['Long_Signal'] = False
+        df_30m['Short_Signal'] = False
+        return df_30m
+
+    # Calcula EMAs en 5m si no existen
+    if f'EMA_{ema_short}' not in df_5m.columns or f'EMA_{ema_long}' not in df_5m.columns:
+        df_5m[f'EMA_{ema_short}'] = talib.EMA(df_5m['close'], timeperiod=ema_short)
+        df_5m[f'EMA_{ema_long}'] = talib.EMA(df_5m['close'], timeperiod=ema_long)
+
+    # Calcula RSI en 5m si no existe
+    if 'RSI' not in df_5m.columns:
+        df_5m['RSI'] = talib.RSI(df_5m['close'], timeperiod=rsi_5m)
+
+    # Para cada símbolo, procesa señales
+    df_30m['Long_Signal_5m_confirm'] = False
+    df_30m['Short_Signal_5m_confirm'] = False
+    for symbol in df_30m['symbol'].unique():
+        df_30m_sym = df_30m[df_30m['symbol'] == symbol]
+        df_5m_sym = df_5m[df_5m['symbol'] == symbol]
+        if df_5m_sym.empty:
+            continue
+        # Indexar por fecha para eficiencia
+        df_5m_sym = df_5m_sym.set_index('date')
+        for idx, row in df_30m_sym.iterrows():
+            dt_30m = row['date']
+            # Solo señales activas
+            if not (row.get('Long_Signal', False) or row.get('Short_Signal', False)):
+                continue
+            # Busca las 5 velas de 5m posteriores a la fecha de la vela de 30m (solo velas completas)
+            mask = (df_5m_sym.index > dt_30m)
+            df_next_5 = df_5m_sym[mask].head(5)
+            if len(df_next_5) < 5:
+                continue  # no hay suficientes velas para confirmar
+            ema_s = df_next_5[f'EMA_{ema_short}']
+            ema_l = df_next_5[f'EMA_{ema_long}']
+            rsi_vals = df_next_5['RSI']
+
+            # Para Long: contar velas con cruce alcista y RSI < RSI_OVERSOLD
+            if row.get('Long_Signal', False):
+                cross_mask = (ema_s > ema_l) & (ema_s.shift(1) <= ema_l.shift(1))
+                rsi_mask = rsi_vals < RSI_OVERSOLD
+                valid_count = ((cross_mask) & (rsi_mask)).sum()
+                if valid_count >= min_confirm_5m:
+                    df_30m.at[idx, 'Long_Signal_5m_confirm'] = True
+
+            # Para Short: contar velas con cruce bajista y RSI > RSI_OVERBOUGHT
+            if row.get('Short_Signal', False):
+                cross_mask = (ema_s < ema_l) & (ema_s.shift(1) >= ema_l.shift(1))
+                rsi_mask = rsi_vals > RSI_OVERBOUGHT
+                valid_count = ((cross_mask) & (rsi_mask)).sum()
+                if valid_count >= min_confirm_5m:
+                    df_30m.at[idx, 'Short_Signal_5m_confirm'] = True
+
+    # Solo activa la señal si también hay confirmación en 5m
+    df_30m['Long_Signal'] = df_30m['Long_Signal'] & df_30m['Long_Signal_5m_confirm']
+    df_30m['Short_Signal'] = df_30m['Short_Signal'] & df_30m['Short_Signal_5m_confirm']
+    # Limpia columnas auxiliares
+    df_30m.drop(['Long_Signal_5m_confirm', 'Short_Signal_5m_confirm'], axis=1, inplace=True)
+    return df_30m
 
 def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
     try:
@@ -177,21 +262,19 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
             adx_period=ADX_PERIOD,
             tp_multiplier=TP_MULTIPLIER,
             sl_multiplier=SL_MULTIPLIER,
-            volume_threshold=0.78,
-            volatility_threshold=1.07,
-            rsi_oversold=34,
-            rsi_overbought=69
+            volume_threshold=VOLUME_THRESHOLD,
+            volatility_threshold=VOLATILITY_THRESHOLD,
+            rsi_oversold=RSI_OVERSOLD,
+            rsi_overbought=RSI_OVERBOUGHT
         )
         df_filtered = cruce_emas[cruce_emas['symbol'] == currencie].copy()
         if df_filtered.empty:
             return None, None
         df_filtered.sort_values(by='date', inplace=True)
-        # Revisar las últimas 10 velas
-        last_n = 10
+        last_n = 2
         recent_rows = df_filtered.tail(last_n)
         print("Ultimas filas analizadas:")
         print(recent_rows[['date', 'Long_Signal', 'Short_Signal', 'close']])
-        # Buscar si alguna tiene señal
         recent_signals = recent_rows[recent_rows['Long_Signal'] | recent_rows['Short_Signal']]
         print("Filas con señal encontrada:")
         print(recent_signals[['date', 'Long_Signal', 'Short_Signal', 'close']])
@@ -204,4 +287,4 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
             return None, None
     except Exception as e:
         print(f"Error en ema_alert: {e}")
-        return None, None
+        return None, None 

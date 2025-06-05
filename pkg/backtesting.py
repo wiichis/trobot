@@ -32,7 +32,7 @@ COMMISSION_RATE = 0.0004
 PERFORMANCE_THRESHOLD = 0  
 
 # Lista de monedas deshabilitadas para no operar en la simulación (monedas con bajo rendimiento)
-DISABLED_COINS = ["ADA-USDT", "SHIB-USDT", "AVAX-USDT", "BTC-USDT","XRP-USDT","LTC-USDT"]
+DISABLED_COINS = ["MATIC-USDT", "ADA_USDT", "SHIB-USDT"]
 # =============================
 # FIN DE LA SECCIÓN DE VARIABLES
 # =============================
@@ -681,6 +681,7 @@ def main():
     plot_simulation_results('./archivos/backtesting_results_dynamic.csv')
 
     print("\n=== BLOQUE PARA PEGAR EN VARIABLES INICIALES ===\n")
+    # Velas 30 minutos
     print(f"RSI_PERIOD = {best_params['rsi']}")
     print(f"ATR_PERIOD = {best_params['atr']}")
     print(f"EMA_SHORT_PERIOD = {best_params['ema_short']}")
@@ -688,15 +689,25 @@ def main():
     print(f"ADX_PERIOD = {best_params['adx']}")
     print(f"TP_MULTIPLIER = {best_params['tp_mult']}")
     print(f"SL_MULTIPLIER = {best_params['sl_mult']}")
-    print(f"VOLUME_THRESHOLD = {best_params['volume_threshold']:.4f}")
-    print(f"VOLATILITY_THRESHOLD = {best_params['volatility_threshold']:.4f}")
     print(f"RSI_OVERSOLD = {best_params['rsi_os']}")
     print(f"RSI_OVERBOUGHT = {best_params['rsi_ob']}")
+    print(f"VOLUME_THRESHOLD = {best_params['volume_threshold']:.4f}")
+    print(f"VOLATILITY_THRESHOLD = {best_params['volatility_threshold']:.4f}")
 
-    # Top 5 monedas con peor rendimiento
-    worst_symbols = summary.tail(5).index.tolist()
-    coins_repr = "[" + ", ".join([f'\"{c}\"' for c in worst_symbols]) + "]"
-    print(f"DISABLED_COINS = {coins_repr}")
+    # Velas 5 minutos
+    print(f"FIVE_MIN_EMA_SHORT = {best_params['ema_short_5m']}")
+    print(f"FIVE_MIN_EMA_LONG = {best_params['ema_long_5m']}")
+    print(f"FIVE_MIN_RSI = {best_params['rsi_5m']}")
+    print(f"FIVE_MIN_MIN_CONFIRM = {best_params['min_confirm_5m']}")
+
+    # Monedas deshabilitadas por bajo rendimiento (todas con ganancia negativa)
+    summary.columns = summary.columns.str.strip()  # Quita espacios de nombres de columna
+    if 'sum' in summary.columns and not summary.empty:
+        disabled_symbols = summary[summary['sum'] < 0].index.tolist()
+    else:
+        disabled_symbols = []
+    coins_repr = "[" + ", ".join([f'\"{c}\"' for c in disabled_symbols]) + "]"
+    print(f"DISABLED_COINS = {coins_repr}  # Monedas deshabilitadas por bajo rendimiento")
     print("\n=== FIN DEL BLOQUE ===\n")
 
 if __name__ == "__main__":
