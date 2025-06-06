@@ -39,7 +39,7 @@ if __name__ == '__main__':
     schedule.every(5).minutes.at(":01").do(pkg.api_backtesting.price_bingx_5m)
 
     # Velas de 30 minutos, siempre completas (ejecuta unos segundos después del cierre)
-    schedule.every(30).minutes.at(":02").do(pkg.api_backtesting.price_bingx)
+    schedule.every(30).minutes.at(":02").do(pkg.api.price_bingx)
 
     schedule.every(30).minutes.at(":03").do(run_bingx)
     schedule.every(25).seconds.do(run_fast)
