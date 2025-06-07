@@ -5,27 +5,27 @@ RSI_PERIOD = 8
 ATR_PERIOD = 14
 EMA_SHORT_PERIOD = 16
 EMA_LONG_PERIOD = 10
-ADX_PERIOD = 5
+ADX_PERIOD = 8
 TP_MULTIPLIER = 15
 SL_MULTIPLIER = 0.5
-VOLUME_THRESHOLD = 0.88176667
-VOLATILITY_THRESHOLD = 1.2444826
-RSI_OVERSOLD = 25
-RSI_OVERBOUGHT = 76
+VOLUME_THRESHOLD = 1.0468
+VOLATILITY_THRESHOLD = 1.2649
+RSI_OVERSOLD = 38
+RSI_OVERBOUGHT = 65
 
 # Velas 5 minutos
 FIVE_MIN_DATA_PATH = './archivos/cripto_price_5m.csv'
-FIVE_MIN_EMA_SHORT = 3
-FIVE_MIN_EMA_LONG = 7
-FIVE_MIN_RSI = 14
-FIVE_MIN_MIN_CONFIRM = 4
+FIVE_MIN_EMA_SHORT = 7
+FIVE_MIN_EMA_LONG = 10
+FIVE_MIN_RSI = 10
+FIVE_MIN_MIN_CONFIRM = 3
 
 import pandas as pd
 import numpy as np
 import talib  # Asegúrate de que 'ta-lib' esté correctamente instalado
 import concurrent.futures
 
-DISABLED_COINS = ["APT-USDT", "CFX-USDT", "DOT-USDT", "BNB-USDT", "HBAR-USDT"]
+DISABLED_COINS = ['BTC-USDT', 'BNB-USDT', 'APT-USDT', 'NEAR-USDT']
 
 def load_data(filepath='./archivos/cripto_price.csv'):
     try:
@@ -39,7 +39,7 @@ def load_data(filepath='./archivos/cripto_price.csv'):
 def filter_duplicates(crypto_data):
     crypto_data = crypto_data.drop_duplicates()
     crypto_data = crypto_data[crypto_data['volume'] > 0]
-    crypto_data = crypto_data.reset_index(drop=True)
+    crypto_data = crypto_data.reset_index(drop=True)    
     return crypto_data
 
 def calculate_indicators(

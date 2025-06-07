@@ -1,7 +1,42 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import talib
+
 from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
+
+# =============================
+# Validación unificada de señales de entrada
+# =============================
+def validate_entry(row, coin_performance, open_positions):
+    # Determina tipo de señal
+    if row.get('Long_Signal', False):
+        signal_type = 'LONG'
+    elif row.get('Short_Signal', False):
+        signal_type = 'SHORT'
+    else:
+        return False
+    # Confirma que la señal 5m esté presente
+    if not row.get('Confirmacion_5m', False):
+        return False
+    # Filtra bajo volumen o alta volatilidad
+    if row.get('Low_Volume', False) or row.get('High_Volatility', False):
+        return False
+    # Umbrales de volumen y volatilidad relativa
+    if row.get('Rel_Volume', 0) < VOLUME_THRESHOLD:
+        return False
+    if row.get('Rel_Volatility', 0) > VOLATILITY_THRESHOLD:
+        return False
+    symbol = row['symbol']
+    # Umbral de rendimiento acumulado
+    if coin_performance.get(symbol, 0) < PERFORMANCE_THRESHOLD:
+        return False
+    # Monedas deshabilitadas
+    if symbol in DISABLED_COINS:
+        return False
+    # No abrir si ya hay posición abierta
+    if symbol in open_positions:
+        return False
+    return True
 
 # =============================
 # SECCIÓN DE VARIABLES
@@ -40,6 +75,8 @@ DISABLED_COINS = ["MATIC-USDT", "ADA_USDT", "SHIB-USDT"]
 def load_data(filepath='./archivos/cripto_price.csv'):
     try:
         crypto_data = pd.read_csv(filepath, parse_dates=['date'])
+        # Asegurar que la columna 'date' sea datetime, incluso con formatos mixtos
+        crypto_data['date'] = pd.to_datetime(crypto_data['date'], format='mixed')
         crypto_data.sort_values(by='date', inplace=True)
         return crypto_data
     except Exception as e:
@@ -58,6 +95,7 @@ def filter_duplicates(crypto_data):
 def add_5m_confirmation(data_30m, data_5m, symbol_col='symbol', ema_fast_col='EMA_Short', ema_slow_col='EMA_Long', min_confirm=4):
     # Creamos un campo de intervalo 30m para cada fila
     data_5m = data_5m.copy()
+    data_5m['date'] = pd.to_datetime(data_5m['date'], format='mixed')
     data_5m['interval_start'] = data_5m['date'].dt.floor('30T')
     
     # Juntamos las de 30m con las de 5m en intervalos
@@ -251,23 +289,11 @@ def backtest_strategy(data, use_dynamic_sl=True, data_5m=None):
 
                     del open_positions[sym]
 
-        # Filtrar períodos con bajo volumen o alta volatilidad
-        if current_row.get('Low_Volume', False) or current_row.get('High_Volatility', False):
-            continue
-
-        # Nuevo: solo abrir posición si la moneda cumple el rendimiento mínimo
-        if symbol in coin_performance and coin_performance[symbol] < PERFORMANCE_THRESHOLD:
-            continue
-
-        # Nuevo: omitir apertura de nuevas posiciones para monedas deshabilitadas
-        if symbol in DISABLED_COINS and symbol not in open_positions:
-            continue
-
-        # Abrir nuevas posiciones si no hay posición abierta para el símbolo
-        if symbol not in open_positions and balance > 0:
+        # Validación unificada antes de abrir posición
+        if balance > 0 and validate_entry(current_row, coin_performance, open_positions):
             position_size = balance * POSITION_SIZE_PERCENTAGE
             size = position_size / close_price
-
+            
             if current_row.get('Long_Signal', False):
                 take_profit = current_row['Take_Profit_Long']
                 stop_loss = current_row['Stop_Loss_Long']
