@@ -115,7 +115,7 @@ def calculate_indicators(
             long_cond_7 = (df_symbol['Rel_Volatility'] < volatility_threshold)
             df_symbol['Long_Signal'] = (
                 (long_cond_1 | long_cond_2) &
-                long_cond_3 &
+                # long_cond_3 &
                 long_cond_4 &
                 long_cond_5 &
                 long_cond_6 &
@@ -132,7 +132,7 @@ def calculate_indicators(
             short_cond_7 = (df_symbol['Rel_Volatility'] < volatility_threshold)
             df_symbol['Short_Signal'] = (
                 (short_cond_1 | short_cond_2) &
-                short_cond_3 &
+                # short_cond_3 &
                 short_cond_4 &
                 short_cond_5 &
                 short_cond_6 &
@@ -283,4 +283,4 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
             return None, None
     except Exception as e:
         print(f"Error en ema_alert: {e}")
-        return None, None 
+        return None, None
