@@ -107,10 +107,11 @@ def load_recent_csv(path, days=180, chunksize=100000):
             iterator=True,
             chunksize=chunksize
         )
-        df = pd.concat(
-            [chunk[chunk['date'] >= cutoff] for chunk in chunks],
-            ignore_index=True
-        )
+        df_list = []
+        for chunk in chunks:
+            chunk['date'] = pd.to_datetime(chunk['date'], errors='coerce')
+            df_list.append(chunk[chunk['date'] >= cutoff])
+        df = pd.concat(df_list, ignore_index=True)
     except (FileNotFoundError, pd.errors.EmptyDataError):
         df = pd.DataFrame(columns=['symbol', 'open', 'high', 'low', 'close', 'volume', 'date'])
     return df

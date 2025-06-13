@@ -346,19 +346,24 @@ def colocando_ordenes():
         })
         df_positions = pd.concat([df_positions, nueva_fila], ignore_index=True)
 
-        # Enviando Mensajes con formato mejorado
+        # Cálculo porcentajes para mostrar variación TP/SL
+        if "LONG" in str(tipo):
+            profit_pct = (profit_factor - 1) * 100         # Ej: +0.60 %
+            sl_pct = (stop_loss_factor - 1) * 100          # Ej: -0.20 %
+        else:  # SHORT
+            profit_pct = (1 - profit_factor) * 100         # Negativo
+            sl_pct = (1 - stop_loss_factor) * 100
+
+        # ---------- NUEVO FORMATO DE ALERTA MARKDOWN ----------
         alert = (
-            "🚨 *SEÑAL DE TRADING DETECTADA* 🚨\n"
-            "──────────────────────────────\n"
-            f"*Tipo:* {tipo.replace('Alerta de ', '').upper()}\n"
-            f"*Símbolo:* `{currency}`\n"
-            f"*Precio Entrada:* `{round(price_last, 4)}`\n"
-            f"*Take Profit:* `{round(price_last * profit_factor, 4)}`\n"
-            f"*Stop Loss:* `{round(price_last * stop_loss_factor, 4)}`\n"
-            f"*Trade:* `${round(trade, 2)}`\n"
-            f"*Peso:* `{peso*100:.2f}%`\n"
-            "──────────────────────────────"
+            "💎 *TRADE ALERT* 💎\n"
+            f"`{currency}` | {'🟢 LONG' if 'LONG' in tipo else '🔴 SHORT'}\n\n"
+            f"*Entrada:* `{round(price_last, 4)}`\n"
+            f"*TP:* `{round(price_last * profit_factor, 4)}` (+{profit_pct:.2f}%)\n"
+            f"*SL:* `{round(price_last * stop_loss_factor, 4)}` ({sl_pct:.2f}%)\n\n"
+            f"💰 *Capital:* `${round(trade, 2)}` — *{peso*100:.2f}%*"
         )
+        # ------------------------------------------------------
         pkg.monkey_bx.bot_send_text(alert)
 
     # Guardando Posiciones fuera del bucle

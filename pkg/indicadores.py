@@ -1,31 +1,41 @@
 #
 # ========== PARÁMETROS PRINCIPALES ==========
 # Velas 30 minutos
-RSI_PERIOD = 8
+RSI_PERIOD = 14
 ATR_PERIOD = 14
-EMA_SHORT_PERIOD = 16
-EMA_LONG_PERIOD = 10
-ADX_PERIOD = 8
-TP_MULTIPLIER = 15
-SL_MULTIPLIER = 0.5
+EMA_SHORT_PERIOD = 50
+EMA_LONG_PERIOD = 200
+ADX_PERIOD = 14
+
+TP_MULTIPLIER = 2.0   # ATR × 2 take‑profit
+SL_MULTIPLIER = 1.0   # ATR × 1 stop‑loss
+
+# Umbrales heredados (aún usados en validaciones y confirmaciones)
 VOLUME_THRESHOLD = 1.0468
 VOLATILITY_THRESHOLD = 1.2649
 RSI_OVERSOLD = 38
 RSI_OVERBOUGHT = 65
 
+
+
+# Bollinger Bands
+BB_PERIOD = 20
+BB_STD = 2
+
 # Velas 5 minutos
 FIVE_MIN_DATA_PATH = './archivos/cripto_price_5m.csv'
-FIVE_MIN_EMA_SHORT = 7
-FIVE_MIN_EMA_LONG = 10
-FIVE_MIN_RSI = 10
+FIVE_MIN_EMA_SHORT = 9
+FIVE_MIN_EMA_LONG = 21
+FIVE_MIN_RSI = 14
 FIVE_MIN_MIN_CONFIRM = 3
 
 import pandas as pd
 import numpy as np
 import talib  # Asegúrate de que 'ta-lib' esté correctamente instalado
 import concurrent.futures
+import os  # Permite activar el modo de simulación de señales
 
-DISABLED_COINS = ['BTC-USDT', 'BNB-USDT', 'APT-USDT', 'NEAR-USDT']
+DISABLED_COINS = []
 
 def load_data(filepath='./archivos/cripto_price.csv'):
     try:
@@ -77,6 +87,11 @@ def calculate_indicators(
             df_symbol['EMA_Long'] = talib.EMA(df_symbol['close'], timeperiod=ema_long_period)
             df_symbol['MACD'], df_symbol['MACD_Signal'], df_symbol['MACD_Hist'] = talib.MACD(
                 df_symbol['close'], fastperiod=12, slowperiod=26, signalperiod=9)
+
+            # Bollinger Bands
+            df_symbol['BB_upper'], df_symbol['BB_middle'], df_symbol['BB_lower'] = talib.BBANDS(
+                df_symbol['close'], timeperiod=BB_PERIOD, nbdevup=BB_STD, nbdevdn=BB_STD, matype=0)
+
             df_symbol['MACD_Bullish'] = (
                 (df_symbol['MACD'] > df_symbol['MACD_Signal']) &
                 (df_symbol['MACD'].shift(1) <= df_symbol['MACD_Signal'].shift(1))
@@ -104,41 +119,29 @@ def calculate_indicators(
             df_symbol['Take_Profit_Short'] = df_symbol['Take_Profit_Short'].clip(lower=1e-8)
             df_symbol = df_symbol.ffill().fillna(0)
 
-            # Señales idénticas a backtesting.py
-            # Condiciones para señal Long:
-            long_cond_1 = (df_symbol['Hammer'] != 0)
-            long_cond_2 = (df_symbol['MACD_Bullish'])
-            long_cond_3 = (df_symbol['RSI'] < rsi_oversold)
-            long_cond_4 = (df_symbol['EMA_Short'] > df_symbol['EMA_Long'])
-            long_cond_5 = (df_symbol['ADX'] > 25)
-            long_cond_6 = (df_symbol['Rel_Volume'] > volume_threshold)
-            long_cond_7 = (df_symbol['Rel_Volatility'] < volatility_threshold)
+            # --- Señales Long basadas en breakout + momentum ---
+            long_cond_price_bb = df_symbol['close'] > df_symbol['BB_upper']
+            long_cond_ema      = df_symbol['EMA_Short'] > df_symbol['EMA_Long']
+            long_cond_macd     = df_symbol['MACD_Hist'] > 0
+            long_cond_rsi      = df_symbol['RSI'] > 50
+            long_cond_adx      = df_symbol['ADX'] > 25
+            long_cond_obv      = df_symbol['OBV_Slope'] > 0
             df_symbol['Long_Signal'] = (
-                (long_cond_1 | long_cond_2) &
-                # long_cond_3 &
-                long_cond_4 &
-                long_cond_5 &
-                long_cond_6 &
-                long_cond_7
+                long_cond_price_bb & long_cond_ema & long_cond_macd &
+                long_cond_rsi & long_cond_adx & long_cond_obv
             )
 
-            # Condiciones para señal Short:
-            short_cond_1 = (df_symbol['ShootingStar'] != 0)
-            short_cond_2 = (df_symbol['MACD_Bearish'])
-            short_cond_3 = (df_symbol['RSI'] > rsi_overbought)
-            short_cond_4 = (df_symbol['EMA_Short'] < df_symbol['EMA_Long'])
-            short_cond_5 = (df_symbol['ADX'] > 25)
-            short_cond_6 = (df_symbol['Rel_Volume'] > volume_threshold)
-            short_cond_7 = (df_symbol['Rel_Volatility'] < volatility_threshold)
+            # --- Señales Short basadas en breakdown + momentum ---
+            short_cond_price_bb = df_symbol['close'] < df_symbol['BB_lower']
+            short_cond_ema      = df_symbol['EMA_Short'] < df_symbol['EMA_Long']
+            short_cond_macd     = df_symbol['MACD_Hist'] < 0
+            short_cond_rsi      = df_symbol['RSI'] < 50
+            short_cond_adx      = df_symbol['ADX'] > 25
+            short_cond_obv      = df_symbol['OBV_Slope'] < 0
             df_symbol['Short_Signal'] = (
-                (short_cond_1 | short_cond_2) &
-                # short_cond_3 &
-                short_cond_4 &
-                short_cond_5 &
-                short_cond_6 &
-                short_cond_7
+                short_cond_price_bb & short_cond_ema & short_cond_macd &
+                short_cond_rsi & short_cond_adx & short_cond_obv
             )
-
             return df_symbol
         except Exception as e:
             print(f"Error al calcular indicadores para {symbol}: {e}")
@@ -160,7 +163,9 @@ def calculate_indicators(
         data[col] = pd.to_numeric(data[col], downcast='integer')
 
     # Eliminar columnas intermedias no necesarias para producción
-    drop_cols = ['OBV', 'OBV_Slope', 'Avg_Volume', 'Rel_Volume', 'Volatility', 'Avg_Volatility', 'Rel_Volatility']
+    drop_cols = ['OBV', 'OBV_Slope', 'Avg_Volume', 'Rel_Volume', 'Volatility',
+                 'Avg_Volatility', 'Rel_Volatility',
+                 'Hammer', 'ShootingStar', 'MACD_Bullish', 'MACD_Bearish']
     data.drop(columns=[c for c in drop_cols if c in data.columns], inplace=True)
 
     data.to_csv(output_filepath, index=False)
@@ -208,8 +213,14 @@ def get_5m_confirmation(df_30m,
             continue
         # Indexar por fecha para eficiencia
         df_5m_sym = df_5m_sym.set_index('date')
+        # Asegurar que el índice sea Timestamp para evitar comparaciones str > Timestamp
+        if df_5m_sym.index.dtype == 'object':
+            df_5m_sym.index = pd.to_datetime(df_5m_sym.index, errors='coerce')
         for idx, row in df_30m_sym.iterrows():
             dt_30m = row['date']
+            # Asegurar que dt_30m sea Timestamp para evitar comparaciones str > Timestamp
+            if isinstance(dt_30m, str):
+                dt_30m = pd.to_datetime(dt_30m, errors='coerce')
             # Solo señales activas
             if not (row.get('Long_Signal', False) or row.get('Short_Signal', False)):
                 continue
