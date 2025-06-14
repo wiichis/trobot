@@ -36,16 +36,16 @@ def posiciones_antiguas():
 if __name__ == '__main__':
 
     # --- ─── Velas 5‑min y 30‑min perfectamente alineadas ─── ---
-    # 5‑min candles: HH:00, HH:05, HH:10, … HH:55
+    # 5‑min candles: HH:01, HH:06, HH:11, … HH:56
     for minute in range(1, 60, 5):
         schedule.every().hour.at(f":{minute:02d}").do(pkg.api_backtesting.price_bingx_5m)
 
-    # 30‑min candles: HH:00 y HH:30
-    schedule.every().hour.at(":00").do(pkg.api.price_bingx)
-    schedule.every().hour.at(":30").do(pkg.api.price_bingx)
+    # 30‑min candles: HH:01 y HH:31  (1 min después del cierre)
+    schedule.every().hour.at(":01").do(pkg.api.price_bingx)
+    schedule.every().hour.at(":31").do(pkg.api.price_bingx)
 
-    # Colocar órdenes 1 minuto después de cada cierre de vela 5‑min
-    for minute in range(2, 60, 5):   # 01, 06, 11, … 56
+    # Colocar órdenes 2 minutos después de cada cierre de vela 5‑min
+    for minute in range(2, 60, 5):   # 02, 07, 12, … 57
         schedule.every().hour.at(f":{minute:02d}").do(run_bingx)
 
     schedule.every(25).seconds.do(run_fast)
