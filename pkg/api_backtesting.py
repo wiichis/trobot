@@ -146,11 +146,27 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
                         limit_for_symbol = gap_intervals
                 symbol_limits[symbol] = limit_for_symbol
 
-            with ThreadPoolExecutor(max_workers=5) as executor:
+            # Permite hasta 10 hilos o el total de monedas, lo que sea menor
+            with ThreadPoolExecutor(max_workers=min(10, len(currencies))) as executor:
                 results = executor.map(lambda symbol: fetch_candle(symbol, '5m', symbol_limits[symbol]), currencies)
             for symbol, candles in zip(currencies, results):
                 if candles:
                     candle_data.extend(candles)
+
+            # -----------------------------------------------------------------
+            # Verificación y reintento para símbolos que no devolvieron velas
+            obtained_symbols = {c['symbol'] for c in candle_data}
+            missing_symbols = [s for s in currencies if s not in obtained_symbols]
+
+            if missing_symbols:
+                logging.warning(
+                    f"Retry secuencial para símbolos faltantes: {', '.join(missing_symbols)}"
+                )
+                for sym in missing_symbols:
+                    extra_candles = fetch_candle(sym, '5m', symbol_limits[sym])
+                    if extra_candles:
+                        candle_data.extend(extra_candles)
+            # -----------------------------------------------------------------
 
             if not candle_data:
                 logging.error("No se obtuvieron datos de velas para ninguna moneda.")
@@ -176,6 +192,11 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
             if not new_rows.empty:
                 new_rows.to_csv(csv_path, mode='a', index=False, header=not os.path.exists(csv_path))
 
+            # Log de verificación final
+            logging.info(
+                f"Velas obtenidas para "
+                f"{len({c['symbol'] for c in candle_data})}/{len(currencies)} símbolos."
+            )
             return
 
         except requests.exceptions.ConnectionError as e:
