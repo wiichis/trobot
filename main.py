@@ -5,6 +5,7 @@ import pkg.calcular_pesos
 import pkg.monkey_bx
 import schedule
 import time
+import threading
 import pkg
 
 def monkey_result():
@@ -54,10 +55,9 @@ if __name__ == '__main__':
     schedule.every().saturday.at("01:00").do(pesos)    
 
   
-    hours = list(map(lambda x: str(x).zfill(2), range(0, 24)))
-    for hour in hours:
-        schedule.every().day.at(f"{hour}:59").do(monkey_result)
+    # Reporte de resultados cada hora al minuto 59, ejecutado en un hilo independiente
+    schedule.every().hour.at(":59").do(lambda: threading.Thread(target=monkey_result).start())
 
     while True:
         schedule.run_pending()
-        time.sleep(1)
+        time.sleep(0.5)
