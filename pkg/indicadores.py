@@ -13,8 +13,8 @@ SL_MULTIPLIER = 1.0   # ATR × 1 stop‑loss
 # Umbrales heredados (aún usados en validaciones y confirmaciones)
 VOLUME_THRESHOLD = 1.0468
 VOLATILITY_THRESHOLD = 1.2649
-RSI_OVERSOLD = 38
-RSI_OVERBOUGHT = 65
+RSI_OVERSOLD = 42
+RSI_OVERBOUGHT = 60
 
 
 
@@ -27,7 +27,7 @@ FIVE_MIN_DATA_PATH = './archivos/cripto_price_5m.csv'
 FIVE_MIN_EMA_SHORT = 9
 FIVE_MIN_EMA_LONG = 21
 FIVE_MIN_RSI = 14
-FIVE_MIN_MIN_CONFIRM = 2
+FIVE_MIN_MIN_CONFIRM = 1
 
 import pandas as pd
 import numpy as np
@@ -123,7 +123,7 @@ def calculate_indicators(
             long_cond_trend = df_symbol['EMA_Short'] > df_symbol['EMA_Long']
             long_cond_macd  = df_symbol['MACD_Hist'] > 0
             long_cond_rsi   = df_symbol['RSI'] > 45
-            long_cond_adx   = df_symbol['ADX'] > 20
+            long_cond_adx   = df_symbol['ADX'] > 15
             conditions_long = (
                 long_cond_trend,
                 long_cond_macd,
@@ -135,7 +135,7 @@ def calculate_indicators(
             short_cond_trend = df_symbol['EMA_Short'] < df_symbol['EMA_Long']
             short_cond_macd  = df_symbol['MACD_Hist'] < 0
             short_cond_rsi   = df_symbol['RSI'] < 55
-            short_cond_adx   = df_symbol['ADX'] > 20
+            short_cond_adx   = df_symbol['ADX'] > 15
             conditions_short = (
                 short_cond_trend,
                 short_cond_macd,
@@ -237,16 +237,14 @@ def get_5m_confirmation(df_30m,
             # Para Long: contar velas con cruce alcista y RSI < RSI_OVERSOLD
             if row.get('Long_Signal', False):
                 cross_mask = (ema_s > ema_l)
-                rsi_mask = rsi_vals < RSI_OVERSOLD
-                valid_count = ((cross_mask) & (rsi_mask)).sum()
+                valid_count = cross_mask.sum()
                 if valid_count >= min_confirm_5m:
                     df_30m.at[idx, 'Long_Signal_5m_confirm'] = True
 
             # Para Short: contar velas con cruce bajista y RSI > RSI_OVERBOUGHT
             if row.get('Short_Signal', False):
                 cross_mask = (ema_s < ema_l)
-                rsi_mask = rsi_vals > RSI_OVERBOUGHT
-                valid_count = ((cross_mask) & (rsi_mask)).sum()
+                valid_count = cross_mask.sum()
                 if valid_count >= min_confirm_5m:
                     df_30m.at[idx, 'Short_Signal_5m_confirm'] = True
 
