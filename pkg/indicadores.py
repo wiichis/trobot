@@ -27,7 +27,7 @@ FIVE_MIN_DATA_PATH = './archivos/cripto_price_5m.csv'
 FIVE_MIN_EMA_SHORT = 9
 FIVE_MIN_EMA_LONG = 21
 FIVE_MIN_RSI = 14
-FIVE_MIN_MIN_CONFIRM = 3
+FIVE_MIN_MIN_CONFIRM = 2
 
 import pandas as pd
 import numpy as np
@@ -119,29 +119,30 @@ def calculate_indicators(
             df_symbol['Take_Profit_Short'] = df_symbol['Take_Profit_Short'].clip(lower=1e-8)
             df_symbol = df_symbol.ffill().fillna(0)
 
-            # --- Señales Long basadas en breakout + momentum ---
-            long_cond_price_bb = df_symbol['close'] > df_symbol['BB_upper']
-            long_cond_ema      = df_symbol['EMA_Short'] > df_symbol['EMA_Long']
-            long_cond_macd     = df_symbol['MACD_Hist'] > 0
-            long_cond_rsi      = df_symbol['RSI'] > 50
-            long_cond_adx      = df_symbol['ADX'] > 25
-            long_cond_obv      = df_symbol['OBV_Slope'] > 0
-            df_symbol['Long_Signal'] = (
-                long_cond_price_bb & long_cond_ema & long_cond_macd &
-                long_cond_rsi & long_cond_adx & long_cond_obv
+            # Señales balanceadas (se requiere al menos 3 de 4 condiciones)
+            long_cond_trend = df_symbol['EMA_Short'] > df_symbol['EMA_Long']
+            long_cond_macd  = df_symbol['MACD_Hist'] > 0
+            long_cond_rsi   = df_symbol['RSI'] > 45
+            long_cond_adx   = df_symbol['ADX'] > 20
+            conditions_long = (
+                long_cond_trend,
+                long_cond_macd,
+                long_cond_rsi,
+                long_cond_adx
             )
+            df_symbol['Long_Signal'] = (np.sum(conditions_long, axis=0) >= 3)
 
-            # --- Señales Short basadas en breakdown + momentum ---
-            short_cond_price_bb = df_symbol['close'] < df_symbol['BB_lower']
-            short_cond_ema      = df_symbol['EMA_Short'] < df_symbol['EMA_Long']
-            short_cond_macd     = df_symbol['MACD_Hist'] < 0
-            short_cond_rsi      = df_symbol['RSI'] < 50
-            short_cond_adx      = df_symbol['ADX'] > 25
-            short_cond_obv      = df_symbol['OBV_Slope'] < 0
-            df_symbol['Short_Signal'] = (
-                short_cond_price_bb & short_cond_ema & short_cond_macd &
-                short_cond_rsi & short_cond_adx & short_cond_obv
+            short_cond_trend = df_symbol['EMA_Short'] < df_symbol['EMA_Long']
+            short_cond_macd  = df_symbol['MACD_Hist'] < 0
+            short_cond_rsi   = df_symbol['RSI'] < 55
+            short_cond_adx   = df_symbol['ADX'] > 20
+            conditions_short = (
+                short_cond_trend,
+                short_cond_macd,
+                short_cond_rsi,
+                short_cond_adx
             )
+            df_symbol['Short_Signal'] = (np.sum(conditions_short, axis=0) >= 3)
             return df_symbol
         except Exception as e:
             print(f"Error al calcular indicadores para {symbol}: {e}")
@@ -235,7 +236,7 @@ def get_5m_confirmation(df_30m,
 
             # Para Long: contar velas con cruce alcista y RSI < RSI_OVERSOLD
             if row.get('Long_Signal', False):
-                cross_mask = (ema_s > ema_l) & (ema_s.shift(1) <= ema_l.shift(1))
+                cross_mask = (ema_s > ema_l)
                 rsi_mask = rsi_vals < RSI_OVERSOLD
                 valid_count = ((cross_mask) & (rsi_mask)).sum()
                 if valid_count >= min_confirm_5m:
@@ -243,7 +244,7 @@ def get_5m_confirmation(df_30m,
 
             # Para Short: contar velas con cruce bajista y RSI > RSI_OVERBOUGHT
             if row.get('Short_Signal', False):
-                cross_mask = (ema_s < ema_l) & (ema_s.shift(1) >= ema_l.shift(1))
+                cross_mask = (ema_s < ema_l)
                 rsi_mask = rsi_vals > RSI_OVERBOUGHT
                 valid_count = ((cross_mask) & (rsi_mask)).sum()
                 if valid_count >= min_confirm_5m:
@@ -282,7 +283,7 @@ def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
         if df_filtered.empty:
             return None, None
         df_filtered.sort_values(by='date', inplace=True)
-        last_n = 2
+        last_n = 1  # Solo analizamos la última vela cerrada
         recent_rows = df_filtered.tail(last_n)
         recent_signals = recent_rows[recent_rows['Long_Signal'] | recent_rows['Short_Signal']]
         if not recent_signals.empty:

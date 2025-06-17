@@ -386,7 +386,7 @@ def colocando_TK_SL():
         counter = row['counter']
 
         # Verificar si se debe cancelar la orden después de cierto tiempo
-        if counter >= 70:
+        if counter >= 20:
             # Filtrar el valor orderId del symbol 
             try:
                 orderId = df_ordenes[df_ordenes['symbol'] == symbol]['orderId'].iloc[0]
