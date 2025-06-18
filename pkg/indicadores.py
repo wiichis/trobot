@@ -123,26 +123,26 @@ def calculate_indicators(
             long_cond_trend = df_symbol['EMA_Short'] > df_symbol['EMA_Long']
             long_cond_macd  = df_symbol['MACD_Hist'] > 0
             long_cond_rsi   = df_symbol['RSI'] > 45
-            long_cond_adx   = df_symbol['ADX'] > 15
+            long_cond_adx   = df_symbol['ADX'] > 20
             conditions_long = (
                 long_cond_trend,
                 long_cond_macd,
                 long_cond_rsi,
                 long_cond_adx
             )
-            df_symbol['Long_Signal'] = (np.sum(conditions_long, axis=0) >= 3)
+            df_symbol['Long_Signal'] = (np.sum(conditions_long, axis=0) >= 4)
 
             short_cond_trend = df_symbol['EMA_Short'] < df_symbol['EMA_Long']
             short_cond_macd  = df_symbol['MACD_Hist'] < 0
             short_cond_rsi   = df_symbol['RSI'] < 55
-            short_cond_adx   = df_symbol['ADX'] > 15
+            short_cond_adx   = df_symbol['ADX'] > 20
             conditions_short = (
                 short_cond_trend,
                 short_cond_macd,
                 short_cond_rsi,
                 short_cond_adx
             )
-            df_symbol['Short_Signal'] = (np.sum(conditions_short, axis=0) >= 3)
+            df_symbol['Short_Signal'] = (np.sum(conditions_short, axis=0) >= 4)
             return df_symbol
         except Exception as e:
             print(f"Error al calcular indicadores para {symbol}: {e}")
@@ -182,8 +182,7 @@ def get_5m_confirmation(df_30m,
                         min_confirm_5m=FIVE_MIN_MIN_CONFIRM):
     """
     Para cada señal Long/Short en df_30m, busca confirmación en las 5 velas completas de 5m siguientes.
-    Solo mantiene la señal si hay al menos min_confirm_5m velas con cruce de EMAs correspondiente (alcista para Long, bajista para Short)
-    y RSI bajo (para Long) o sobre (para Short) el valor definido.
+    Solo mantiene la señal si hay al menos 1 de 5 velas con cruce EMA + RSI 40/60 + volumen relativo > 1.1
     """
     try:
         df_5m = pd.read_csv(five_min_data_path, parse_dates=['date'])
@@ -203,6 +202,11 @@ def get_5m_confirmation(df_30m,
     # Calcula RSI en 5m si no existe
     if 'RSI' not in df_5m.columns:
         df_5m['RSI'] = talib.RSI(df_5m['close'], timeperiod=rsi_5m)
+
+    # Calcula volumen relativo en 5 m (media móvil de 20 velas)
+    if 'Rel_Volume' not in df_5m.columns:
+        df_5m['Avg_Volume'] = df_5m['volume'].rolling(window=20).mean()
+        df_5m['Rel_Volume'] = df_5m['volume'] / df_5m['Avg_Volume']
 
     # Para cada símbolo, procesa señales
     df_30m['Long_Signal_5m_confirm'] = False
@@ -234,17 +238,21 @@ def get_5m_confirmation(df_30m,
             ema_l = df_next_5[f'EMA_{ema_long}']
             rsi_vals = df_next_5['RSI']
 
-            # Para Long: contar velas con cruce alcista y RSI < RSI_OVERSOLD
+            # Para Long: contar velas con cruce alcista, RSI > 40 y volumen relativo > 1.1
             if row.get('Long_Signal', False):
                 cross_mask = (ema_s > ema_l)
-                valid_count = cross_mask.sum()
+                rsi_mask   = (rsi_vals > 40)
+                vol_mask   = (df_next_5['Rel_Volume'] > 1.1)
+                valid_count = (cross_mask & rsi_mask & vol_mask).sum()
                 if valid_count >= min_confirm_5m:
                     df_30m.at[idx, 'Long_Signal_5m_confirm'] = True
 
-            # Para Short: contar velas con cruce bajista y RSI > RSI_OVERBOUGHT
+            # Para Short: contar velas con cruce bajista, RSI > 60 y volumen relativo > 1.1
             if row.get('Short_Signal', False):
                 cross_mask = (ema_s < ema_l)
-                valid_count = cross_mask.sum()
+                rsi_mask   = (rsi_vals > 60)
+                vol_mask   = (df_next_5['Rel_Volume'] > 1.1)
+                valid_count = (cross_mask & rsi_mask & vol_mask).sum()
                 if valid_count >= min_confirm_5m:
                     df_30m.at[idx, 'Short_Signal_5m_confirm'] = True
 
