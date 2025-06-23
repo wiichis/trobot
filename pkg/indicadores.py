@@ -27,19 +27,26 @@ FIVE_MIN_DATA_PATH = './archivos/cripto_price_5m.csv'
 FIVE_MIN_EMA_SHORT = 9
 FIVE_MIN_EMA_LONG = 21
 FIVE_MIN_RSI = 14
-FIVE_MIN_MIN_CONFIRM = 1
+FIVE_MIN_MIN_CONFIRM = 0
 
 import pandas as pd
 import numpy as np
 import talib  # Asegúrate de que 'ta-lib' esté correctamente instalado
 import concurrent.futures
 import os  # Permite activar el modo de simulación de señales
+from functools import lru_cache  # NUEVO: cache de lectura CSV
 
 DISABLED_COINS = []
 
+# =========  utilidades de carga con caché =========
+@lru_cache(maxsize=8)
+def _cached_read_csv(path: str):
+    """Lee un CSV y lo deja en caché; limpiar con _cached_read_csv.cache_clear()"""
+    return pd.read_csv(path, parse_dates=['date'])
+
 def load_data(filepath='./archivos/cripto_price.csv'):
     try:
-        crypto_data = pd.read_csv(filepath, parse_dates=['date'])
+        crypto_data = _cached_read_csv(filepath).copy()
         crypto_data.sort_values(by='date', inplace=True)    
         return crypto_data
     except Exception as e:
@@ -173,7 +180,7 @@ def calculate_indicators(
     return data
 
 
-# Confirmación de señales usando velas de 5 minutos
+# Confirmación de señales usando velas de 5 minutos (vectorizado + caché)
 def get_5m_confirmation(df_30m,
                         five_min_data_path=FIVE_MIN_DATA_PATH,
                         ema_short=FIVE_MIN_EMA_SHORT,
@@ -181,87 +188,56 @@ def get_5m_confirmation(df_30m,
                         rsi_5m=FIVE_MIN_RSI,
                         min_confirm_5m=FIVE_MIN_MIN_CONFIRM):
     """
-    Para cada señal Long/Short en df_30m, busca confirmación en las 5 velas completas de 5m siguientes.
-    Solo mantiene la señal si hay al menos 1 de 5 velas con cruce EMA + RSI 40/60 + volumen relativo > 1.1
+    Proyecta cada vela 30 m a sus 5 velas posteriores de 5 m y confirma la señal
+    sin bucles por fila (más rápido). Requiere ≥ min_confirm_5m velas válidas.
     """
     try:
-        df_5m = pd.read_csv(five_min_data_path, parse_dates=['date'])
-        df_5m.sort_values(by=['symbol', 'date'], inplace=True)
+        df_5m = _cached_read_csv(five_min_data_path).copy()
     except Exception as e:
-        print(f"Error cargando archivo de 5m: {e}")
-        # Si no se puede cargar, desactiva todas las señales
+        print(f"Error cargando archivo 5m: {e}")
         df_30m['Long_Signal'] = False
         df_30m['Short_Signal'] = False
         return df_30m
 
-    # Calcula EMAs en 5m si no existen
-    if f'EMA_{ema_short}' not in df_5m.columns or f'EMA_{ema_long}' not in df_5m.columns:
-        df_5m[f'EMA_{ema_short}'] = talib.EMA(df_5m['close'], timeperiod=ema_short)
-        df_5m[f'EMA_{ema_long}'] = talib.EMA(df_5m['close'], timeperiod=ema_long)
-
-    # Calcula RSI en 5m si no existe
+    # Orden y cálculos técnicos
+    df_5m.sort_values(['symbol', 'date'], inplace=True)
+    for col, p in {f'EMA_{ema_short}': ema_short, f'EMA_{ema_long}': ema_long}.items():
+        if col not in df_5m.columns:
+            df_5m[col] = talib.EMA(df_5m['close'], timeperiod=p)
     if 'RSI' not in df_5m.columns:
         df_5m['RSI'] = talib.RSI(df_5m['close'], timeperiod=rsi_5m)
-
-    # Calcula volumen relativo en 5 m (media móvil de 20 velas)
     if 'Rel_Volume' not in df_5m.columns:
-        df_5m['Avg_Volume'] = df_5m['volume'].rolling(window=20).mean()
-        df_5m['Rel_Volume'] = df_5m['volume'] / df_5m['Avg_Volume']
+        df_5m['Rel_Volume'] = df_5m['volume'] / df_5m['volume'].rolling(20).mean()
 
-    # Para cada símbolo, procesa señales
-    df_30m['Long_Signal_5m_confirm'] = False
-    df_30m['Short_Signal_5m_confirm'] = False
-    for symbol in df_30m['symbol'].unique():
-        df_30m_sym = df_30m[df_30m['symbol'] == symbol]
-        df_5m_sym = df_5m[df_5m['symbol'] == symbol]
-        if df_5m_sym.empty:
-            continue
-        # Indexar por fecha para eficiencia
-        df_5m_sym = df_5m_sym.set_index('date')
-        # Asegurar que el índice sea Timestamp para evitar comparaciones str > Timestamp
-        if df_5m_sym.index.dtype == 'object':
-            df_5m_sym.index = pd.to_datetime(df_5m_sym.index, errors='coerce')
-        for idx, row in df_30m_sym.iterrows():
-            dt_30m = row['date']
-            # Asegurar que dt_30m sea Timestamp para evitar comparaciones str > Timestamp
-            if isinstance(dt_30m, str):
-                dt_30m = pd.to_datetime(dt_30m, errors='coerce')
-            # Solo señales activas
-            if not (row.get('Long_Signal', False) or row.get('Short_Signal', False)):
-                continue
-            # Busca las 5 velas de 5m posteriores a la fecha de la vela de 30m (solo velas completas)
-            mask = (df_5m_sym.index > dt_30m)
-            df_next_5 = df_5m_sym[mask].head(5)
-            if len(df_next_5) < 5:
-                continue  # no hay suficientes velas para confirmar
-            ema_s = df_next_5[f'EMA_{ema_short}']
-            ema_l = df_next_5[f'EMA_{ema_long}']
-            rsi_vals = df_next_5['RSI']
+    # Ancla cada vela 5 m a su vela 30 m
+    df_5m['anchor'] = df_5m['date'].dt.floor('30T')
+    df_5m['rank'] = df_5m.groupby(['symbol', 'anchor']).cumcount() + 1  # 1 a 6
 
-            # Para Long: contar velas con cruce alcista, RSI > 40 y volumen relativo > 1.1
-            if row.get('Long_Signal', False):
-                cross_mask = (ema_s > ema_l)
-                rsi_mask   = (rsi_vals > 40)
-                vol_mask   = (df_next_5['Rel_Volume'] > 1.1)
-                valid_count = (cross_mask & rsi_mask & vol_mask).sum()
-                if valid_count >= min_confirm_5m:
-                    df_30m.at[idx, 'Long_Signal_5m_confirm'] = True
+    m_long = (
+        (df_5m[f'EMA_{ema_short}'] > df_5m[f'EMA_{ema_long}']) &
+        (df_5m['RSI'] > 40) &
+        (df_5m['Rel_Volume'] > 1.0) &
+        (df_5m['rank'] <= 5)
+    )
+    m_short = (
+        (df_5m[f'EMA_{ema_short}'] < df_5m[f'EMA_{ema_long}']) &
+        (df_5m['RSI'] > 60) &
+        (df_5m['Rel_Volume'] > 1.0) &
+        (df_5m['rank'] <= 5)
+    )
 
-            # Para Short: contar velas con cruce bajista, RSI > 60 y volumen relativo > 1.1
-            if row.get('Short_Signal', False):
-                cross_mask = (ema_s < ema_l)
-                rsi_mask   = (rsi_vals > 60)
-                vol_mask   = (df_next_5['Rel_Volume'] > 1.1)
-                valid_count = (cross_mask & rsi_mask & vol_mask).sum()
-                if valid_count >= min_confirm_5m:
-                    df_30m.at[idx, 'Short_Signal_5m_confirm'] = True
+    cnt_long = df_5m[m_long].groupby(['symbol', 'anchor']).size().rename('cnt_long')
+    cnt_short = df_5m[m_short].groupby(['symbol', 'anchor']).size().rename('cnt_short')
 
-    # Solo activa la señal si también hay confirmación en 5m
-    df_30m['Long_Signal'] = df_30m['Long_Signal'] & df_30m['Long_Signal_5m_confirm']
-    df_30m['Short_Signal'] = df_30m['Short_Signal'] & df_30m['Short_Signal_5m_confirm']
-    # Limpia columnas auxiliares
-    df_30m.drop(['Long_Signal_5m_confirm', 'Short_Signal_5m_confirm'], axis=1, inplace=True)
-    return df_30m
+    df_30m = df_30m.merge(cnt_long, left_on=['symbol', 'date'],
+                          right_index=True, how='left')
+    df_30m = df_30m.merge(cnt_short, left_on=['symbol', 'date'],
+                          right_index=True, how='left')
+    df_30m[['cnt_long', 'cnt_short']] = df_30m[['cnt_long', 'cnt_short']].fillna(0)
+
+    df_30m['Long_Signal'] &= df_30m['cnt_long'] >= min_confirm_5m
+    df_30m['Short_Signal'] &= df_30m['cnt_short'] >= min_confirm_5m
+    return df_30m.drop(columns=['cnt_long', 'cnt_short'])
 
 def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
     try:

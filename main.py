@@ -49,7 +49,7 @@ if __name__ == '__main__':
     for minute in range(2, 60, 5):   # 02, 07, 12, … 57
         schedule.every().hour.at(f":{minute:02d}").do(run_bingx)
 
-    schedule.every(25).seconds.do(run_fast)
+    schedule.every(50).seconds.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
     schedule.every(5).minutes.do(posiciones_antiguas)
     schedule.every().saturday.at("01:00").do(pesos)    
