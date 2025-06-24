@@ -1,12 +1,10 @@
-from calendar import month
 import os
-import pkg.api_backtesting
-import pkg.calcular_pesos
-import pkg.monkey_bx
 import schedule
 import time
 import threading
 import pkg
+import pkg.api_backtesting
+import pkg.api
 
 def monkey_result():
     balance_actual, diferencia_hora, diferencia_dia, diferencia_semana = pkg.monkey_bx.monkey_result()
@@ -60,4 +58,4 @@ if __name__ == '__main__':
 
     while True:
         schedule.run_pending()
-        time.sleep(0.5)
+        time.sleep(1)
