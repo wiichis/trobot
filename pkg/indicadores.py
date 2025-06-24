@@ -259,13 +259,13 @@ def ema_alert(symbol, csv_path='./archivos/indicadores.csv'):
 
         # Carga el CSV (con parse_dates en _cached_read_csv)
         df = _cached_read_csv(csv_path).copy()
-        df_symbol = df[df['symbol'] == symbol]
+        df_symbol = df[df['symbol'] == symbol].copy()  # evita SettingWithCopyWarning
 
         if df_symbol.empty:
             return None, None
 
         # Toma la vela más reciente
-        df_symbol.sort_values('date', inplace=True)
+        df_symbol = df_symbol.sort_values('date')
         last = df_symbol.iloc[-1]
 
         if last['Long_Signal'] or last['Short_Signal']:
