@@ -38,36 +38,42 @@ def bot_send_text(bot_message):
     return response
 
 def total_monkey():
-    # Obtiene el balance actual
-    monkey = pkg.bingx.get_balance()
-    monkey = json.loads(monkey)
+    """
+    Devuelve el balance de la cuenta.
+    Maneja respuestas vacías o JSON mal formado para evitar que el bot se caiga.
+    """
+    raw = pkg.bingx.get_balance()
 
-    balance = 0.0
+    # ── Validaciones defensivas ──────────────────────────────────────────
+    if not raw or not raw.strip():
+        print("Error: get_balance() devolvió cadena vacía.")
+        return 0.0
 
     try:
-        balance = float(monkey['data']['balance']['balance'])
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"Error decodificando JSON: {e} → {raw[:120]!r}")
+        return 0.0
+    # ─────────────────────────────────────────────────────────────────────
+
+    balance = 0.0
+    try:
+        balance = float(data['data']['balance']['balance'])
     except (KeyError, ValueError, TypeError) as e:
         print(f"Error al obtener el balance: {e}")
         balance = 0.0  # Valor predeterminado en caso de error
 
+    # Registrar histórico de balances
     datenow = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    df_new = pd.DataFrame({'date': [datenow], 'balance': [balance]})
 
-    data = {'date': [datenow], 'balance': [balance]}
-    df_new = pd.DataFrame(data)
-
-    # Ruta del archivo
     file_path = './archivos/ganancias.csv'
-
-    # Añade los nuevos datos al final y se queda con las últimas 10000 filas
     try:
         df_old = pd.read_csv(file_path)
-        df_total = pd.concat([df_old, df_new])
-        df_total = df_total.tail(10000)  # Mantiene solo las últimas 10000 filas
+        df_total = pd.concat([df_old, df_new]).tail(10000)
     except FileNotFoundError:
-        # Si el archivo no existe, se crea con el nuevo DataFrame
         df_total = df_new
 
-    # Guarda el DataFrame en un archivo CSV
     df_total.to_csv(file_path, index=False)
 
     return balance
@@ -257,13 +263,14 @@ def colocando_ordenes():
             # Obtener precio y tipo de alerta
             price_last, tipo = pkg.indicadores.ema_alert(currency)
 
-
             # Verificar si se obtuvo una alerta válida (nueva condición)
             if "Alerta de LONG" not in str(tipo) and "Alerta de SHORT" not in str(tipo):
                 continue  # No hay alerta para esta moneda
 
-            # Validar price_last
-            if price_last is None or not isinstance(price_last, (int, float)):
+            # Asegurar que price_last es numérico
+            try:
+                price_last = float(price_last)
+            except (TypeError, ValueError):
                 continue
 
             # Añadir a la lista de monedas activas
