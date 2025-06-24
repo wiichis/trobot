@@ -27,7 +27,7 @@ FIVE_MIN_DATA_PATH = './archivos/cripto_price_5m.csv'
 FIVE_MIN_EMA_SHORT = 9
 FIVE_MIN_EMA_LONG = 21
 FIVE_MIN_RSI = 14
-FIVE_MIN_MIN_CONFIRM = 0
+FIVE_MIN_MIN_CONFIRM = 3
 
 import pandas as pd
 import numpy as np
@@ -42,7 +42,15 @@ DISABLED_COINS = []
 @lru_cache(maxsize=8)
 def _cached_read_csv(path: str):
     """Lee un CSV y lo deja en caché; limpiar con _cached_read_csv.cache_clear()"""
-    return pd.read_csv(path, parse_dates=['date'])
+    df = pd.read_csv(path, parse_dates=['date'])
+    # ── Garantizar que 'date' sea datetime ─────────────────────────────────
+    if 'date' in df.columns and not pd.api.types.is_datetime64_any_dtype(df['date']):
+        try:
+            df['date'] = pd.to_datetime(df['date'])
+        except Exception:
+            pass  # Si falla dejamos el valor original
+    # ──────────────────────────────────────────────────────────────────────
+    return df
 
 def load_data(filepath='./archivos/cripto_price.csv'):
     try:
@@ -239,42 +247,35 @@ def get_5m_confirmation(df_30m,
     df_30m['Short_Signal'] &= df_30m['cnt_short'] >= min_confirm_5m
     return df_30m.drop(columns=['cnt_long', 'cnt_short'])
 
-def ema_alert(currencie, data_path='./archivos/cripto_price.csv'):
+def ema_alert(symbol, csv_path='./archivos/indicadores.csv'):
+    """
+    Devuelve alerta si la última vela del símbolo en el archivo de indicadores
+    tiene señal Long o Short.  Lee el CSV procesado y evita recalcular todo.
+    """
     try:
-        if currencie in DISABLED_COINS:
+        # Evita alertas para pares temporalmente deshabilitados
+        if symbol in DISABLED_COINS:
             return None, None
-        crypto_data = load_data(data_path)
-        if crypto_data is None:
+
+        # Carga el CSV (con parse_dates en _cached_read_csv)
+        df = _cached_read_csv(csv_path).copy()
+        df_symbol = df[df['symbol'] == symbol]
+
+        if df_symbol.empty:
             return None, None
-        crypto_data = filter_duplicates(crypto_data)
-        cruce_emas = calculate_indicators(
-            crypto_data,
-            rsi_period=RSI_PERIOD,
-            atr_period=ATR_PERIOD,
-            ema_short_period=EMA_SHORT_PERIOD,
-            ema_long_period=EMA_LONG_PERIOD,
-            adx_period=ADX_PERIOD,
-            tp_multiplier=TP_MULTIPLIER,
-            sl_multiplier=SL_MULTIPLIER,
-            volume_threshold=VOLUME_THRESHOLD,
-            volatility_threshold=VOLATILITY_THRESHOLD,
-            rsi_oversold=RSI_OVERSOLD,
-            rsi_overbought=RSI_OVERBOUGHT
-        )
-        df_filtered = cruce_emas[cruce_emas['symbol'] == currencie].copy()
-        if df_filtered.empty:
-            return None, None
-        df_filtered.sort_values(by='date', inplace=True)
-        last_n = 1  # Solo analizamos la última vela cerrada
-        recent_rows = df_filtered.tail(last_n)
-        recent_signals = recent_rows[recent_rows['Long_Signal'] | recent_rows['Short_Signal']]
-        if not recent_signals.empty:
-            last_signal = recent_signals.iloc[-1]
-            sig_type = 'LONG' if last_signal['Long_Signal'] else 'SHORT'
-            alert_msg = f"=== Alerta de {sig_type} en {last_signal['date']} (precio: {last_signal['close']}) ==="
-            return last_signal['close'], alert_msg
-        else:
-            return None, None
+
+        # Toma la vela más reciente
+        df_symbol.sort_values('date', inplace=True)
+        last = df_symbol.iloc[-1]
+
+        if last['Long_Signal'] or last['Short_Signal']:
+            sig_type = 'LONG' if last['Long_Signal'] else 'SHORT'
+            price = last['close']
+            date = last['date']
+            alert_msg = f"=== Alerta de {sig_type} en {date} (precio: {price}) ==="
+            return price, alert_msg
+
+        return None, None
     except Exception as e:
         print(f"Error en ema_alert: {e}")
         return None, None
