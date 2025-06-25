@@ -16,6 +16,9 @@ VOLATILITY_THRESHOLD = 1.2649
 RSI_OVERSOLD = 42
 RSI_OVERBOUGHT = 60
 
+# Mínimo de condiciones para que dispare señal (antes 4)
+SIGNAL_MIN_COND = 3
+
 
 
 # Bollinger Bands
@@ -145,7 +148,7 @@ def calculate_indicators(
                 long_cond_rsi,
                 long_cond_adx
             )
-            df_symbol['Long_Signal'] = (np.sum(conditions_long, axis=0) >= 4)
+            df_symbol['Long_Signal'] = (np.sum(conditions_long, axis=0) >= SIGNAL_MIN_COND)
 
             short_cond_trend = df_symbol['EMA_Short'] < df_symbol['EMA_Long']
             short_cond_macd  = df_symbol['MACD_Hist'] < 0
@@ -157,7 +160,7 @@ def calculate_indicators(
                 short_cond_rsi,
                 short_cond_adx
             )
-            df_symbol['Short_Signal'] = (np.sum(conditions_short, axis=0) >= 4)
+            df_symbol['Short_Signal'] = (np.sum(conditions_short, axis=0) >= SIGNAL_MIN_COND)
             return df_symbol
         except Exception as e:
             print(f"Error al calcular indicadores para {symbol}: {e}")
@@ -268,7 +271,7 @@ def ema_alert(symbol, csv_path='./archivos/indicadores.csv'):
         df_symbol = df_symbol.sort_values('date')
         last = df_symbol.iloc[-1]
 
-        if last['Long_Signal'] or last['Short_Signal']:
+        if last['Long_Signal'] or last['Short_Signal']: 
             sig_type = 'LONG' if last['Long_Signal'] else 'SHORT'
             price = last['close']
             date = last['date']
