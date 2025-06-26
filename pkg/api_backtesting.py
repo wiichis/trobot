@@ -128,7 +128,7 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
             currencies = pkg.api.currencies_list()
             candle_data = []
 
-            existing_df = load_recent_csv('./archivos/cripto_price_5m.csv', days=180)
+            existing_df = load_recent_csv('./archivos/cripto_price_5m.csv', days=90)
 
             now = datetime.utcnow()
             threshold = now - timedelta(hours=2)
@@ -172,25 +172,18 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
                 logging.error("No se obtuvieron datos de velas para ninguna moneda.")
                 return
 
-            existing_df = load_recent_csv('./archivos/cripto_price_5m.csv', days=180)
+            existing_df = load_recent_csv('./archivos/cripto_price_5m.csv', days=90)
 
             updated_df = update_dataframe(existing_df, candle_data)
 
-            # Limitar data a los últimos 6 meses
-            cutoff = datetime.utcnow() - timedelta(days=180)
+            # Limitar data a los últimos 3 meses
+            cutoff = datetime.utcnow() - timedelta(days=90)
             df_month = updated_df[updated_df['date'] >= cutoff].copy()
             df_month.sort_values(['symbol', 'date'], inplace=True)
             df_month.reset_index(drop=True, inplace=True)
 
-            # Solo agregar filas nuevas al CSV para ahorrar memoria
             csv_path = './archivos/cripto_price_5m.csv'
-            existing_index = set()
-            if os.path.exists(csv_path):
-                temp_df = pd.read_csv(csv_path, usecols=['symbol', 'date'], parse_dates=['date'])
-                existing_index = set(temp_df.apply(lambda r: (r['symbol'], r['date']), axis=1))
-            new_rows = df_month[~df_month.apply(lambda r: (r['symbol'], r['date']) in existing_index, axis=1)]
-            if not new_rows.empty:
-                new_rows.to_csv(csv_path, mode='a', index=False, header=not os.path.exists(csv_path))
+            df_month.to_csv(csv_path, index=False)
 
             # Log de verificación final
             logging.info(
