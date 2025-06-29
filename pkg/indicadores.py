@@ -13,6 +13,9 @@ RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 14, 14, 50, 200, 14
 TP_M, SL_M, SIGNAL_MIN = 2.0, 1.0, 3
 MAX_PER_SYMBOL = 300  # conservar hasta 300 velas recientes por símbolo
 
+# Días a mantener por símbolo en indicadores (para purga inteligente)
+DAYS_KEEP = 10  # Días a mantener por símbolo en indicadores
+
 BASE = "./archivos"
 PRICE_30 = f"{BASE}/cripto_price.csv"
 PRICE_5  = f"{BASE}/cripto_price_5m.csv"
@@ -89,24 +92,42 @@ def _confirm(df30):
 
 # ---------- main ----------
 def _purge_old():
-    """Mantiene únicamente las últimas MAX_ROWS filas en IND_CSV."""
+    """Mantiene únicamente los últimos DAYS_KEEP días (+20%) por símbolo en IND_CSV.
+    Si el bot se detiene y se corta la data, nunca elimina días incompletos.
+    La purga ahora prioriza mantener días completos y sólo elimina si el rango de fechas es mayor al límite de días.
+    """
     if not os.path.exists(IND_CSV):
         return
     try:
-        df = pd.read_csv(IND_CSV, low_memory=False)
+        df = pd.read_csv(IND_CSV, low_memory=False, parse_dates=["date"])
     except Exception as e:
         print(f"⚠️  No se pudo leer {IND_CSV} para purga: {e}")
         return
 
-    df = df.sort_values(["symbol", "date"])
-    new_df = (
-        df.groupby("symbol", group_keys=False)
-          .tail(MAX_PER_SYMBOL)          # hasta 300 velas por par
-    )
+    now = df['date'].max()
+    symbols = df['symbol'].unique()
+    dfs = []
+    for symbol in symbols:
+        sdf = df[df['symbol'] == symbol].sort_values("date")
+        if sdf.empty:
+            continue
+        min_date = sdf['date'].min()
+        max_date = sdf['date'].max()
+        days_span = (max_date - min_date).days
+        limit_date = max_date - pd.Timedelta(days=DAYS_KEEP)
+        # Solo purga si el rango es mayor al límite de días
+        if days_span > DAYS_KEEP:
+            buffer = int(48 * DAYS_KEEP * 1.2)  # velas 30m por día * días * 20% extra
+            sdf = sdf[sdf['date'] >= limit_date]
+            # Si por alguna razón quedan más de buffer filas (ejemplo, superposición), recorta por filas
+            if len(sdf) > buffer:
+                sdf = sdf.tail(buffer)
+        dfs.append(sdf)
+    new_df = pd.concat(dfs)
     if len(new_df) == len(df):
         return  # nada que borrar
     new_df.to_csv(IND_CSV, index=False)
-    print(f"🧹 Purga por símbolo: {len(df)-len(new_df)} filas antiguas removidas")
+    print(f"🧹 Purga por símbolo/días: {len(df)-len(new_df)} filas antiguas removidas")
 
 def update_indicators():
     price = _read(PRICE_30, os.path.getmtime(PRICE_30)).sort_values(["symbol", "date"])
@@ -133,10 +154,10 @@ def ema_alert(symbol):
     if not os.path.exists(IND_CSV):
         return None, None
     df = _read(IND_CSV, os.path.getmtime(IND_CSV))
-    last = df[df["symbol"] == symbol].sort_values("date").tail(1)
-    if last.empty:
+    df_symbol = df[df["symbol"] == symbol].sort_values("date")
+    if len(df_symbol) < 2:
         return None, None
-    row = last.iloc[0]
+    row = df_symbol.iloc[-2]  # Penúltima fila = última vela cerrada
     if row.Long_Signal or row.Short_Signal:
         side = "LONG" if row.Long_Signal else "SHORT"
         return row.close, f"{side} {symbol} @ {row.date}"
@@ -144,4 +165,4 @@ def ema_alert(symbol):
 
 
 if __name__ == "__main__":
-    update_indicators()
+    update_indicators() 
