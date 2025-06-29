@@ -63,10 +63,12 @@ def _confirm(df30):
         return df30
 
     df5 = _read(PRICE_5, os.path.getmtime(PRICE_5)).sort_values(["symbol", "date"])
-    df5["EMA_S"] = talib.EMA(df5["close"], 9)
-    df5["EMA_L"] = talib.EMA(df5["close"], 21)
-    df5["RSI"]   = talib.RSI(df5["close"], 14)
-    df5["Rel_V"] = df5["volume"] / df5["volume"].rolling(20).mean()
+    # --- indicadores por símbolo (evita mezclar pares) ---
+    grp_close = df5.groupby("symbol")["close"]
+    df5["EMA_S"] = grp_close.transform(lambda s: talib.EMA(s, 9))
+    df5["EMA_L"] = grp_close.transform(lambda s: talib.EMA(s, 21))
+    df5["RSI"]   = grp_close.transform(lambda s: talib.RSI(s, 14))
+    df5["Rel_V"] = df5["volume"] / df5.groupby("symbol")["volume"].transform(lambda s: s.rolling(20).mean())
     df5["anchor"] = df5["date"].dt.floor("30T")
     df5["rank"]   = df5.groupby(["symbol", "anchor"]).cumcount() + 1
 
@@ -132,7 +134,7 @@ def ema_alert(symbol):
         return None, None
     df = _read(IND_CSV, os.path.getmtime(IND_CSV))
     last = df[df["symbol"] == symbol].sort_values("date").tail(1)
-    if last.empty.any():
+    if last.empty:
         return None, None
     row = last.iloc[0]
     if row.Long_Signal or row.Short_Signal:
