@@ -140,6 +140,7 @@ def update_indicators():
     out = out.sort_values(["symbol", "date"])
 
     os.makedirs(BASE_DIR := os.path.dirname(IND_CSV), exist_ok=True)
+    out = out.rename(columns={"SL_L": "Stop_Loss_Long", "SL_S": "Stop_Loss_Short"})
     out.to_csv(IND_CSV, index=False, na_rep="NA")
     _purge_old()
 
