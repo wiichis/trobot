@@ -152,12 +152,15 @@ def ema_alert(symbol):
     df_symbol = df[df["symbol"] == symbol].sort_values("date")
     if len(df_symbol) < 2:
         return None, None
-    row = df_symbol.iloc[-2]  # Penúltima fila = última vela cerrada
-    if row.Long_Signal or row.Short_Signal:
-        side = "LONG" if row.Long_Signal else "SHORT"
-        return row.close, f"{side} {symbol} @ {row.date}"
+    # Tomar las dos últimas velas cerradas
+    last_two = df_symbol.iloc[-2:]
+    # Revisar primero la más reciente
+    for _, row in last_two[::-1].iterrows():
+        if row.Long_Signal or row.Short_Signal:
+            side = "LONG" if row.Long_Signal else "SHORT"
+            return row.close, f"{side} {symbol} @ {row.date}"
     return None, None
 
 
 if __name__ == "__main__":
-    update_indicators() 
+    update_indicators()
