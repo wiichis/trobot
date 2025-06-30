@@ -130,22 +130,17 @@ def _purge_old():
     print(f"🧹 Purga por símbolo/días: {len(df)-len(new_df)} filas antiguas removidas")
 
 def update_indicators():
+    # Cargar TODO el archivo de precios
     price = _read(PRICE_30, os.path.getmtime(PRICE_30)).sort_values(["symbol", "date"])
-    if os.path.exists(IND_CSV):
-        last = pd.read_csv(IND_CSV, usecols=["date"]).date.iloc[-1]
-        last_clean = pd.to_datetime(last, utc=True).tz_localize(None)
-        price = price[price["date"] > last_clean]
-        if price.empty:
-            _purge_old()          # asegura limpieza aunque no haya datos nuevos
-            return
+    if price.empty:
+        return
 
     out = price.groupby("symbol", group_keys=False).apply(_calc)
     out = _confirm(out)
     out = out.sort_values(["symbol", "date"])
 
     os.makedirs(BASE_DIR := os.path.dirname(IND_CSV), exist_ok=True)
-    header = not os.path.exists(IND_CSV)
-    out.to_csv(IND_CSV, mode="a", header=header, index=False, na_rep="NA")
+    out.to_csv(IND_CSV, index=False, na_rep="NA")
     _purge_old()
 
 
