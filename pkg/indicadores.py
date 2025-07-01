@@ -159,7 +159,7 @@ def ema_alert(symbol):
     for _, row in last_two[::-1].iterrows():
         if row.Long_Signal or row.Short_Signal:
             side = "LONG" if row.Long_Signal else "SHORT"
-            return row.close, f"{side} {symbol} @ {row.date}"
+            return row.close, f"Alerta de {side}"
     return None, None
 
 
