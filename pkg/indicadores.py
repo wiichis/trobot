@@ -151,17 +151,15 @@ def ema_alert(symbol):
         return None, None
     df = _read(IND_CSV, os.path.getmtime(IND_CSV))
     df_symbol = df[df["symbol"] == symbol].sort_values("date")
-    if len(df_symbol) < 2:
+    if len(df_symbol) < 1:
         return None, None
-    # Tomar las dos últimas velas cerradas
-    last_two = df_symbol.iloc[-2:]
-    # Revisar primero la más reciente
-    for _, row in last_two[::-1].iterrows():
-        if row.Long_Signal or row.Short_Signal:
-            side = "LONG" if row.Long_Signal else "SHORT"
-            return row.close, f"Alerta de {side}"
+    # Tomar solo la última vela cerrada
+    last_row = df_symbol.iloc[-1]
+    if last_row.Long_Signal or last_row.Short_Signal:
+        side = "LONG" if last_row.Long_Signal else "SHORT"
+        return last_row.close, f"Alerta de {side}"
     return None, None
 
 
 if __name__ == "__main__":
-    update_indicators()
+    update_indicators() 

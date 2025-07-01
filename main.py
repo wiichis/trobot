@@ -13,7 +13,6 @@ def monkey_result():
     
 def run_bingx():
     pkg.indicadores.update_indicators() 
-    pkg.monkey_bx.obteniendo_ordenes_pendientes()
     pkg.monkey_bx.colocando_ordenes()
 
     
