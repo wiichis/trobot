@@ -203,6 +203,7 @@ def obteniendo_ordenes_pendientes():
 
 
 def colocando_ordenes():
+    pkg.monkey_bx.obteniendo_ordenes_pendientes()
     currencies = pkg.api.currencies_list()
     df_orders = pd.read_csv('./archivos/order_id_register.csv')
     df_positions = pd.read_csv('./archivos/position_id_register.csv')
@@ -247,8 +248,8 @@ def colocando_ordenes():
     active_currencies = []
 
     for currency in currencies:
-        # Verificar si la moneda ya está en el DataFrame de órdenes
-        if currency in df_orders['symbol'].values:
+        # Verificar si la moneda ya está en el DataFrame de órdenes o de posiciones
+        if currency in df_orders['symbol'].values or currency in df_positions['symbol'].values:
             continue
 
         try:
