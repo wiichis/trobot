@@ -395,16 +395,16 @@ def colocando_TK_SL():
 
         # Verificar si se debe cancelar la orden después de cierto tiempo
         if counter >= 20:
-            # Filtrar el valor orderId del symbol 
             try:
                 orderId = df_ordenes[df_ordenes['symbol'] == symbol]['orderId'].iloc[0]
                 pkg.bingx.cancel_order(symbol, orderId)
                 df_posiciones.drop(index, inplace=True)
-                # Mensaje solo cuando realmente se cancela la orden por timeout
+                df_posiciones.to_csv('./archivos/position_id_register.csv', index=False)  # Guarda inmediatamente
                 print(f"Orden cancelada por timeout para {symbol}.")
                 pkg.monkey_bx.bot_send_text(
                     f"❌ Orden cancelada por timeout para {symbol}. No se ejecutó en el tiempo límite."
                 )
+                continue  # Evita múltiples mensajes y cancelaciones para la misma orden
             except Exception as e:
                 print(f"Error al cancelar la orden para {symbol}: {e}")
                 pass
