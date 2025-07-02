@@ -343,7 +343,7 @@ def colocando_ordenes():
 
         # Colocando la orden
         pkg.bingx.post_order(
-            currency, currency_amount, price_last, 0, position_side, "LIMIT", order_side
+            currency, currency_amount, 0, 0, position_side, "MARKET", order_side
         )
 
         # Guardando las posiciones
