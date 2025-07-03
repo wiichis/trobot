@@ -389,6 +389,8 @@ def colocando_TK_SL():
     df_indicadores = pd.read_csv('./archivos/indicadores.csv')
     latest_values = df_indicadores.groupby('symbol').last().reset_index()
 
+    # Agrega un pequeño delay antes de buscar la posición en BingX para dar tiempo a que la posición MARKET aparezca
+    time.sleep(2)
     for index, row in df_posiciones.iterrows():
         symbol = row['symbol']
         counter = row['counter']
@@ -414,7 +416,7 @@ def colocando_TK_SL():
             # Obtener los detalles de la posición actual
             result = total_positions(symbol)
             if result[0] is None:
-                # print(f"No hay datos de posición para el símbolo: {symbol}")
+                print(f"Posición para {symbol} aún no aparece en el exchange. Reintentando en el próximo ciclo.")
                 continue
 
             symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
@@ -425,24 +427,38 @@ def colocando_TK_SL():
             if positionSide == 'LONG':
                 take_profit = symbol_data['Take_Profit_Long'].iloc[0]
                 stop_loss = symbol_data['Stop_Loss_Long'].iloc[0]
-                # Configurar la orden de stop loss
-                pkg.bingx.post_order(symbol, positionAmt, 0, stop_loss, "LONG", "STOP_MARKET", "SELL")
-                time.sleep(1)
-                # Configurar la orden de take profit
-                pkg.bingx.post_order(symbol, positionAmt, 0, take_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
-                # Borrando línea
-                df_posiciones.drop(index, inplace=True)
+                exito_sl = exito_tp = False
+                try:
+                    res_sl = pkg.bingx.post_order(symbol, positionAmt, 0, stop_loss, "LONG", "STOP_MARKET", "SELL")
+                    exito_sl = True
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"Error colocando SL para {symbol}: {e}")
+                try:
+                    res_tp = pkg.bingx.post_order(symbol, positionAmt, 0, take_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
+                    exito_tp = True
+                except Exception as e:
+                    print(f"Error colocando TP para {symbol}: {e}")
+                if exito_sl and exito_tp:
+                    df_posiciones.drop(index, inplace=True)
 
             elif positionSide == 'SHORT':
                 take_profit = symbol_data['Take_Profit_Short'].iloc[0]
                 stop_loss = symbol_data['Stop_Loss_Short'].iloc[0]
-                # Configurar la orden de stop loss
-                pkg.bingx.post_order(symbol, positionAmt, 0, stop_loss, "SHORT", "STOP_MARKET", "BUY")
-                time.sleep(1)
-                # Configurar la orden de take profit
-                pkg.bingx.post_order(symbol, positionAmt, 0, take_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
-                # Borrando línea
-                df_posiciones.drop(index, inplace=True)
+                exito_sl = exito_tp = False
+                try:
+                    res_sl = pkg.bingx.post_order(symbol, positionAmt, 0, stop_loss, "SHORT", "STOP_MARKET", "BUY")
+                    exito_sl = True
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"Error colocando SL para {symbol}: {e}")
+                try:
+                    res_tp = pkg.bingx.post_order(symbol, positionAmt, 0, take_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
+                    exito_tp = True
+                except Exception as e:
+                    print(f"Error colocando TP para {symbol}: {e}")
+                if exito_sl and exito_tp:
+                    df_posiciones.drop(index, inplace=True)
 
         except Exception as e:
             print(f"Error al configurar SL/TP para {symbol}: {e}")
@@ -571,9 +587,8 @@ def unrealized_profit_positions():
         
         if positionSide == 'LONG':
             stop_loss = symbol_data['Stop_Loss_Long'].iloc[0]
-            # Lógica para posición larga
-            potencial_nuevo_sl = stop_loss  # El Stop Loss es un nivel de precio absoluto
-            if potencial_nuevo_sl > last_stop_price:
+            potencial_nuevo_sl = stop_loss
+            if potencial_nuevo_sl > last_stop_price and potencial_nuevo_sl != last_stop_price:
                 try:
                     pkg.bingx.cancel_order(symbol, orderId)
                     time.sleep(1)
@@ -581,11 +596,13 @@ def unrealized_profit_positions():
                     print(f"Stop Loss actualizado para {symbol} (LONG) a {potencial_nuevo_sl}")
                 except Exception as e:
                     print(f"Error al actualizar el Stop Loss para {symbol}: {e}")
+            else:
+                print(f"SL actual para {symbol} (LONG) es suficientemente bueno, no se modifica.")
+
         elif positionSide == 'SHORT':
             stop_loss = symbol_data['Stop_Loss_Short'].iloc[0]
-            # Lógica para posición corta
-            potencial_nuevo_sl = stop_loss  # El Stop Loss es un nivel de precio absoluto
-            if potencial_nuevo_sl < last_stop_price:
+            potencial_nuevo_sl = stop_loss
+            if potencial_nuevo_sl < last_stop_price and potencial_nuevo_sl != last_stop_price:
                 try:
                     pkg.bingx.cancel_order(symbol, orderId)
                     time.sleep(1)
@@ -593,6 +610,8 @@ def unrealized_profit_positions():
                     print(f"Stop Loss actualizado para {symbol} (SHORT) a {potencial_nuevo_sl}")
                 except Exception as e:
                     print(f"Error al actualizar el Stop Loss para {symbol}: {e}")
+            else:
+                print(f"SL actual para {symbol} (SHORT) es suficientemente bueno, no se modifica.")
         else:
             # Silenciado: print(f"positionSide desconocido para {symbol}: {positionSide}")
             continue
