@@ -388,6 +388,16 @@ def colocando_TK_SL():
 
     # Obteniendo órdenes pendientes
     df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+    # --- Normalizar columnas y evitar KeyError ---------------------------
+    # Asegurar que exista la columna 'type'.
+    # Algunos registros de BingX devuelven 'orderType' o ninguna de las dos.
+    if 'type' not in df_ordenes.columns:
+        if 'orderType' in df_ordenes.columns:
+            df_ordenes = df_ordenes.rename(columns={'orderType': 'type'})
+        else:
+            # Crear columna vacía para evitar KeyError posteriores
+            df_ordenes['type'] = ''
+    # --------------------------------------------------------------------
 
     # Leer los últimos valores de indicadores
     df_indicadores = pd.read_csv('./archivos/indicadores.csv')
