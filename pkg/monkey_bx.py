@@ -329,13 +329,13 @@ def colocando_ordenes():
 
         # Definir factores de stop loss y profit
         if "LONG" in str(tipo):
-            stop_loss_factor = 0.998
-            profit_factor = 1.006
+            stop_loss_factor = 0.995   # −0.5 %
+            profit_factor   = 1.010   # +1.0 %
             order_side = "BUY"
             position_side = "LONG"
         elif "SHORT" in str(tipo):
-            stop_loss_factor = 1.002
-            profit_factor = 0.994
+            stop_loss_factor = 1.005   # +0.5 %
+            profit_factor   = 0.990   # −1.0 %
             order_side = "SELL"
             position_side = "SHORT"
         else:
@@ -464,12 +464,12 @@ def colocando_TK_SL():
                     take_profit = (
                         symbol_data['Take_Profit'].iloc[0]
                         if 'Take_Profit' in symbol_data.columns
-                        else price * 1.006   # +0.6 % emergencia
+                        else price * 1.010   # +1.0 % emergencia
                     )
                     stop_loss = (
                         symbol_data['Stop_Loss'].iloc[0]
                         if 'Stop_Loss' in symbol_data.columns
-                        else price * 0.998   # –0.2 % emergencia
+                        else price * 0.995   # –0.5 % emergencia
                     )
                 # Comprobar qué órdenes faltan
                 exito_sl = sl_exists
@@ -506,12 +506,12 @@ def colocando_TK_SL():
                     take_profit = (
                         symbol_data['Take_Profit'].iloc[0]
                         if 'Take_Profit' in symbol_data.columns
-                        else price * 0.994   # –0.6 % emergencia
+                        else price * 0.990   # –1.0 % emergencia
                     )
                     stop_loss = (
                         symbol_data['Stop_Loss'].iloc[0]
                         if 'Stop_Loss' in symbol_data.columns
-                        else price * 1.002   # +0.2 % emergencia
+                        else price * 1.005   # +0.5 % emergencia
                     )
                 # Comprobar qué órdenes faltan
                 exito_sl = sl_exists

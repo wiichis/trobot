@@ -10,7 +10,7 @@ from datetime import datetime, timedelta  # NUEVO: para purgar registros antiguo
 
 # === Parámetros ===
 RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 14, 14, 50, 200, 14
-TP_M, SL_M, SIGNAL_MIN = 2.0, 1.0, 3
+TP_M, SL_M, SIGNAL_MIN = 3.2, 1.6, 3  # Multiplicadores ajustados (TP 3.2 ATR, SL 1.6 ATR)
 MAX_PER_SYMBOL = 300  # conservar hasta 300 velas recientes por símbolo
 
 # Días a mantener por símbolo en indicadores (para purga inteligente)
