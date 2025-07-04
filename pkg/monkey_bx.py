@@ -401,6 +401,10 @@ def colocando_TK_SL():
 
     # Leer los últimos valores de indicadores
     df_indicadores = pd.read_csv('./archivos/indicadores.csv')
+    # Limpiar espacios en los nombres de columnas y en los símbolos
+    df_indicadores.columns = df_indicadores.columns.str.strip()
+    if 'symbol' in df_indicadores.columns:
+        df_indicadores['symbol'] = df_indicadores['symbol'].str.strip().str.upper()
     latest_values = df_indicadores.groupby('symbol').last().reset_index()
 
     # Agrega un pequeño delay antes de buscar la posición en BingX para dar tiempo a que la posición MARKET aparezca
@@ -449,8 +453,24 @@ def colocando_TK_SL():
             symbol_data = latest_values[latest_values['symbol'] == symbol]
 
             if positionSide == 'LONG':
-                take_profit = symbol_data['Take_Profit_Long'].iloc[0]
-                stop_loss = symbol_data['Stop_Loss_Long'].iloc[0]
+                # —— Obtenemos niveles TP/SL con fallback ——
+                if {'TP_L', 'Stop_Loss_Long'}.issubset(symbol_data.columns):
+                    take_profit = symbol_data['TP_L'].iloc[0]
+                    stop_loss  = symbol_data['Stop_Loss_Long'].iloc[0]
+                elif {'Take_Profit_Long', 'Stop_Loss_Long'}.issubset(symbol_data.columns):
+                    take_profit = symbol_data['Take_Profit_Long'].iloc[0]
+                    stop_loss  = symbol_data['Stop_Loss_Long'].iloc[0]
+                else:
+                    take_profit = (
+                        symbol_data['Take_Profit'].iloc[0]
+                        if 'Take_Profit' in symbol_data.columns
+                        else price * 1.006   # +0.6 % emergencia
+                    )
+                    stop_loss = (
+                        symbol_data['Stop_Loss'].iloc[0]
+                        if 'Stop_Loss' in symbol_data.columns
+                        else price * 0.998   # –0.2 % emergencia
+                    )
                 # Comprobar qué órdenes faltan
                 exito_sl = sl_exists
                 exito_tp = tp_exists
@@ -475,8 +495,24 @@ def colocando_TK_SL():
                     df_posiciones.drop(index, inplace=True)
 
             elif positionSide == 'SHORT':
-                take_profit = symbol_data['Take_Profit_Short'].iloc[0]
-                stop_loss = symbol_data['Stop_Loss_Short'].iloc[0]
+                # —— Obtenemos niveles TP/SL con fallback ——
+                if {'TP_S', 'Stop_Loss_Short'}.issubset(symbol_data.columns):
+                    take_profit = symbol_data['TP_S'].iloc[0]
+                    stop_loss  = symbol_data['Stop_Loss_Short'].iloc[0]
+                elif {'Take_Profit_Short', 'Stop_Loss_Short'}.issubset(symbol_data.columns):
+                    take_profit = symbol_data['Take_Profit_Short'].iloc[0]
+                    stop_loss  = symbol_data['Stop_Loss_Short'].iloc[0]
+                else:
+                    take_profit = (
+                        symbol_data['Take_Profit'].iloc[0]
+                        if 'Take_Profit' in symbol_data.columns
+                        else price * 0.994   # –0.6 % emergencia
+                    )
+                    stop_loss = (
+                        symbol_data['Stop_Loss'].iloc[0]
+                        if 'Stop_Loss' in symbol_data.columns
+                        else price * 1.002   # +0.2 % emergencia
+                    )
                 # Comprobar qué órdenes faltan
                 exito_sl = sl_exists
                 exito_tp = tp_exists
@@ -553,6 +589,9 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
 def unrealized_profit_positions():
     # Cargar los indicadores
     df_indicadores = pd.read_csv('./archivos/indicadores.csv')
+    # Limpiar nombres de columnas y símbolo
+    df_indicadores.columns = df_indicadores.columns.str.strip()
+    df_indicadores['symbol'] = df_indicadores['symbol'].str.strip().str.upper()
     
     # Verificar que las columnas necesarias existen
     required_columns = ['symbol', 'close', 'Stop_Loss_Long', 'Stop_Loss_Short']
