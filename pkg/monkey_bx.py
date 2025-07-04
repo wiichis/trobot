@@ -380,7 +380,11 @@ def colocando_ordenes():
 def colocando_TK_SL():
     # Obteniendo posiciones sin SL o TP
     df_posiciones = pd.read_csv('./archivos/position_id_register.csv')
-    df_posiciones['counter'] += 1
+    # Asegurarse de que exista la columna 'counter'
+    if 'counter' not in df_posiciones.columns:
+        df_posiciones['counter'] = 0
+    if not df_posiciones.empty:
+        df_posiciones['counter'] += 1
 
     # Obteniendo órdenes pendientes
     df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
@@ -394,6 +398,16 @@ def colocando_TK_SL():
     for index, row in df_posiciones.iterrows():
         symbol = row['symbol']
         counter = row['counter']
+
+        # Verificar si ya existen órdenes SL y TP pendientes para este símbolo
+        symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
+        sl_exists = not symbol_orders[symbol_orders['type'] == 'STOP_MARKET'].empty
+        tp_exists = not symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET'].empty
+
+        # Si ambos existen, ya está protegido: eliminamos la entrada y seguimos
+        if sl_exists and tp_exists:
+            df_posiciones.drop(index, inplace=True)
+            continue
 
         # Verificar si se debe cancelar la orden después de cierto tiempo
         if counter >= 20:
@@ -427,36 +441,52 @@ def colocando_TK_SL():
             if positionSide == 'LONG':
                 take_profit = symbol_data['Take_Profit_Long'].iloc[0]
                 stop_loss = symbol_data['Stop_Loss_Long'].iloc[0]
-                exito_sl = exito_tp = False
-                try:
-                    res_sl = pkg.bingx.post_order(symbol, positionAmt, 0, stop_loss, "LONG", "STOP_MARKET", "SELL")
-                    exito_sl = True
-                    time.sleep(1)
-                except Exception as e:
-                    print(f"Error colocando SL para {symbol}: {e}")
-                try:
-                    res_tp = pkg.bingx.post_order(symbol, positionAmt, 0, take_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
-                    exito_tp = True
-                except Exception as e:
-                    print(f"Error colocando TP para {symbol}: {e}")
+                # Comprobar qué órdenes faltan
+                exito_sl = sl_exists
+                exito_tp = tp_exists
+
+                if not sl_exists:
+                    try:
+                        pkg.bingx.post_order(symbol, positionAmt, 0, stop_loss, "LONG", "STOP_MARKET", "SELL")
+                        exito_sl = True
+                        time.sleep(1)
+                    except Exception as e:
+                        print(f"Error colocando SL para {symbol}: {e}")
+
+                if not tp_exists:
+                    try:
+                        pkg.bingx.post_order(symbol, positionAmt, 0, take_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
+                        exito_tp = True
+                    except Exception as e:
+                        print(f"Error colocando TP para {symbol}: {e}")
+
+                # Si ambos existen ahora, eliminamos la marca para este símbolo
                 if exito_sl and exito_tp:
                     df_posiciones.drop(index, inplace=True)
 
             elif positionSide == 'SHORT':
                 take_profit = symbol_data['Take_Profit_Short'].iloc[0]
                 stop_loss = symbol_data['Stop_Loss_Short'].iloc[0]
-                exito_sl = exito_tp = False
-                try:
-                    res_sl = pkg.bingx.post_order(symbol, positionAmt, 0, stop_loss, "SHORT", "STOP_MARKET", "BUY")
-                    exito_sl = True
-                    time.sleep(1)
-                except Exception as e:
-                    print(f"Error colocando SL para {symbol}: {e}")
-                try:
-                    res_tp = pkg.bingx.post_order(symbol, positionAmt, 0, take_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
-                    exito_tp = True
-                except Exception as e:
-                    print(f"Error colocando TP para {symbol}: {e}")
+                # Comprobar qué órdenes faltan
+                exito_sl = sl_exists
+                exito_tp = tp_exists
+
+                if not sl_exists:
+                    try:
+                        pkg.bingx.post_order(symbol, positionAmt, 0, stop_loss, "SHORT", "STOP_MARKET", "BUY")
+                        exito_sl = True
+                        time.sleep(1)
+                    except Exception as e:
+                        print(f"Error colocando SL para {symbol}: {e}")
+
+                if not tp_exists:
+                    try:
+                        pkg.bingx.post_order(symbol, positionAmt, 0, take_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
+                        exito_tp = True
+                    except Exception as e:
+                        print(f"Error colocando TP para {symbol}: {e}")
+
+                # Si ambos existen ahora, eliminamos la marca para este símbolo
                 if exito_sl and exito_tp:
                     df_posiciones.drop(index, inplace=True)
 
