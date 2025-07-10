@@ -14,6 +14,13 @@ from urllib3.util.retry import Retry
 
 import pkg.monkey_bx
 
+# Ruta absoluta al archivo CSV donde persistimos las velas de 5 min
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))  # carpeta raíz del proyecto
+CSV_PATH = os.path.join(BASE_DIR, 'archivos', 'cripto_price_5m.csv')
+
+# Límite máximo que permite la API de BingX para `limit`
+MAX_BINGX_LIMIT = 1000
+
 # Sesión con reintentos para requests
 session = requests.Session()
 retry_strategy = Retry(
@@ -128,7 +135,7 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
             currencies = pkg.api.currencies_list()
             candle_data = []
 
-            existing_df = load_recent_csv('./archivos/cripto_price_5m.csv', days=90)
+            existing_df = load_recent_csv(CSV_PATH, days=90)
 
             now = datetime.utcnow()
             threshold = now - timedelta(hours=2)
@@ -138,13 +145,19 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
                     last_date = pd.to_datetime(existing_df.loc[existing_df['symbol'] == symbol, 'date']).max()
                 else:
                     last_date = None
-                limit_for_symbol = 4 if (last_date is None or last_date < threshold) else 1
+                if last_date is None:
+                    # Primera vez: recupera el máximo permitido (≈3.5 días)
+                    limit_for_symbol = MAX_BINGX_LIMIT
+                else:
+                    limit_for_symbol = 4 if last_date < threshold else 1
                 if last_date is not None:
                     delta = now - last_date
                     gap_intervals = int(delta.total_seconds() // (5 * 60))
                     if gap_intervals > limit_for_symbol:
                         limit_for_symbol = gap_intervals
                 symbol_limits[symbol] = limit_for_symbol
+                # Asegurarnos de no pedir más del máximo permitido por la API
+                symbol_limits[symbol] = max(1, min(symbol_limits[symbol], MAX_BINGX_LIMIT))
 
             # Permite hasta 10 hilos o el total de monedas, lo que sea menor
             with ThreadPoolExecutor(max_workers=min(10, len(currencies))) as executor:
@@ -172,7 +185,7 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
                 logging.error("No se obtuvieron datos de velas para ninguna moneda.")
                 return
 
-            existing_df = load_recent_csv('./archivos/cripto_price_5m.csv', days=90)
+            existing_df = load_recent_csv(CSV_PATH, days=90)
 
             updated_df = update_dataframe(existing_df, candle_data)
 
@@ -182,8 +195,11 @@ def price_bingx_5m(limit=1, max_retries=3, retry_delay=30):
             df_month.sort_values(['symbol', 'date'], inplace=True)
             df_month.reset_index(drop=True, inplace=True)
 
-            csv_path = './archivos/cripto_price_5m.csv'
-            df_month.to_csv(csv_path, index=False)
+            # Salvaguarda: si el histórico no se cargó pero el archivo existe, no lo sobreescribas
+            if existing_df.empty and os.path.exists(CSV_PATH):
+                logging.warning("Skip write: posible pérdida de histórico (existing_df vacío). Se conserva archivo existente.")
+            else:
+                df_month.to_csv(CSV_PATH, index=False)
 
             # Log de verificación final
             logging.info(

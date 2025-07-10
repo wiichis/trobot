@@ -1,8 +1,11 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-import talib
 
 from hyperopt import fmin, tpe, hp, STATUS_OK, Trials
+
+import indicadores as ind
+# Usar la misma función de indicadores para evitar duplicar lógica
+calculate_indicators = ind.calculate_indicators
 
 # =============================
 # Validación unificada de señales de entrada
@@ -354,107 +357,6 @@ def backtest_strategy(data, use_dynamic_sl=True, data_5m=None):
                 coin_performance[sym] = profit
 
     return balance, trade_log, equity_curve
-
-def calculate_indicators(
-    data,
-    rsi_period=14,
-    atr_period=14,
-    ema_short_period=12,
-    ema_long_period=26,
-    adx_period=14,
-    tp_multiplier=4.5,
-    sl_multiplier=1.5,
-    volume_threshold=0.8,
-    volatility_threshold=1.2,
-    rsi_oversold=30,
-    rsi_overbought=70,
-    output_filepath='./archivos/indicadores.csv'
-):
-    data = data.sort_values(by=['symbol', 'date'])
-    data.ffill(inplace=True)
-    data['volume'] = data['volume'].fillna(0)
-    symbols = data['symbol'].unique()
-
-    # Usar groupby para procesar todos los símbolos de manera eficiente
-    for symbol, df_symbol in data.groupby('symbol'):
-        df_symbol = df_symbol[df_symbol['close'] > 0]
-
-        required_periods = max(rsi_period, atr_period, ema_long_period, adx_period, 26)
-        if len(df_symbol) < required_periods:
-            continue
-
-        try:
-            # Indicadores vectorizados
-            data.loc[df_symbol.index, 'RSI'] = talib.RSI(df_symbol['close'], timeperiod=rsi_period)
-            data.loc[df_symbol.index, 'ATR'] = talib.ATR(df_symbol['high'], df_symbol['low'], df_symbol['close'], timeperiod=atr_period)
-            data.loc[df_symbol.index, 'OBV'] = talib.OBV(df_symbol['close'], df_symbol['volume'])
-            data.loc[df_symbol.index, 'OBV_Slope'] = data.loc[df_symbol.index, 'OBV'].diff()
-            data.loc[df_symbol.index, 'EMA_Short'] = talib.EMA(df_symbol['close'], timeperiod=ema_short_period)
-            data.loc[df_symbol.index, 'EMA_Long'] = talib.EMA(df_symbol['close'], timeperiod=ema_long_period)
-            macd, macd_signal, macd_hist = talib.MACD(df_symbol['close'], fastperiod=12, slowperiod=26, signalperiod=9)
-            data.loc[df_symbol.index, 'MACD'] = macd
-            data.loc[df_symbol.index, 'MACD_Signal'] = macd_signal
-            data.loc[df_symbol.index, 'MACD_Hist'] = macd_hist
-            data.loc[df_symbol.index, 'MACD_Bullish'] = (
-                (macd > macd_signal) & (macd.shift(1) <= macd_signal.shift(1))
-            ).astype('float')
-            data.loc[df_symbol.index, 'MACD_Bearish'] = (
-                (macd < macd_signal) & (macd.shift(1) >= macd_signal.shift(1))
-            ).astype('float')
-            data.loc[df_symbol.index, 'Hammer'] = talib.CDLHAMMER(
-                df_symbol['open'], df_symbol['high'], df_symbol['low'], df_symbol['close'])
-            data.loc[df_symbol.index, 'ShootingStar'] = talib.CDLSHOOTINGSTAR(
-                df_symbol['open'], df_symbol['high'], df_symbol['low'], df_symbol['close'])
-            data.loc[df_symbol.index, 'Avg_Volume'] = df_symbol['volume'].rolling(window=20).mean()
-            data.loc[df_symbol.index, 'Rel_Volume'] = df_symbol['volume'] / data.loc[df_symbol.index, 'Avg_Volume']
-            data.loc[df_symbol.index, 'Volatility'] = data.loc[df_symbol.index, 'ATR']
-            data.loc[df_symbol.index, 'Avg_Volatility'] = data.loc[df_symbol.index, 'Volatility'].rolling(window=20).mean()
-            data.loc[df_symbol.index, 'Rel_Volatility'] = data.loc[df_symbol.index, 'Volatility'] / data.loc[df_symbol.index, 'Avg_Volatility']
-            data.loc[df_symbol.index, 'ADX'] = talib.ADX(
-                df_symbol['high'], df_symbol['low'], df_symbol['close'], timeperiod=adx_period)
-            data.loc[df_symbol.index, 'Take_Profit_Long'] = df_symbol['close'] + (data.loc[df_symbol.index, 'ATR'] * tp_multiplier)
-            data.loc[df_symbol.index, 'Stop_Loss_Long'] = (df_symbol['close'] - (data.loc[df_symbol.index, 'ATR'] * sl_multiplier)).clip(lower=1e-8)
-            data.loc[df_symbol.index, 'Take_Profit_Short'] = (df_symbol['close'] - (data.loc[df_symbol.index, 'ATR'] * tp_multiplier)).clip(lower=1e-8)
-            data.loc[df_symbol.index, 'Stop_Loss_Short'] = df_symbol['close'] + (data.loc[df_symbol.index, 'ATR'] * sl_multiplier)
-        except Exception as e:
-            continue
-
-    # Lógica para las columnas, señales, etc. igual que antes
-    data['Trend_Up'] = data['EMA_Short'] > data['EMA_Long']
-    data['Trend_Down'] = data['EMA_Short'] < data['EMA_Long']
-    data['Trend_Up_Long_Term'] = data['EMA_Short'] > talib.EMA(data['close'], timeperiod=50)
-    data['Trend_Down_Long_Term'] = data['EMA_Short'] < talib.EMA(data['close'], timeperiod=50)
-    data['Hammer'] = data['Hammer'].fillna(0)
-    data['ShootingStar'] = data['ShootingStar'].fillna(0)
-    data['MACD_Bullish'] = data['MACD_Bullish'].fillna(0)
-    data['MACD_Bearish'] = data['MACD_Bearish'].fillna(0)
-    data['ADX'] = data['ADX'].fillna(0)
-    data['Rel_Volume'] = data['Rel_Volume'].fillna(1)
-    data['Rel_Volatility'] = data['Rel_Volatility'].fillna(1)
-    data['Low_Volume'] = data['Rel_Volume'] < volume_threshold
-    data['High_Volatility'] = data['Rel_Volatility'] > volatility_threshold
-
-    # Señales, igual que antes (puedes mantener esa parte)
-    # ...
-
-    data.reset_index(drop=True, inplace=True)
-
-    # Señales básicas Long/Short (sobrescribe si existen)
-    data['Long_Signal'] = (
-        (data['Trend_Up']) &
-        (data['RSI'] < rsi_overbought) &
-        (data['MACD_Bullish'] > 0) &
-        (data['ADX'] > 15)
-    )
-
-    data['Short_Signal'] = (
-        (data['Trend_Down']) &
-        (data['RSI'] > rsi_oversold) &
-        (data['MACD_Bearish'] > 0) &
-        (data['ADX'] > 15)
-    )
-
-    return data
 
 def plot_simulation_results(csv_file='./archivos/backtesting_results.csv'):
     df = pd.read_csv(csv_file)

@@ -9,8 +9,13 @@ import talib
 from datetime import datetime, timedelta  # NUEVO: para purgar registros antiguos
 
 # === Parámetros ===
-RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 14, 14, 50, 200, 14
-TP_M, SL_M, SIGNAL_MIN = 3.2, 1.6, 3  # Multiplicadores ajustados (TP 3.2 ATR, SL 1.6 ATR)
+RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 12, 12, 16, 10, 5
+TP_M, SL_M, SIGNAL_MIN = 15, 2, 3  # Multiplicadores ajustados
+# Umbrales para filtros de volumen y volatilidad
+VOL_THRESHOLD = 0.6138      # Rel_Volume < 0.6138 ⇒ bajo volumen
+VOLAT_THRESHOLD = 0.9855    # Rel_Volatility > 0.9855 ⇒ alta volatilidad
+ # Parámetros para confirmación de 5 m
+EMA_S_5M, EMA_L_5M, RSI_5M, MIN_CONFIRM_5M = 3, 7, 14, 4
 MAX_PER_SYMBOL = 300  # conservar hasta 300 velas recientes por símbolo
 
 # Días a mantener por símbolo en indicadores (para purga inteligente)
@@ -44,8 +49,6 @@ def _calc(df):
     df["ATR"]   = talib.ATR(h, l, c, ATR_P)
     df["EMA_S"] = talib.EMA(c, EMA_S)
     df["EMA_L"] = talib.EMA(c, EMA_L)
-    _, _, m_h   = talib.MACD(c, 12, 26, 9)
-    df["MACD_H"] = m_h
     df["ADX"] = talib.ADX(h, l, c, ADX_P)
 
     df["TP_L"] = c + df["ATR"] * TP_M
@@ -53,8 +56,30 @@ def _calc(df):
     df["TP_S"] = c - df["ATR"] * TP_M
     df["SL_S"] = c + df["ATR"] * SL_M
 
-    long_ok  = (df["EMA_S"] > df["EMA_L"], m_h > 0, df["RSI"] > 45, df["ADX"] > 20)
-    short_ok = (df["EMA_S"] < df["EMA_L"], m_h < 0, df["RSI"] < 55, df["ADX"] > 20)
+    # --- Volumen y volatilidad relativos ---
+    df["Avg_Volume"] = v.rolling(window=20).mean()
+    df["Rel_Volume"] = v / df["Avg_Volume"]
+    df["Low_Volume"] = df["Rel_Volume"] < VOL_THRESHOLD
+
+    df["Volatility"] = df["ATR"]  # ATR ya es una medida de volatilidad
+    df["Avg_Volatility"] = df["Volatility"].rolling(window=20).mean()
+    df["Rel_Volatility"] = df["Volatility"] / df["Avg_Volatility"]
+    df["High_Volatility"] = df["Rel_Volatility"] > VOLAT_THRESHOLD
+
+    long_ok  = (
+        df["EMA_S"] > df["EMA_L"],
+        df["RSI"] < 65,
+        df["ADX"] > 25,
+        ~df["Low_Volume"]
+    )
+    short_ok = (
+        df["EMA_S"] < df["EMA_L"],
+        df["RSI"] > 35,
+        df["ADX"] > 25,
+        ~df["Low_Volume"]
+    )
+    SIGNAL_MIN = 4  # Requiere todas las condiciones para señal fuerte
+
     df["Long_Signal"]  = np.sum(long_ok,  axis=0) >= SIGNAL_MIN
     df["Short_Signal"] = np.sum(short_ok, axis=0) >= SIGNAL_MIN
     return df
@@ -68,15 +93,16 @@ def _confirm(df30):
     df5 = _read(PRICE_5, os.path.getmtime(PRICE_5)).sort_values(["symbol", "date"])
     # --- indicadores por símbolo (evita mezclar pares) ---
     grp_close = df5.groupby("symbol")["close"]
-    df5["EMA_S"] = grp_close.transform(lambda s: talib.EMA(s, 9))
-    df5["EMA_L"] = grp_close.transform(lambda s: talib.EMA(s, 21))
-    df5["RSI"]   = grp_close.transform(lambda s: talib.RSI(s, 14))
+    df5["EMA_S"] = grp_close.transform(lambda s: talib.EMA(s, EMA_S_5M))
+    df5["EMA_L"] = grp_close.transform(lambda s: talib.EMA(s, EMA_L_5M))
+    df5["RSI"]   = grp_close.transform(lambda s: talib.RSI(s, RSI_5M))
     df5["Rel_V"] = df5["volume"] / df5.groupby("symbol")["volume"].transform(lambda s: s.rolling(20).mean())
     df5["anchor"] = df5["date"].dt.floor("30T")
     df5["rank"]   = df5.groupby(["symbol", "anchor"]).cumcount() + 1
 
-    ok_long  = (df5["EMA_S"] > df5["EMA_L"]) & (df5["RSI"] > 40) & (df5["Rel_V"] > 1) & (df5["rank"] <= 5)
-    ok_short = (df5["EMA_S"] < df5["EMA_L"]) & (df5["RSI"] > 60) & (df5["Rel_V"] > 1) & (df5["rank"] <= 5)
+    ok_long  = (df5["EMA_S"] > df5["EMA_L"]) & (df5["RSI"] > 55) & (df5["Rel_V"] > 1.2) & (df5["rank"] <= 4)
+    ok_short = (df5["EMA_S"] < df5["EMA_L"]) & (df5["RSI"] < 45) & (df5["Rel_V"] > 1.2) & (df5["rank"] <= 4)
+    MIN_CONFIRM_5M = 4  # Requiere todas las condiciones para confirmar
 
     cnt_l = df5[ok_long ].groupby(["symbol", "anchor"]).size()
     cnt_s = df5[ok_short].groupby(["symbol", "anchor"]).size()
@@ -85,8 +111,8 @@ def _confirm(df30):
     df30 = df30.merge(cnt_s.rename("cnt_s"), left_on=["symbol", "date"], right_index=True, how="left")
     df30[["cnt_l", "cnt_s"]] = df30[["cnt_l", "cnt_s"]].fillna(0)
 
-    df30["Long_Signal"]  &= df30["cnt_l"] >= 3
-    df30["Short_Signal"] &= df30["cnt_s"] >= 3
+    df30["Long_Signal"]  &= df30["cnt_l"] >= MIN_CONFIRM_5M
+    df30["Short_Signal"] &= df30["cnt_s"] >= MIN_CONFIRM_5M
     return df30.drop(columns=["cnt_l", "cnt_s"])
 
 
@@ -140,7 +166,12 @@ def update_indicators():
     out = out.sort_values(["symbol", "date"])
 
     os.makedirs(BASE_DIR := os.path.dirname(IND_CSV), exist_ok=True)
-    out = out.rename(columns={"SL_L": "Stop_Loss_Long", "SL_S": "Stop_Loss_Short"})
+    out = out.rename(columns={
+        "SL_L": "Stop_Loss_Long",
+        "SL_S": "Stop_Loss_Short",
+        "TP_L": "Take_Profit_Long",
+        "TP_S": "Take_Profit_Short"
+    })
     out.to_csv(IND_CSV, index=False, na_rep="NA")
     _purge_old()
 

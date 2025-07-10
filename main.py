@@ -1,4 +1,5 @@
 import os
+import pkg.price_bingx_5m
 import schedule
 import time
 import threading
@@ -26,6 +27,9 @@ def run_fast():
         print("❌ indicadores.csv no existe o está vacío. Se omite run_fast.")
         return
     pkg.monkey_bx.colocando_TK_SL()
+    #pkg.price_bingx_5m.price_bingx_5m()
+    #pkg.price_bingx_5m.completar_huecos_5m()
+    #pkg.price_bingx_5m.completar_ultimos_3dias()
     
 def posiciones_antiguas():
     pkg.monkey_bx.unrealized_profit_positions()
@@ -47,7 +51,7 @@ if __name__ == '__main__':
     for minute in range(2, 60, 5):   # 02, 07, 12, … 57
         schedule.every().hour.at(f":{minute:02d}").do(run_bingx)
 
-    schedule.every(50).seconds.do(run_fast)
+    schedule.every(60).seconds.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
     schedule.every(5).minutes.do(posiciones_antiguas)
     schedule.every().saturday.at("01:00").do(pesos)    

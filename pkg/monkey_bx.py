@@ -10,21 +10,28 @@ import os
 
 
 def get_last_take_profit_stop_loss(symbol):
-    # Leer el archivo CSV
+    # Leer el archivo CSV con los indicadores
     df = pd.read_csv('./archivos/indicadores.csv')
+    df['symbol'] = df['symbol'].str.upper()
 
-    # Filtrar por el símbolo de criptomoneda especificado
-    filtered_df = df[df['symbol'] == symbol]
-
-    if not filtered_df.empty:
-        # Obtener los últimos valores de Take_Profit y Stop_Loss
-        take_profit = filtered_df['Take_Profit'].iloc[-1]
-        stop_loss = filtered_df['Stop_Loss'].iloc[-1]
-
-        return take_profit, stop_loss
-    else:
-        # Si no hay datos para ese símbolo, devolver None
+    filtered_df = df[df['symbol'] == symbol.upper()]
+    if filtered_df.empty:
         return None, None
+
+    # Preferimos columnas LONG; si no existen, usamos SHORT.
+    if {'Take_Profit_Long', 'Stop_Loss_Long'}.issubset(filtered_df.columns):
+        return (
+            filtered_df['Take_Profit_Long'].iloc[-1],
+            filtered_df['Stop_Loss_Long'].iloc[-1],
+        )
+    elif {'Take_Profit_Short', 'Stop_Loss_Short'}.issubset(filtered_df.columns):
+        return (
+            filtered_df['Take_Profit_Short'].iloc[-1],
+            filtered_df['Stop_Loss_Short'].iloc[-1],
+        )
+
+    # Si no existen columnas estándar, retorna None
+    return None, None
 
 
 #Funcion Enviar Mensajes
@@ -453,24 +460,14 @@ def colocando_TK_SL():
             symbol_data = latest_values[latest_values['symbol'] == symbol]
 
             if positionSide == 'LONG':
-                # —— Obtenemos niveles TP/SL con fallback ——
-                if {'TP_L', 'Stop_Loss_Long'}.issubset(symbol_data.columns):
-                    take_profit = symbol_data['TP_L'].iloc[0]
-                    stop_loss  = symbol_data['Stop_Loss_Long'].iloc[0]
-                elif {'Take_Profit_Long', 'Stop_Loss_Long'}.issubset(symbol_data.columns):
+                # Obtener niveles TP/SL estándar
+                if {'Take_Profit_Long', 'Stop_Loss_Long'}.issubset(symbol_data.columns):
                     take_profit = symbol_data['Take_Profit_Long'].iloc[0]
                     stop_loss  = symbol_data['Stop_Loss_Long'].iloc[0]
                 else:
-                    take_profit = (
-                        symbol_data['Take_Profit'].iloc[0]
-                        if 'Take_Profit' in symbol_data.columns
-                        else price * 1.010   # +1.0 % emergencia
-                    )
-                    stop_loss = (
-                        symbol_data['Stop_Loss'].iloc[0]
-                        if 'Stop_Loss' in symbol_data.columns
-                        else price * 0.995   # –0.5 % emergencia
-                    )
+                    # Fallback de emergencia (1 % arriba/abajo)
+                    take_profit = price * 1.01
+                    stop_loss   = price * 0.995
                 # Comprobar qué órdenes faltan
                 exito_sl = sl_exists
                 exito_tp = tp_exists
@@ -495,24 +492,14 @@ def colocando_TK_SL():
                     df_posiciones.drop(index, inplace=True)
 
             elif positionSide == 'SHORT':
-                # —— Obtenemos niveles TP/SL con fallback ——
-                if {'TP_S', 'Stop_Loss_Short'}.issubset(symbol_data.columns):
-                    take_profit = symbol_data['TP_S'].iloc[0]
-                    stop_loss  = symbol_data['Stop_Loss_Short'].iloc[0]
-                elif {'Take_Profit_Short', 'Stop_Loss_Short'}.issubset(symbol_data.columns):
+                # Obtener niveles TP/SL estándar
+                if {'Take_Profit_Short', 'Stop_Loss_Short'}.issubset(symbol_data.columns):
                     take_profit = symbol_data['Take_Profit_Short'].iloc[0]
                     stop_loss  = symbol_data['Stop_Loss_Short'].iloc[0]
                 else:
-                    take_profit = (
-                        symbol_data['Take_Profit'].iloc[0]
-                        if 'Take_Profit' in symbol_data.columns
-                        else price * 0.990   # –1.0 % emergencia
-                    )
-                    stop_loss = (
-                        symbol_data['Stop_Loss'].iloc[0]
-                        if 'Stop_Loss' in symbol_data.columns
-                        else price * 1.005   # +0.5 % emergencia
-                    )
+                    # Fallback de emergencia (1 % arriba/abajo)
+                    take_profit = price * 0.99
+                    stop_loss   = price * 1.005
                 # Comprobar qué órdenes faltan
                 exito_sl = sl_exists
                 exito_tp = tp_exists
