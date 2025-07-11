@@ -6,6 +6,8 @@ import json
 import time
 import os
 
+import pkg.price_bingx_5m
+
 #Obtener los valores de SL TP
 
 
@@ -211,7 +213,7 @@ def obteniendo_ordenes_pendientes():
 
 def colocando_ordenes():
     pkg.monkey_bx.obteniendo_ordenes_pendientes()
-    currencies = pkg.api.currencies_list()
+    currencies = pkg.price_bingx_5m.currencies_list()
     df_orders = pd.read_csv('./archivos/order_id_register.csv')
     df_positions = pd.read_csv('./archivos/position_id_register.csv')
 
