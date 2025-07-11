@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import os
 
 import pkg.monkey_bx
+import pkg.price_bingx_5m
 
 # =============================
 # SECCIÓN DE VARIABLES
@@ -18,7 +19,7 @@ PESOS_ACTUALIZADOS_PATH = './archivos/pesos_actualizados.csv'  # Ruta para guard
 # =============================
 
 # Obtener la lista de criptomonedas desde otro archivo
-currencies = pkg.api.currencies_list()
+currencies = pkg.price_bingx_5m.currencies_list()
 
 def load_transaction_data(filepath=TRANSACTIONS_FILE_PATH):
     """
