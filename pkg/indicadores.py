@@ -12,7 +12,7 @@ from datetime import datetime, timedelta  # NUEVO: para purgar registros antiguo
 RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 12, 12, 16, 10, 5
 TP_M, SL_M, SIGNAL_MIN = 15, 2, 3  # Multiplicadores ajustados
 # Umbrales para filtros de volumen y volatilidad
-VOL_THRESHOLD = 0.6138      # Rel_Volume < 0.6138 ⇒ bajo volumen
+VOL_THRESHOLD = 0.58      # Rel_Volume < 0.58 ⇒ bajo volumen
 VOLAT_THRESHOLD = 0.9855    # Rel_Volatility > 0.9855 ⇒ alta volatilidad
  # Parámetros para confirmación de 5 m
 EMA_S_5M, EMA_L_5M, RSI_5M, MIN_CONFIRM_5M = 3, 7, 14, 4
@@ -68,14 +68,14 @@ def _calc(df):
 
     long_ok  = (
         df["EMA_S"] > df["EMA_L"],
-        df["RSI"] < 65,
-        df["ADX"] > 25,
+        df["RSI"] < 67,
+        df["ADX"] > 23,
         ~df["Low_Volume"]
     )
     short_ok = (
         df["EMA_S"] < df["EMA_L"],
-        df["RSI"] > 35,
-        df["ADX"] > 25,
+        df["RSI"] > 33,
+        df["ADX"] > 23,
         ~df["Low_Volume"]
     )
     SIGNAL_MIN = 4  # Requiere todas las condiciones para señal fuerte
@@ -102,7 +102,7 @@ def _confirm(df30):
 
     ok_long  = (df5["EMA_S"] > df5["EMA_L"]) & (df5["RSI"] > 55) & (df5["Rel_V"] > 1.2) & (df5["rank"] <= 4)
     ok_short = (df5["EMA_S"] < df5["EMA_L"]) & (df5["RSI"] < 45) & (df5["Rel_V"] > 1.2) & (df5["rank"] <= 4)
-    MIN_CONFIRM_5M = 4  # Requiere todas las condiciones para confirmar
+    MIN_CONFIRM_5M = 3  # Requiere todas las condiciones para confirmar
 
     cnt_l = df5[ok_long ].groupby(["symbol", "anchor"]).size()
     cnt_s = df5[ok_short].groupby(["symbol", "anchor"]).size()
