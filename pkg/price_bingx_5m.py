@@ -8,8 +8,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m.csv"
 
 def currencies_list():
-    return ['XRP-USDT', 'AVAX-USDT', 'CFX-USDT', 'DOT-USDT', 'BTC-USDT', 'NEAR-USDT', 'LTC-USDT', 'APT-USDT', 'HBAR-USDT', 'BNB-USDT', 'SHIB-USDT']
-    # No usar: MATIC, ADA, SHIB
+    return ['XRP-USDT', 'AVAX-USDT', 'CFX-USDT', 'DOT-USDT', 'NEAR-USDT', 'LTC-USDT', 'APT-USDT', 'HBAR-USDT', 'BNB-USDT', 'SHIB-USDT', 'SOL-USDT']
+    # No usar: MATIC, ADA, BTC
 
 
 def price_bingx_5m() -> None:
