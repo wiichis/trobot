@@ -9,14 +9,20 @@ import talib
 from datetime import datetime, timedelta  # NUEVO: para purgar registros antiguos
 
 # === Parámetros ===
-RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 12, 12, 16, 10, 5
-TP_M, SL_M, SIGNAL_MIN = 15, 2, 3  # Multiplicadores ajustados
+# Parámetros ajustados al mejor combo del backtest
+RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 10, 14, 8, 30, 14
+TP_M, SL_M, SIGNAL_MIN = 8, 2, 3  # Multiplicadores TP/SL
 # Umbrales para filtros de volumen y volatilidad
-VOL_THRESHOLD = 0.58      # Rel_Volume < 0.58 ⇒ bajo volumen
+VOL_THRESHOLD = 0.6       # Rel_Volume < 0.6 ⇒ bajo volumen
 VOLAT_THRESHOLD = 0.9855    # Rel_Volatility > 0.9855 ⇒ alta volatilidad
  # Parámetros para confirmación de 5 m
 EMA_S_5M, EMA_L_5M, RSI_5M, MIN_CONFIRM_5M = 3, 7, 14, 4
 MAX_PER_SYMBOL = 300  # conservar hasta 300 velas recientes por símbolo
+
+# --- Lista blanca/negra de rendimiento ---
+# Agrega aquí los símbolos que quieres EXCLUIR del cálculo de indicadores
+# Ejemplo: ["BTC-USDT", "DOGE-USDT"]
+BLOCKED_SYMBOLS = ["BTC-USDT", "AVAX-USDT","CFX-USDT"]
 
 # Días a mantener por símbolo en indicadores (para purga inteligente)
 DAYS_KEEP = 10  # Días a mantener por símbolo en indicadores
@@ -68,14 +74,14 @@ def _calc(df):
 
     long_ok  = (
         df["EMA_S"] > df["EMA_L"],
-        df["RSI"] < 67,
-        df["ADX"] > 23,
+        df["RSI"] < 70,
+        df["ADX"] > 20,
         ~df["Low_Volume"]
     )
     short_ok = (
         df["EMA_S"] < df["EMA_L"],
-        df["RSI"] > 33,
-        df["ADX"] > 23,
+        df["RSI"] > 35,
+        df["ADX"] > 20,
         ~df["Low_Volume"]
     )
     SIGNAL_MIN = 4  # Requiere todas las condiciones para señal fuerte
@@ -161,6 +167,13 @@ def update_indicators():
     if price.empty:
         return
 
+    # Filtra símbolos con bajo rendimiento si están listados en BLOCKED_SYMBOLS
+    if BLOCKED_SYMBOLS:
+        price = price[~price['symbol'].isin(BLOCKED_SYMBOLS)]
+        if price.empty:
+            print("🚫 Todos los símbolos fueron bloqueados; no hay datos para procesar.")
+            return
+
     out = price.groupby("symbol", group_keys=False).apply(_calc)
     out = _confirm(out)
     out = out.sort_values(["symbol", "date"])
@@ -193,4 +206,4 @@ def ema_alert(symbol):
 
 
 if __name__ == "__main__":
-    update_indicators() 
+    update_indicators()
