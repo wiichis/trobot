@@ -499,10 +499,11 @@ def optimize_parameters(base_cfg, param_grid):
     df = pd.DataFrame(results)
     df.to_csv(BACKTEST_DIR / 'gridsearch_results.csv', index=False)
     logger.info(f"Mejor retorno medio {best_ret:.2f}% con cfg={best_cfg}")
-    # Guarda la mejor configuración para uso en producción
-    with open(BACKTEST_DIR / 'best_cfg.json', 'w') as fp:
+    # Guarda la mejor configuración para uso en producción (dentro de pkg)
+    cfg_path = Path(__file__).resolve().parent / 'best_cfg.json'
+    with open(cfg_path, 'w') as fp:
         json.dump(best_cfg, fp, indent=2)
-    logger.info(f"best_cfg.json guardado en {BACKTEST_DIR}")
+    logger.info(f"best_cfg.json guardado en {cfg_path}")
     return best_cfg, df
 
 

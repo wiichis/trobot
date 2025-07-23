@@ -22,7 +22,7 @@ VOLAT_THRESHOLD = 0.9855    # Rel_Volatility > 0.9855 ⇒ alta volatilidad
 BASE = "./archivos"  # ruta base para todos los CSV/JSON
 # --- Cargar mejores parámetros del backtest si existen ---
 try:
-    _cfg_path = Path(BASE) / "backtesting" / "best_cfg.json"
+    _cfg_path = Path(__file__).resolve().parent / "best_cfg.json"
     with open(_cfg_path) as fp:
         _best = json.load(fp)
     RSI_P   = _best.get("rsi", RSI_P)
