@@ -6,15 +6,37 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 import talib
+from pathlib import Path
+import json
 from datetime import datetime, timedelta  # NUEVO: para purgar registros antiguos
 
 # === Parámetros ===
 # Parámetros ajustados al mejor combo del backtest
 RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 10, 14, 8, 30, 14
 TP_M, SL_M, SIGNAL_MIN = 8, 2, 3  # Multiplicadores TP/SL
+ # Umbrales adicionales (por si no se sobre‐escriben)
+RSI_HI, RSI_LO, ADX_MIN = 70, 35, 20
 # Umbrales para filtros de volumen y volatilidad
 VOL_THRESHOLD = 0.6       # Rel_Volume < 0.6 ⇒ bajo volumen
 VOLAT_THRESHOLD = 0.9855    # Rel_Volatility > 0.9855 ⇒ alta volatilidad
+BASE = "./archivos"  # ruta base para todos los CSV/JSON
+# --- Cargar mejores parámetros del backtest si existen ---
+try:
+    _cfg_path = Path(BASE) / "backtesting" / "best_cfg.json"
+    with open(_cfg_path) as fp:
+        _best = json.load(fp)
+    RSI_P   = _best.get("rsi", RSI_P)
+    EMA_S   = _best.get("ema_s", EMA_S)
+    EMA_L   = _best.get("ema_l", EMA_L)
+    ADX_P   = _best.get("adx", ADX_P)
+    TP_M    = _best.get("tp_mult", TP_M)
+    SL_M    = _best.get("sl_mult", SL_M)
+    RSI_HI  = _best.get("rsi_long", RSI_HI)
+    RSI_LO  = _best.get("rsi_short", RSI_LO)
+    ADX_MIN = _best.get("adx_min", ADX_MIN)
+    VOL_THRESHOLD = _best.get("vol_thr", VOL_THRESHOLD)
+except Exception as e:
+    print(f"⚠️  No se pudo cargar best_cfg.json: {e}")
  # Parámetros para confirmación de 5 m
 EMA_S_5M, EMA_L_5M, RSI_5M, MIN_CONFIRM_5M = 3, 7, 14, 4
 MAX_PER_SYMBOL = 300  # conservar hasta 300 velas recientes por símbolo
@@ -22,12 +44,11 @@ MAX_PER_SYMBOL = 300  # conservar hasta 300 velas recientes por símbolo
 # --- Lista blanca/negra de rendimiento ---
 # Agrega aquí los símbolos que quieres EXCLUIR del cálculo de indicadores
 # Ejemplo: ["BTC-USDT", "DOGE-USDT"]
-BLOCKED_SYMBOLS = ["BTC-USDT", "AVAX-USDT","CFX-USDT"]
+BLOCKED_SYMBOLS = ["SHIB-USDT", "XRP-USDT","AVAX-USDT", "LTC_USDT"]
 
 # Días a mantener por símbolo en indicadores (para purga inteligente)
 DAYS_KEEP = 10  # Días a mantener por símbolo en indicadores
 
-BASE = "./archivos"
 PRICE_30 = f"{BASE}/cripto_price_30m.csv"
 PRICE_5  = f"{BASE}/cripto_price_5m.csv"
 IND_CSV  = f"{BASE}/indicadores.csv"
@@ -74,14 +95,14 @@ def _calc(df):
 
     long_ok  = (
         df["EMA_S"] > df["EMA_L"],
-        df["RSI"] < 70,
-        df["ADX"] > 20,
+        df["RSI"] < RSI_HI,
+        df["ADX"] > ADX_MIN,
         ~df["Low_Volume"]
     )
     short_ok = (
         df["EMA_S"] < df["EMA_L"],
-        df["RSI"] > 35,
-        df["ADX"] > 20,
+        df["RSI"] > RSI_LO,
+        df["ADX"] > ADX_MIN,
         ~df["Low_Volume"]
     )
     SIGNAL_MIN = 4  # Requiere todas las condiciones para señal fuerte
