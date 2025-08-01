@@ -6,6 +6,13 @@ import json
 import time
 import os
 
+import math
+# Tamaño mínimo de lote por par (añade más si es necesario)
+STEP_SIZES = {
+    "SOL-USDT": 0.001,
+    # ej.: "BTC-USDT": 0.0001,
+}
+
 import pkg.price_bingx_5m
 
 #Obtener los valores de SL TP
@@ -334,7 +341,13 @@ def colocando_ordenes():
         trade = item['trade']
         peso = item['peso_ajustado']
 
-        currency_amount = trade / price_last
+        # Ajustar cantidad al step‑size permitido por el contrato
+        step_size = STEP_SIZES.get(currency, 0.001)  # valor por defecto 0.001
+        raw_qty = trade / price_last
+        currency_amount = math.floor(raw_qty / step_size) * step_size
+        # Redondeo para evitar floats interminables
+        decs = max(0, -int(round(math.log10(step_size))))
+        currency_amount = round(currency_amount, decs)
 
         # Definir factores de stop loss y profit
         if "LONG" in str(tipo):

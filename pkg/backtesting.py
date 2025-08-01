@@ -4,7 +4,7 @@ Features:
 * Loads 5‑minute candles, resamples to 30‑minute.
 * Calculates indicators (EMA, RSI, ATR, ADX, relative volume).
 * Generates trading signals and simulates trades with realistic capital
-  management (fixed stake per trade, TP/SL, equity updates).
+  management (fixed stake per trade, TP/SL, slippage, equity updates).
 * Performs grid‑search optimisation and basic reporting.
 
 2025‑07‑19 – Refactor: logging, capital debit/credit, simple ADX fallback,
@@ -15,7 +15,6 @@ import pandas as pd
 import json
 import numpy as np
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
 
 # Opcional: importa talib si usas indicadores técnicos
 try:
@@ -26,7 +25,6 @@ except ImportError:
 import vectorbt as vbt
 import matplotlib.pyplot as plt
 from itertools import product
-import pandas as pd
 
 
 # Nueva función de backtest con vectorbt
@@ -83,17 +81,24 @@ def backtest_with_vectorbt(parametros):
     sl_dist = atr * parametros.get('sl_mult', 2)
     tp_dist = atr * parametros.get('tp_mult', 15)
 
-    # Backtest con vectorbt
-    pf = vbt.Portfolio.from_signals(
+    # --- Backtest con vectorbt (manejo de compatibilidad fill_price) ---
+    pfsig_kwargs = dict(
         close=close_panel,
         entries=entries,
         exits=exits,
         init_cash=parametros.get('capital_inicial', 300),
-        fees=parametros.get('fee_pct', 0.0007),
+        fees=parametros.get('fee_pct', 0.0007),          # comisión por lado
+        slippage=parametros.get('slippage_pct', 0.0005), # 0.05 % de slippage aproximado
         sl_stop=sl_dist,
         tp_stop=tp_dist,
         freq='5T'
     )
+    try:
+        pf = vbt.Portfolio.from_signals(**pfsig_kwargs, fill_price='close')
+    except TypeError:
+        # vectorbt < 0.26 no tiene argumento fill_price
+        logger.warning("vectorbt sin soporte para fill_price → usando valores por defecto.")
+        pf = vbt.Portfolio.from_signals(**pfsig_kwargs)
 
     # Estadísticas individuales por símbolo
     for sym in close_panel.columns:
@@ -518,9 +523,10 @@ def main():
         'rsi_short': 33,
         'adx_min': 23,
         'vol_thr': 0.58,
-        'tp_mult': 15,
+        'tp_mult': 3,          # múltiplo de ATR para TP (más realista)
         'sl_mult': 2,
         'fee_pct': 0.0007,
+        'slippage_pct': 0.0005,
         'vol_win': 50,
         'max_trades': 10,
         'stake': 'fixed',
@@ -647,6 +653,34 @@ def main():
         plt.savefig(output_path)
         plt.close(fig)
         logger.info(f"Gráfico guardado en {output_path}")
+        # ---- Exportar trades detallados para comparación con P&L real ----
+        # Construir DataFrame directamente desde pf.trades.records para asegurar
+        # la presencia de los campos necesarios.
+        rec_df = pd.DataFrame(pf.trades.records)
+
+        # Añadir símbolo a partir del índice de columna ('col' → nombre del símbolo)
+        rec_df['symbol'] = rec_df['col'].apply(lambda i: pf.wrapper.columns[int(i)])
+
+        # Derivar timestamps de entrada y salida usando el índice de precios
+        idx_ts = pf.wrapper.index
+        rec_df['entry_time'] = rec_df['entry_idx'].apply(lambda i: idx_ts[int(i)])
+        rec_df['exit_time']  = rec_df['exit_idx'].apply(lambda i: idx_ts[int(i)])
+
+        # Renombrar precios y PnL para estandarizar
+        rec_df = rec_df.rename(columns={
+            'entry_price': 'entry_price',
+            'exit_price':  'exit_price',
+            'pnl':         'pnl_usd'
+        })
+
+        # Seleccionar y re‑ordenar columnas finales
+        export_cols = ['symbol', 'entry_time', 'exit_time',
+                       'entry_price', 'exit_price', 'pnl_usd']
+        trades_std = rec_df[export_cols]
+
+        std_path = BACKTEST_DIR / "sim_trades.csv"
+        trades_std.to_csv(std_path, index=False)
+        logger.info(f"Trades simulados exportados a {std_path}")
 
 
 if __name__ == "__main__":
