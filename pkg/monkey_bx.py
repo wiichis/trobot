@@ -7,11 +7,9 @@ import time
 import os
 
 import math
-# Tamaño mínimo de lote por par (añade más si es necesario)
-STEP_SIZES = {
-    "SOL-USDT": 0.001,
-    # ej.: "BTC-USDT": 0.0001,
-}
+ # Paso mínimo global de lote (0.001).  Si en el futuro necesitas pasos específicos,
+# vuelve a añadir un diccionario STEP_SIZES y usa .get().
+STEP_SIZE_DEFAULT = 0.001
 
 import pkg.price_bingx_5m
 
@@ -342,7 +340,7 @@ def colocando_ordenes():
         peso = item['peso_ajustado']
 
         # Ajustar cantidad al step‑size permitido por el contrato
-        step_size = STEP_SIZES.get(currency, 0.001)  # valor por defecto 0.001
+        step_size = STEP_SIZE_DEFAULT  # único paso mínimo
         raw_qty = trade / price_last
         currency_amount = math.floor(raw_qty / step_size) * step_size
         # Redondeo para evitar floats interminables

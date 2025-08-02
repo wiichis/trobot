@@ -288,8 +288,14 @@ def simular_trades_realista(df_30m, df_5m, parametros, simbolo, capital_inicial=
     stake_mode = parametros.get('stake', 'fixed')    # 'fixed' o 'percent'
     stake_value = parametros.get('stake_value', capital_inicial)
     max_trades = parametros.get('max_trades', max_trades)
+    risk_usd = parametros.get('risk_usd', 10)  # riesgo fijo permitido por trade
 
-    # ------------------------------------------------
+    # --- fallback tick_size y lot_size por defecto para todo el scope ---
+    tick_size = parametros.get('tick_size', 0.0001)
+    lot_size  = parametros.get('lot_size', 0.001)
+
+    spread_mult = parametros.get('spread_mult', 0.05)  # spread como % ATR
+    slip_mult   = parametros.get('slip_mult', 0.10)    # desviación slippage vs ATR
 
     df_30m = df_30m.copy()
     df_5m = df_5m[df_5m['symbol'] == simbolo].copy()
@@ -308,29 +314,58 @@ def simular_trades_realista(df_30m, df_5m, parametros, simbolo, capital_inicial=
             # No abrimos nuevas posiciones, pero seguimos monitoreando la existente
             continue
 
-        # Si no hay posición abierta y hay señal, abrimos trade si hay capital suficiente
-                # Calcula monto por trade
-        if stake_mode == 'fixed':
-            monto_por_trade = stake_value
-        else:
-            monto_por_trade = capital_disponible * stake_value
-        if capital_disponible < monto_por_trade:
-            continue
+        # Si no hay posición abierta y hay señal, calcula tamaño basado en riesgo fijo
+        if pos is None and row['signal'] != 0:
+            atr = row['ATR']
+            if atr == 0 or np.isnan(atr):
+                continue
 
-        if pos is None and row['signal'] != 0 and capital_disponible >= monto_por_trade:
-            # Debita el stake del capital disponible
-            capital_disponible -= monto_por_trade
-            tipo = 'LONG' if row['signal'] == 1 else 'SHORT'
-            # usa el open de la primera vela 5m posterior para evitar look‑ahead
+            # Qty para arriesgar exactamente `risk_usd` con el SL definido
+            qty = risk_usd / (atr * parametros['sl_mult'])
+            if qty <= 0:
+                continue
+
+            # Encuentra la primera vela de 5 m posterior para el precio de entrada
             prox_5m = df_5m[df_5m['date'] > row['date']].head(1)
             if prox_5m.empty:
                 continue  # no hay vela siguiente
-            entrada = prox_5m.iloc[0]['open']
+
+            raw_open = prox_5m.iloc[0]['open']
             fecha_entrada_real = prox_5m.iloc[0]['date']
-            atr = row['ATR']
-            tp = entrada + parametros['tp_mult'] * atr if tipo == 'LONG' else entrada - parametros['tp_mult'] * atr
-            sl = entrada - parametros['sl_mult'] * atr if tipo == 'LONG' else entrada + parametros['sl_mult'] * atr
-            qty = monto_por_trade / entrada if entrada != 0 else 0
+
+            # --- Paso 3: añade spread y slippage dinámicos ---
+            spread = atr * spread_mult
+            slip   = abs(np.random.normal(0, atr * slip_mult))
+
+            if row['signal'] == 1:          # LONG: compras al ask
+                entrada = raw_open + spread / 2 + slip
+            else:                           # SHORT: vendes al bid
+                entrada = raw_open - spread / 2 - slip
+
+            # --- Paso 2: redondeo a tick y lote ---
+            tick_size = parametros.get('tick_size', 0.0001)
+            lot_size  = parametros.get('lot_size', 0.001)
+
+            entrada = round(entrada / tick_size) * tick_size
+            qty     = max(lot_size, round(qty / lot_size) * lot_size)
+
+            # Recalcula monto tras redondeo
+            monto_por_trade = qty * entrada
+
+            tp = entrada + parametros['tp_mult'] * atr if row['signal'] == 1 else entrada - parametros['tp_mult'] * atr
+            sl = entrada - parametros['sl_mult'] * atr if row['signal'] == 1 else entrada + parametros['sl_mult'] * atr
+
+            # Redondea TP y SL al tick del exchange
+            tp = round(tp / tick_size) * tick_size
+            sl = round(sl / tick_size) * tick_size
+
+            # Verifica capital suficiente
+            if capital_disponible < monto_por_trade:
+                continue
+
+            # Debita el stake del capital disponible
+            capital_disponible -= monto_por_trade
+            tipo = 'LONG' if row['signal'] == 1 else 'SHORT'
             pos = {
                 'tipo': tipo,
                 'entrada': entrada,
@@ -390,6 +425,18 @@ def simular_trades_realista(df_30m, df_5m, parametros, simbolo, capital_inicial=
                     fecha_salida = row['date']
 
             if salida is not None:
+                # --- Ajusta precio de salida por spread y slippage ---
+                atr_curr = row['ATR']
+                spread_exit = atr_curr * spread_mult
+                slip_exit   = abs(np.random.normal(0, atr_curr * slip_mult))
+
+                if pos['tipo'] == 'LONG':
+                    salida = salida - spread_exit / 2 - slip_exit
+                else:  # SHORT cierra comprando
+                    salida = salida + spread_exit / 2 + slip_exit
+
+                # Redondea al tick del exchange
+                salida = round(salida / tick_size) * tick_size
                 # Calcular qty y ganancia_usd
                 qty = pos['qty']
                 if pos['tipo'] == 'LONG':

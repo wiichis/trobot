@@ -44,7 +44,7 @@ MAX_PER_SYMBOL = 300  # conservar hasta 300 velas recientes por símbolo
 # --- Lista blanca/negra de rendimiento ---
 # Agrega aquí los símbolos que quieres EXCLUIR del cálculo de indicadores
 # Ejemplo: ["BTC-USDT", "DOGE-USDT"]
-BLOCKED_SYMBOLS = ["SHIB-USDT", "BNB-USDT", "CFX-USDT"]
+BLOCKED_SYMBOLS = []
 
 # Días a mantener por símbolo en indicadores (para purga inteligente)
 DAYS_KEEP = 10  # Días a mantener por símbolo en indicadores
