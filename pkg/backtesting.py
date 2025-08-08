@@ -1,3 +1,71 @@
+def resumen_humano(pf, out_dir=None):
+    """Genera un resumen corto "para humanos" en consola y en un TXT.
+    Devuelve también el DataFrame por símbolo ordenado por retorno.
+    """
+    out_dir = BACKTEST_DIR if out_dir is None else out_dir
+    symbols = list(pf.wrapper.columns)
+
+    # --- Tabla por símbolo (ordenada) ---
+    rows = []
+    for sym in symbols:
+        stats = pf.stats(column=sym)
+        rows.append({
+            'symbol': sym,
+            'Total Return [%]': float(stats.loc['Total Return [%]']),
+            'Win Rate [%]': float(stats.loc['Win Rate [%]']),
+            'Sharpe Ratio': float(stats.loc['Sharpe Ratio']),
+        })
+    human = pd.DataFrame(rows).set_index('symbol').sort_values(by='Total Return [%]', ascending=False)
+
+    # --- Agregados simples ---
+    try:
+        rec = pf.trades.records_readable
+        total_trades = int(len(rec))
+        gains = rec[rec['pnl'] > 0]['pnl'].sum()
+        losses = -rec[rec['pnl'] < 0]['pnl'].sum()
+        profit_factor = float(gains / losses) if losses > 0 else float('inf')
+        # Duración media aprox. en minutos (cada barra = 5m)
+        if {'entry_idx', 'exit_idx'}.issubset(rec.columns):
+            avg_hold_min = float(((rec['exit_idx'] - rec['entry_idx']) * 5).mean())
+        else:
+            avg_hold_min = float('nan')
+    except Exception:
+        total_trades = 0
+        profit_factor = float('nan')
+        avg_hold_min = float('nan')
+
+    winrate_mean = float(np.nanmean([pf.stats(column=s).loc['Win Rate [%]'] for s in symbols]))
+    total_return_mean = float(np.nanmean([pf.stats(column=s).loc['Total Return [%]'] for s in symbols]))
+    sharpe_mean = float(np.nanmean([pf.stats(column=s).loc['Sharpe Ratio'] for s in symbols]))
+
+    # --- Texto simple y claro ---
+    top_symbol = human.index[0] if not human.empty else 'N/A'
+    top_ret = human.iloc[0]['Total Return [%]'] if not human.empty else float('nan')
+
+    lines = [
+        "\n════════ Resumen del Backtest ════════",
+        f"Símbolos evaluados: {len(symbols)}",
+        f"Trades cerrados: {total_trades}",
+        f"Winrate medio: {winrate_mean:.1f}% | Profit Factor: {profit_factor:.2f}",
+        f"Retorno medio: {total_return_mean:.1f}% | Sharpe medio: {sharpe_mean:.2f}",
+        f"Duración media por trade: {avg_hold_min:.1f} min" if not np.isnan(avg_hold_min) else "Duración media por trade: N/D",
+        f"Mejor símbolo: {top_symbol} ({top_ret:.1f}%)" if not human.empty else "Mejor símbolo: N/D",
+        "────────────────────────────────────",
+        "Top por retorno (%)\n" + human['Total Return [%]'].round(2).to_string(),
+    ]
+    text = "\n".join(lines) + "\n"
+
+    # Imprime en consola y guarda en TXT
+    print(text)
+    out_path = out_dir / 'resumen.txt'
+    try:
+        with open(out_path, 'w') as f:
+            f.write(text)
+        logger.info(f"Resumen humano guardado en {out_path}")
+    except Exception as e:
+        logger.warning(f"No se pudo guardar resumen humano: {e}")
+
+    return human
 """
 Backtesting toolkit for TRobot.
 Features:
@@ -25,6 +93,22 @@ except ImportError:
 import vectorbt as vbt
 import matplotlib.pyplot as plt
 from itertools import product
+import sys
+
+# Modo de detalle en consola (se desactiva durante la optimización)
+DETAILS = True
+
+def _progress(i, total, prefix='Optimizando', length=30):
+    """Imprime una barra de progreso en una sola línea."""
+    if total <= 0:
+        return
+    pct = (i + 1) / total
+    filled = int(length * pct)
+    bar = '#' * filled + '-' * (length - filled)
+    sys.stdout.write(f"\r{prefix} [{bar}] {pct*100:5.1f}% ({i+1}/{total})")
+    sys.stdout.flush()
+    if i + 1 == total:
+        sys.stdout.write("\n")
 
 
 # Nueva función de backtest con vectorbt
@@ -73,38 +157,122 @@ def backtest_with_vectorbt(parametros):
         adx   = vbt.ADX.run(high_panel, low_panel, close_panel,
                             window=parametros['adx']).adx
 
-    # Señales vectorizadas
-    entries = (ema_s > ema_l) & (rsi < parametros['rsi_long']) & (adx > parametros['adx_min'])
-    exits   = (ema_s < ema_l) | (rsi > parametros['rsi_short'])
+    # --- Señales vectorizadas alineadas con reglas de producción ---
+    # EMA de TF mayor (aprox 1h en datos de 5m → 12 barras por defecto)
+    ema_h_win = parametros.get('ema_h_5m', 12)
+    if talib:
+        ema_h = _series(talib.EMA, close_panel, timeperiod=ema_h_win)
+    else:
+        ema_h = vbt.EMA.run(close_panel, window=ema_h_win).ema
 
-    # Distancias de stop‑loss y take‑profit basadas en ATR
+    # Volumen relativo y umbral dinámico por volatilidad
+    volume_panel = df.pivot(columns='symbol', values='volume')
+    vol_win = parametros.get('vol_win', 50)
+    rel_volume = volume_panel / volume_panel.rolling(vol_win).mean()
+    atr_mean = atr.rolling(vol_win).mean()
+    dynamic_vol_thr = parametros.get('vol_thr', 1.0) * (atr / atr_mean).fillna(1)
+
+    # Cruces y tendencias
+    cross_up = (ema_s.shift(1) <= ema_l.shift(1)) & (ema_s > ema_l)
+    cross_down = (ema_s.shift(1) >= ema_l.shift(1)) & (ema_s < ema_l)
+    trend_long = (ema_s > ema_l) & (ema_h > ema_l)
+    trend_short = (ema_s < ema_l) & (ema_h < ema_l)
+
+    long_entries = (
+        cross_up
+        & trend_long
+        & (rsi < parametros['rsi_long'])
+        & (adx > parametros['adx_min'])
+        & (rel_volume > dynamic_vol_thr)
+    )
+    long_exits = cross_down | (rsi > parametros['rsi_long'])
+
+    short_entries = (
+        cross_down
+        & trend_short
+        & (rsi > parametros['rsi_short'])
+        & (adx > parametros['adx_min'])
+        & (rel_volume > dynamic_vol_thr)
+    )
+    short_exits = cross_up | (rsi < parametros['rsi_short'])
+
+    # --- Alineación/booleanos + diagnóstico de señales ---
+    long_entries = long_entries.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
+    long_exits   = long_exits.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
+    short_entries = short_entries.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
+    short_exits   = short_exits.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
+
+    overlap = ((long_entries & long_exits) | (short_entries & short_exits)).sum().sum()
+    logger.info(f"Solapes entry/exit en misma vela: {int(overlap)}")
+
+    l_count = int(long_entries.sum().sum())
+    s_count = int(short_entries.sum().sum())
+    logger.info(f"Signals (pre‑fallback): long={l_count}, short={s_count}")
+
+    # Si no hay ninguna señal, relaja filtros para validar funcionamiento base
+    if (l_count + s_count) == 0:
+        logger.warning("Sin señales con filtros actuales; relajando filtros (sin ADX/volumen/EMA_H).")
+        long_entries  = ( (ema_s.shift(1) <= ema_l.shift(1)) & (ema_s > ema_l) )
+        long_exits    = ( (ema_s.shift(1) >= ema_l.shift(1)) & (ema_s < ema_l) )
+        short_entries = ( (ema_s.shift(1) >= ema_l.shift(1)) & (ema_s < ema_l) )
+        short_exits   = ( (ema_s.shift(1) <= ema_l.shift(1)) & (ema_s > ema_l) )
+
+        long_entries = long_entries.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
+        long_exits   = long_exits.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
+        short_entries = short_entries.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
+        short_exits   = short_exits.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
+
+        l_count = int(long_entries.sum().sum())
+        s_count = int(short_entries.sum().sum())
+        logger.info(f"Signals (post‑fallback): long={l_count}, short={s_count}")
+
+    # Distancias de stop basadas en ATR (vectorizadas)
     sl_dist = atr * parametros.get('sl_mult', 2)
     tp_dist = atr * parametros.get('tp_mult', 15)
 
-    # --- Backtest con vectorbt (manejo de compatibilidad fill_price) ---
+    # --- Tamaño de posición basado en stake USD (permite fraccional) ---
+    stake_usd = float(parametros.get('stake_value', 30))
+    # tamaño en "unidades" = USD / precio; permite fraccional
+    size_df = (stake_usd / close_panel).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    # Diagnóstico rápido de tamaños
+    try:
+        sz_min, sz_med, sz_max = size_df.min().min(), size_df.median().median(), size_df.max().max()
+        logger.info(f"Sizing stake=${stake_usd} → size[min/med/max]={sz_min:.6f}/{sz_med:.6f}/{sz_max:.6f}")
+    except Exception:
+        pass
+
+    # --- Backtest con vectorbt (precio de llenado, sin stops automáticos aquí) ---
     pfsig_kwargs = dict(
         close=close_panel,
-        entries=entries,
-        exits=exits,
+        entries=long_entries,
+        exits=long_exits,
+        short_entries=short_entries,
+        short_exits=short_exits,
+        size=size_df,
         init_cash=parametros.get('capital_inicial', 300),
-        fees=parametros.get('fee_pct', 0.0007),          # comisión por lado
-        slippage=parametros.get('slippage_pct', 0.0005), # 0.05 % de slippage aproximado
-        sl_stop=sl_dist,
-        tp_stop=tp_dist,
+        fees=parametros.get('fee_pct', 0.0007),
+        slippage=parametros.get('slippage_pct', 0.0005),
         freq='5T'
     )
     try:
         pf = vbt.Portfolio.from_signals(**pfsig_kwargs, fill_price='close')
     except TypeError:
-        # vectorbt < 0.26 no tiene argumento fill_price
-        logger.warning("vectorbt sin soporte para fill_price → usando valores por defecto.")
         pf = vbt.Portfolio.from_signals(**pfsig_kwargs)
 
+    # --- Diagnóstico: conteo de trades ---
+    try:
+        recs = pf.trades.records
+        n_trades = len(recs) if hasattr(recs, '__len__') else 0
+        logger.info(f"vbt trades cerrados: {n_trades}")
+    except Exception as e:
+        logger.warning(f"No se pudo leer trades de vectorbt: {e}")
+
     # Estadísticas individuales por símbolo
-    for sym in close_panel.columns:
-        stats = pf.stats(column=sym)
-        print(f"\nStats for {sym}:")
-        print(stats.loc[['Total Return [%]', 'Win Rate [%]', 'Sharpe Ratio']])
+    if DETAILS:
+        for sym in close_panel.columns:
+            stats = pf.stats(column=sym)
+            print(f"\nStats for {sym}:")
+            print(stats.loc[['Total Return [%]', 'Win Rate [%]', 'Sharpe Ratio']])
     return pf
 
 import logging
@@ -251,9 +419,9 @@ def generar_senales(df, parametros):
     cross_up = (df['EMA_S'].shift(1) <= df['EMA_L'].shift(1)) & (df['EMA_S'] > df['EMA_L'])
     cross_down = (df['EMA_S'].shift(1) >= df['EMA_L'].shift(1)) & (df['EMA_S'] < df['EMA_L'])
 
-    # Tendencia en TF mayor
-    trend_long = (df['EMA_S'] > df['EMA_L']) & (df['EMA_L'] > df['EMA_H'])
-    trend_short = (df['EMA_S'] < df['EMA_L']) & (df['EMA_L'] < df['EMA_H'])
+    # Tendencia en TF mayor coherente: LONG si EMA_H > EMA_L; SHORT si EMA_H < EMA_L
+    trend_long = (df['EMA_S'] > df['EMA_L']) & (df['EMA_H'] > df['EMA_L'])
+    trend_short = (df['EMA_S'] < df['EMA_L']) & (df['EMA_H'] < df['EMA_L'])
 
     long_cond = (
         trend_long &
@@ -279,6 +447,7 @@ def generar_senales(df, parametros):
 # Nueva función: Simula trades con control de capital y número máximo de trades
 def simular_trades_realista(df_30m, df_5m, parametros, simbolo, capital_inicial=300, max_trades=10):
     """Simula trades con capital limitado, stake fijo, TP/SL y reversa."""
+    np.random.seed(parametros.get('seed', 42))
     trades = []
     pos = None  # No hay posición abierta al inicio
     capital_disponible = capital_inicial
@@ -359,6 +528,18 @@ def simular_trades_realista(df_30m, df_5m, parametros, simbolo, capital_inicial=
             tp = round(tp / tick_size) * tick_size
             sl = round(sl / tick_size) * tick_size
 
+            # --- Garantizar orden lógico tras redondeo ---
+            if row['signal'] == 1:  # LONG
+                # asegurar sl < entrada < tp; si colisionan, separa 1 tick
+                if not (sl < entrada < tp):
+                    sl = min(sl, entrada - tick_size)
+                    tp = max(tp, entrada + tick_size)
+            else:  # SHORT
+                # asegurar tp < entrada < sl
+                if not (tp < entrada < sl):
+                    tp = min(tp, entrada - tick_size)
+                    sl = max(sl, entrada + tick_size)
+
             # Verifica capital suficiente
             if capital_disponible < monto_por_trade:
                 continue
@@ -392,36 +573,58 @@ def simular_trades_realista(df_30m, df_5m, parametros, simbolo, capital_inicial=
             razon = None
             fecha_salida = None
 
-            # Vectorized detection de salidas en 5m: reversa, SL y TP
-            mask_rev = ((pos['tipo'] == 'LONG') & (velas_5m['signal_30m'] == -1)) | \
-                       ((pos['tipo'] == 'SHORT') & (velas_5m['signal_30m'] == 1))
-            mask_sl  = ((pos['tipo'] == 'LONG') & (velas_5m['low']  <= pos['sl']))    | \
-                       ((pos['tipo'] == 'SHORT') & (velas_5m['high'] >= pos['sl']))
-            mask_tp  = ((pos['tipo'] == 'LONG') & (velas_5m['high'] >= pos['tp']))    | \
-                       ((pos['tipo'] == 'SHORT') & (velas_5m['low']  <= pos['tp']))
-            events = pd.DataFrame({
-                'date':   velas_5m['date'],
-                'price':  velas_5m['close'],
-                'reason': np.where(mask_rev, 'Reversa5m', \
-                          np.where(mask_sl, 'SL', \
-                          np.where(mask_tp, 'TP', None)))
-            })
-            events = events.dropna(subset=['reason']).sort_values('date')
-            if not events.empty:
-                first = events.iloc[0]
-                salida = first['price']
-                razon = first['reason']
-                fecha_salida = first['date']
+            # --- Salida intrabar 5m usando OHLC ---
+            salida = None
+            razon = None
+            fecha_salida = None
 
-            # Cierra por señal opuesta en 30m
+            # Reglas: para LONG si en la misma vela se tocan TP y SL, asumimos conservador (SL primero).
+            # Para SHORT análogo (SL primero).
+            for _, v in velas_5m.iterrows():
+                o, h, l, c, t = v['open'], v['high'], v['low'], v['close'], v['date']
+                if pos['tipo'] == 'LONG':
+                    hit_tp = h >= pos['tp']
+                    hit_sl = l <= pos['sl']
+                    if hit_tp and hit_sl:
+                        # Empate: conservador → SL primero
+                        salida = pos['sl']
+                        razon = 'SL_samebar'
+                        fecha_salida = t
+                        break
+                    elif hit_sl:
+                        salida = pos['sl']
+                        razon = 'SL'
+                        fecha_salida = t
+                        break
+                    elif hit_tp:
+                        salida = pos['tp']
+                        razon = 'TP'
+                        fecha_salida = t
+                        break
+                else:  # SHORT
+                    hit_tp = l <= pos['tp']
+                    hit_sl = h >= pos['sl']
+                    if hit_tp and hit_sl:
+                        salida = pos['sl']
+                        razon = 'SL_samebar'
+                        fecha_salida = t
+                        break
+                    elif hit_sl:
+                        salida = pos['sl']
+                        razon = 'SL'
+                        fecha_salida = t
+                        break
+                    elif hit_tp:
+                        salida = pos['tp']
+                        razon = 'TP'
+                        fecha_salida = t
+                        break
+
+            # Cierre por señal opuesta en 30m (si no hubo TP/SL en los 5m)
             if salida is None:
-                if (pos['tipo'] == 'LONG' and row['signal'] == -1):
+                if (pos['tipo'] == 'LONG' and row['signal'] == -1) or (pos['tipo'] == 'SHORT' and row['signal'] == 1):
                     salida = row['close']
-                    razon = 'Reversa'
-                    fecha_salida = row['date']
-                elif (pos['tipo'] == 'SHORT' and row['signal'] == 1):
-                    salida = row['close']
-                    razon = 'Reversa'
+                    razon = 'Reversa_30m'
                     fecha_salida = row['date']
 
             if salida is not None:
@@ -459,15 +662,25 @@ def simular_trades_realista(df_30m, df_5m, parametros, simbolo, capital_inicial=
                     'razon': razon,
                     'ganancia_usd': ganancia_usd,
                     'qty': qty,
-                    'monto': pos['monto'], 
+                    'monto': pos['monto'],
                     'duracion_min': (fecha_salida - pos['fecha_entrada']).total_seconds() / 60 if fecha_salida and pos['fecha_entrada'] else None,
                     'tp': pos['tp'],
                     'sl': pos['sl'],
                     'idx_entrada': pos['idx_entrada'],
-                    'retorno_usd': ganancia_usd
+                    'retorno_usd': ganancia_usd,
+                    'entry_signal_30m': 1 if pos['tipo'] == 'LONG' else -1,
                 })
                 pos = None  # Cierra posición
 
+    # Debug opcional: exportar TP/SL por trade
+    try:
+        dbg = pd.DataFrame(trades)
+        if not dbg.empty:
+            dbg_cols = ['simbolo','tipo','fecha_entrada_real','entrada','tp','sl','fecha_salida','salida','razon','ganancia_usd']
+            (dbg[dbg_cols]).to_csv(BACKTEST_DIR / 'tp_sl_debug.csv', index=False)
+            logger.info('tp_sl_debug.csv exportado')
+    except Exception as e:
+        logger.warning(f'No se pudo exportar tp_sl_debug.csv: {e}')
     return pd.DataFrame(trades)
 
 
@@ -520,11 +733,19 @@ def optimize_parameters(base_cfg, param_grid):
     promedio (%) entre todos los símbolos.
     Además exporta un CSV con los resultados de cada intento.
     """
+    np.random.seed(42)
     combos      = list(product(*param_grid.values()))
     param_names = list(param_grid.keys())
     results     = []
     best_cfg    = None
     best_ret    = float("-inf")
+    best_tuple  = (float('-inf'), float('-inf'), float('-inf'), float('-inf'))  # mean_ret, sharpe, winrate, pf
+
+    global DETAILS
+    prev_details = DETAILS
+    DETAILS = False
+    prev_level = logger.level
+    logger.setLevel(logging.WARNING)
 
     for combo in combos:
         cfg = base_cfg.copy()
@@ -533,23 +754,53 @@ def optimize_parameters(base_cfg, param_grid):
         # Backtest
         pf = backtest_with_vectorbt(cfg)
 
-        # Métrica: retorno medio entre símbolos
-        rets = []
+        # Métricas por símbolo → promedios (multi‑criterio)
+        rets, sharpes, winrates, pfs = [], [], [], []
         for sym in pf.wrapper.columns:
             stats = pf.stats(column=sym)
             rets.append(stats.loc['Total Return [%]'])
-        mean_ret = np.mean(rets)
+            # Algunos stats pueden faltar según versión; usa get con fallback
+            sharpes.append(float(stats.get('Sharpe Ratio', np.nan)))
+            winrates.append(float(stats.get('Win Rate [%]', np.nan)))
+            pfs.append(float(stats.get('Profit Factor', np.nan)))
+        mean_ret     = float(np.nanmean(rets))
+        sharpe_mean  = float(np.nanmean(sharpes))
+        winrate_mean = float(np.nanmean(winrates))
+        pf_mean      = float(np.nanmean(pfs))
 
-        results.append({**dict(zip(param_names, combo)),
-                        'mean_total_return_%': mean_ret})
+        row = {**dict(zip(param_names, combo)),
+               'mean_total_return_%': mean_ret,
+               'sharpe_mean': sharpe_mean,
+               'winrate_mean_%': winrate_mean,
+               'profit_factor_mean': pf_mean}
+        results.append(row)
 
-        if mean_ret > best_ret:
+        # Selección por tupla (primario: retorno; desempates: sharpe, winrate, PF)
+        sel_tuple = (mean_ret, sharpe_mean, winrate_mean, pf_mean)
+        if sel_tuple > best_tuple:
+            best_tuple = sel_tuple
             best_ret = mean_ret
             best_cfg = cfg.copy()
 
+        _progress(len(results) - 1, len(combos), prefix='Optimizando grid')
+
+    DETAILS = prev_details
+    logger.setLevel(prev_level)
+
     # Guarda grid completo
     df = pd.DataFrame(results)
-    df.to_csv(BACKTEST_DIR / 'gridsearch_results.csv', index=False)
+    df_sorted = df.sort_values(by=['mean_total_return_%','sharpe_mean','winrate_mean_%','profit_factor_mean'], ascending=[False, False, False, False]).reset_index(drop=True)
+    top_row = df_sorted.iloc[0].to_dict() if not df_sorted.empty else None
+    # Verificación de coherencia entre best_cfg y top_row
+    if top_row is not None:
+        mismatch = False
+        for k in param_names:
+            if k in top_row and best_cfg.get(k) != top_row.get(k):
+                mismatch = True
+                break
+        if mismatch:
+            logger.warning('Inconsistencia: best_cfg no coincide con la primera fila ordenada del gridsearch. Revisar criterios.')
+    df_sorted.to_csv(BACKTEST_DIR / 'gridsearch_results.csv', index=False)
     logger.info(f"Mejor retorno medio {best_ret:.2f}% con cfg={best_cfg}")
     # Guarda la mejor configuración para uso en producción (dentro de pkg)
     cfg_path = Path(__file__).resolve().parent / 'best_cfg.json'
@@ -570,7 +821,7 @@ def main():
         'rsi_short': 33,
         'adx_min': 23,
         'vol_thr': 0.58,
-        'tp_mult': 3,          # múltiplo de ATR para TP (más realista)
+        'tp_mult': 6,          # múltiplo de ATR para TP (más realista)
         'sl_mult': 2,
         'fee_pct': 0.0007,
         'slippage_pct': 0.0005,
@@ -590,32 +841,21 @@ def main():
             'ema_l': [50, 100],
             'rsi': [14],
             'rsi_long': [60, 67],
+            'tp_mult': [1, 3, 5, 10],
+            'sl_mult': [1, 2, 3, 5],
         }
         parametros, _ = optimize_parameters(parametros, param_grid)
 
     # Ejecutar backtest optimizado con vectorbt
     pf = backtest_with_vectorbt(parametros)
 
-    # --- Resumen legible por símbolo ---
-    symbols = pf.wrapper.columns
-    rows = []
-    for sym in symbols:
-        stats = pf.stats(column=sym)
-        rows.append({
-            'symbol': sym,
-            'Total Return [%]': stats.loc['Total Return [%]'],
-            'Win Rate [%]': stats.loc['Win Rate [%]'],
-            'Sharpe Ratio': stats.loc['Sharpe Ratio'],
-        })
-    human = pd.DataFrame(rows).set_index('symbol')
-    human = human.sort_values(by='Total Return [%]', ascending=False)
+    # --- Resumen legible por símbolo + texto humano ---
+    human = resumen_humano(pf)
 
-    # ---- Exportar e imprimir resumen ----
+    # ---- Exportar resumen (CSV) ----
     summary_path = BACKTEST_DIR / "summary_per_symbol.csv"
     human.to_csv(summary_path)
     logger.info(f"Resumen por símbolo guardado en {summary_path}")
-    print("\nResumen por símbolo:\n")
-    print(human.to_string())
 
     # --- Datos para gráfico compuesto ---
     plot_possible = True
