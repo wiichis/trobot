@@ -44,7 +44,7 @@ MAX_PER_SYMBOL = 300  # conservar hasta 300 velas recientes por símbolo
 # --- Lista blanca/negra de rendimiento ---
 # Agrega aquí los símbolos que quieres EXCLUIR del cálculo de indicadores
 # Ejemplo: ["BTC-USDT", "DOGE-USDT"]
-BLOCKED_SYMBOLS = ["AVAX-USDT", "BNB-USDT"]
+BLOCKED_SYMBOLS = ["BTC-USDT", "BNB-USDT", "LTC-USDT", "SOL-USDT", "APT-USDT"]
 
 # Días a mantener por símbolo en indicadores (para purga inteligente)
 DAYS_KEEP = 10  # Días a mantener por símbolo en indicadores
@@ -118,17 +118,20 @@ def _confirm(df30):
         return df30
 
     df5 = _read(PRICE_5, os.path.getmtime(PRICE_5)).sort_values(["symbol", "date"])
+    # Mapear cada 5m a su ancla de 30m y rank 1..6 dentro del bloque
+    df5["anchor"] = df5["date"].dt.floor("30min")
+    df5["rank"] = df5.groupby(["symbol", "anchor"]).cumcount() + 1
     # --- indicadores por símbolo (evita mezclar pares) ---
     grp_close = df5.groupby("symbol")["close"]
     df5["EMA_S"] = grp_close.transform(lambda s: talib.EMA(s, EMA_S_5M))
     df5["EMA_L"] = grp_close.transform(lambda s: talib.EMA(s, EMA_L_5M))
     df5["RSI"]   = grp_close.transform(lambda s: talib.RSI(s, RSI_5M))
     df5["Rel_V"] = df5["volume"] / df5.groupby("symbol")["volume"].transform(lambda s: s.rolling(20).mean())
-    df5["anchor"] = df5["date"].dt.floor("30T")
-    df5["rank"]   = df5.groupby(["symbol", "anchor"]).cumcount() + 1
+    # Umbral de volumen relativo en 5m conectado al de 30m
+    rel_v_thr_5m = max(1.1, VOL_THRESHOLD * 2.0)
 
-    ok_long  = (df5["EMA_S"] > df5["EMA_L"]) & (df5["RSI"] > 55) & (df5["Rel_V"] > 1.2) & (df5["rank"] <= 4)
-    ok_short = (df5["EMA_S"] < df5["EMA_L"]) & (df5["RSI"] < 45) & (df5["Rel_V"] > 1.2) & (df5["rank"] <= 4)
+    ok_long  = (df5["EMA_S"] > df5["EMA_L"]) & (df5["RSI"] > 55) & (df5["Rel_V"] >= rel_v_thr_5m) & (df5["rank"] <= 4)
+    ok_short = (df5["EMA_S"] < df5["EMA_L"]) & (df5["RSI"] < 45) & (df5["Rel_V"] >= rel_v_thr_5m) & (df5["rank"] <= 4)
     MIN_CONFIRM_5M = 3  # Requiere todas las condiciones para confirmar
 
     cnt_l = df5[ok_long ].groupby(["symbol", "anchor"]).size()
@@ -140,6 +143,7 @@ def _confirm(df30):
 
     df30["Long_Signal"]  &= df30["cnt_l"] >= MIN_CONFIRM_5M
     df30["Short_Signal"] &= df30["cnt_s"] >= MIN_CONFIRM_5M
+    print(f"ℹ️ Confirmación 5m usando Rel_V threshold={rel_v_thr_5m:.2f} (VOL_THRESHOLD base={VOL_THRESHOLD})")
     return df30.drop(columns=["cnt_l", "cnt_s"])
 
 
