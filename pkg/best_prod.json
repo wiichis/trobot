@@ -1,0 +1,163 @@
+[
+  {
+    "symbol": "APT-USDT",
+    "params": {
+      "tp": 0.015,
+      "tp_mode": "fixed",
+      "tp_atr_mult": 0.0,
+      "ema_fast": 20,
+      "ema_slow": 55,
+      "rsi_buy": 56,
+      "rsi_sell": 48,
+      "adx_min": 28,
+      "min_atr_pct": 0.003,
+      "max_atr_pct": 0.04,
+      "atr_mult": 2.0,
+      "sl_mode": "atr_then_trailing",
+      "sl_pct": 0.0,
+      "be_trigger": 0.0045,
+      "cooldown": 10,
+      "logic": "any",
+      "hhll_lookback": 12,
+      "time_exit_bars": 48
+    }
+  },
+  {
+    "symbol": "AVAX-USDT",
+    "params": {
+      "tp": 0.019,
+      "tp_mode": "fixed",
+      "tp_atr_mult": 0.0,
+      "ema_fast": 21,
+      "ema_slow": 55,
+      "rsi_buy": 60,
+      "rsi_sell": 38,
+      "adx_min": 36,
+      "min_atr_pct": 0.0025,
+      "max_atr_pct": 0.03,
+      "atr_mult": 2.0,
+      "sl_mode": "atr_then_trailing",
+      "sl_pct": 0.0,
+      "be_trigger": 0.0035,
+      "cooldown": 10,
+      "logic": "any",
+      "hhll_lookback": 10,
+      "time_exit_bars": 48
+    }
+  },
+  {
+    "symbol": "CFX-USDT",
+    "params": {
+      "tp": 0.022,
+      "tp_mode": "fixed",
+      "tp_atr_mult": 0.0,
+      "ema_fast": 21,
+      "ema_slow": 55,
+      "rsi_buy": 54,
+      "rsi_sell": 40,
+      "adx_min": 32,
+      "min_atr_pct": 0.0035,
+      "max_atr_pct": 0.03,
+      "atr_mult": 2.0,
+      "sl_mode": "atr_then_trailing",
+      "sl_pct": 0.0,
+      "be_trigger": 0.0045,
+      "cooldown": 10,
+      "logic": "any",
+      "hhll_lookback": 10,
+      "time_exit_bars": 48
+    }
+  },
+  {
+    "symbol": "DOGE-USDT",
+    "params": {
+      "tp": 0.022,
+      "tp_mode": "fixed",
+      "tp_atr_mult": 0.0,
+      "ema_fast": 21,
+      "ema_slow": 55,
+      "rsi_buy": 58,
+      "rsi_sell": 42,
+      "adx_min": 32,
+      "min_atr_pct": 0.003,
+      "max_atr_pct": 0.03,
+      "atr_mult": 2.0,
+      "sl_mode": "atr_then_trailing",
+      "sl_pct": 0.0,
+      "be_trigger": 0.0045,
+      "cooldown": 10,
+      "logic": "any",
+      "hhll_lookback": 10,
+      "time_exit_bars": 48
+    }
+  },
+  {
+    "symbol": "DOT-USDT",
+    "params": {
+      "tp": 0.019,
+      "tp_mode": "fixed",
+      "tp_atr_mult": 0.0,
+      "ema_fast": 21,
+      "ema_slow": 55,
+      "rsi_buy": 64,
+      "rsi_sell": 46,
+      "adx_min": 32,
+      "min_atr_pct": 0.002,
+      "max_atr_pct": 0.03,
+      "atr_mult": 2.0,
+      "sl_mode": "atr_then_trailing",
+      "sl_pct": 0.0,
+      "be_trigger": 0.0055,
+      "cooldown": 10,
+      "logic": "any",
+      "hhll_lookback": 14,
+      "time_exit_bars": 30
+    }
+  },
+  {
+    "symbol": "NEAR-USDT",
+    "params": {
+      "tp": 0.022,
+      "tp_mode": "fixed",
+      "tp_atr_mult": 0.0,
+      "ema_fast": 21,
+      "ema_slow": 55,
+      "rsi_buy": 60,
+      "rsi_sell": 40,
+      "adx_min": 32,
+      "min_atr_pct": 0.0025,
+      "max_atr_pct": 0.04,
+      "atr_mult": 2.2,
+      "sl_mode": "atr_then_trailing",
+      "sl_pct": 0.0,
+      "be_trigger": 0.0055,
+      "cooldown": 10,
+      "logic": "any",
+      "hhll_lookback": 10,
+      "time_exit_bars": 48
+    }
+  },
+  {
+    "symbol": "TRX-USDT",
+    "params": {
+      "tp": 0.022,
+      "tp_mode": "fixed",
+      "tp_atr_mult": 0.0,
+      "ema_fast": 21,
+      "ema_slow": 55,
+      "rsi_buy": 54,
+      "rsi_sell": 50,
+      "adx_min": 32,
+      "min_atr_pct": 0.002,
+      "max_atr_pct": 0.04,
+      "atr_mult": 1.8,
+      "sl_mode": "atr_then_trailing",
+      "sl_pct": 0.0,
+      "be_trigger": 0.0035,
+      "cooldown": 10,
+      "logic": "any",
+      "hhll_lookback": 14,
+      "time_exit_bars": 30
+    }
+  }
+]

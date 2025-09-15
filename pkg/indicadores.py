@@ -10,16 +10,22 @@ from pathlib import Path
 import json
 from datetime import datetime, timedelta  # NUEVO: para purgar registros antiguos
 
-# === Parámetros ===
-# Parámetros ajustados al mejor combo del backtest
-RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 10, 14, 8, 30, 14
-TP_M, SL_M, SIGNAL_MIN = 8, 2, 3  # Multiplicadores TP/SL
- # Umbrales adicionales (por si no se sobre‐escriben)
+# === Parámetros base (alineados al backtest) ===
+RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 14, 14, 8, 30, 14
+# Multiplicadores legacy (NO usados en prod, mantenidos como fallback si no hay best_prod.json)
+TP_M, SL_M, SIGNAL_MIN = 8, 2, 3
+# Umbrales legacy (fallback)
 RSI_HI, RSI_LO, ADX_MIN = 70, 35, 20
-# Umbrales para filtros de volumen y volatilidad
-VOL_THRESHOLD = 0.6       # Rel_Volume < 0.6 ⇒ bajo volumen
-VOLAT_THRESHOLD = 0.9855    # Rel_Volatility > 0.9855 ⇒ alta volatilidad
-BASE = "./archivos"  # ruta base para todos los CSV/JSON
+
+# Umbrales/filtros informativos (pueden quedar como columnas de diagnóstico)
+VOL_THRESHOLD = 0.6
+VOLAT_THRESHOLD = 0.9855
+BASE = "./archivos"
+
+# Defaults antes de leer config
+MIN_CONFIRM_5M = 4  # (ya no se usa tras pasar a 5m puro)
+BLOCKED_SYMBOLS = []  # puede ser sobreescrita por config
+
 # --- Cargar mejores parámetros del backtest si existen ---
 try:
     _cfg_path = Path(__file__).resolve().parent / "best_cfg.json"
@@ -35,21 +41,73 @@ try:
     RSI_LO  = _best.get("rsi_short", RSI_LO)
     ADX_MIN = _best.get("adx_min", ADX_MIN)
     VOL_THRESHOLD = _best.get("vol_thr", VOL_THRESHOLD)
+    SIGNAL_MIN = _best.get("signal_min", SIGNAL_MIN)
+    # Parámetros de confirmación 5m
+    MIN_CONFIRM_5M = _best.get("min_confirm_5m", MIN_CONFIRM_5M)
+    REL_V_MULT_5M  = _best.get("rel_v_mult_5m", 2.0)
+    RSI5_LONG      = _best.get("rsi5_long", 55)
+    RSI5_SHORT     = _best.get("rsi5_short", 45)
+    RANK_LIMIT_5M  = _best.get("rank_limit_5m", 4)
+    # Lista negra opcional desde config
+    BLOCKED_SYMBOLS = _best.get("blocklist", BLOCKED_SYMBOLS)
 except Exception as e:
     print(f"⚠️  No se pudo cargar best_cfg.json: {e}")
- # Parámetros para confirmación de 5 m
-EMA_S_5M, EMA_L_5M, RSI_5M, MIN_CONFIRM_5M = 3, 7, 14, 4
+
+# === Whitelist generada por backtesting (opcional) ===
+WHITELIST_PATH = Path(__file__).resolve().parent.parent / "archivos" / "backtesting" / "whitelist.json"
+ALLOWED_SYMBOLS = []
+OBS_SYMBOLS = []
+BLACKLIST_SYMBOLS = []
+try:
+    if WHITELIST_PATH.exists():
+        with open(WHITELIST_PATH, "r", encoding="utf-8") as f:
+            _wl = json.load(f) or {}
+            ALLOWED_SYMBOLS = _wl.get("whitelist", []) or []
+            OBS_SYMBOLS = _wl.get("observation", []) or []
+            BLACKLIST_SYMBOLS = _wl.get("blacklist", []) or []
+            # Prints informativos (no rompen producción)
+            print(f"✅ Whitelist activa ({len(ALLOWED_SYMBOLS)}): {', '.join(ALLOWED_SYMBOLS) if ALLOWED_SYMBOLS else '-'}")
+            print(f"👀 En observación ({len(OBS_SYMBOLS)}): {', '.join(OBS_SYMBOLS) if OBS_SYMBOLS else '-'}")
+            print(f"⛔ Blacklist ({len(BLACKLIST_SYMBOLS)}): {', '.join(BLACKLIST_SYMBOLS) if BLACKLIST_SYMBOLS else '-'}")
+except Exception as _e:
+    # Silencioso en producción; solo informativo en debug
+    pass
+
+ # --- Cargar parámetros por símbolo desde best_prod.json ---
+BEST_PROD_PATH = Path(__file__).resolve().parent / "best_prod.json"
+PARAMS_BY_SYMBOL = {}
+try:
+    if BEST_PROD_PATH.exists():
+        with open(BEST_PROD_PATH, "r", encoding="utf-8") as f:
+            _bestp = json.load(f) or []
+        for item in _bestp:
+            sym = str(item.get('symbol', '')).upper()
+            pr  = item.get('params') or {}
+            if sym:
+                PARAMS_BY_SYMBOL[sym] = pr
+        # Si no hay whitelist explícita, usa las llaves de best_prod.json
+        if not ALLOWED_SYMBOLS and PARAMS_BY_SYMBOL:
+            ALLOWED_SYMBOLS = list(PARAMS_BY_SYMBOL.keys())
+            print(f"✅ Whitelist derivada de best_prod.json ({len(ALLOWED_SYMBOLS)})")
+except Exception as _e:
+    PARAMS_BY_SYMBOL = {}
+
+def _apply_whitelist(df: pd.DataFrame) -> pd.DataFrame:
+    """Filtra por la whitelist si existe y si el DataFrame tiene columna 'symbol'."""
+    if isinstance(df, pd.DataFrame) and 'symbol' in df.columns and ALLOWED_SYMBOLS:
+        return df[df['symbol'].isin(ALLOWED_SYMBOLS)].copy()
+    return df
+
+# Parámetros para confirmación de 5 m
+EMA_S_5M, EMA_L_5M, RSI_5M = 3, 7, 14
 MAX_PER_SYMBOL = 300  # conservar hasta 300 velas recientes por símbolo
 
 # --- Lista blanca/negra de rendimiento ---
-# Agrega aquí los símbolos que quieres EXCLUIR del cálculo de indicadores
-# Ejemplo: ["BTC-USDT", "DOGE-USDT"]
-BLOCKED_SYMBOLS = ["BTC-USDT", "BNB-USDT", "LTC-USDT", "SOL-USDT", "APT-USDT"]
+BLOCKED_SYMBOLS = []
 
 # Días a mantener por símbolo en indicadores (para purga inteligente)
 DAYS_KEEP = 10  # Días a mantener por símbolo en indicadores
 
-PRICE_30 = f"{BASE}/cripto_price_30m.csv"
 PRICE_5  = f"{BASE}/cripto_price_5m.csv"
 IND_CSV  = f"{BASE}/indicadores.csv"
 
@@ -70,81 +128,75 @@ def _read(path, mtime=None):
 
 
 # ---------- indicadores ----------
-def _calc(df):
+def _calc_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    df = df.sort_values("date").copy()
     c, h, l, v = df["close"], df["high"], df["low"], df["volume"]
+
+    # Params por símbolo (fallbacks sensatos)
+    p = (PARAMS_BY_SYMBOL.get(symbol.upper(), {}) or {})
+    ema_f = int(p.get('ema_fast', EMA_S))
+    ema_s = int(p.get('ema_slow', EMA_L))
+    rsi_buy  = int(p.get('rsi_buy', 56))
+    rsi_sell = int(p.get('rsi_sell', 44))
+    adx_min  = int(p.get('adx_min', 28))
+    min_atr  = float(p.get('min_atr_pct', 0.002))
+    max_atr  = float(p.get('max_atr_pct', 0.03))
+    tp_pct   = float(p.get('tp', 0.015))
+    atr_mult = float(p.get('atr_mult', 2.0))
+    logic    = str(p.get('logic', 'strict'))
+    hhll_n   = int(p.get('hhll_lookback', 0) or 0)
+
+    # Indicadores
     df["RSI"]   = talib.RSI(c, RSI_P)
     df["ATR"]   = talib.ATR(h, l, c, ATR_P)
-    df["EMA_S"] = talib.EMA(c, EMA_S)
-    df["EMA_L"] = talib.EMA(c, EMA_L)
-    df["ADX"] = talib.ADX(h, l, c, ADX_P)
+    df["ATR_pct"] = (df["ATR"] / c).replace([np.inf, -np.inf], np.nan)
+    df["EMA_S"] = talib.EMA(c, ema_f)
+    df["EMA_L"] = talib.EMA(c, ema_s)
+    df["ADX"]   = talib.ADX(h, l, c, ADX_P)
 
-    df["TP_L"] = c + df["ATR"] * TP_M
-    df["SL_L"] = np.maximum(c - df["ATR"] * SL_M, 1e-8)
-    df["TP_S"] = c - df["ATR"] * TP_M
-    df["SL_S"] = c + df["ATR"] * SL_M
+    # Breakouts HH/LL opcionales
+    if hhll_n and hhll_n > 0:
+        df["HH"] = h.rolling(window=hhll_n, min_periods=hhll_n).max().shift(1)
+        df["LL"] = l.rolling(window=hhll_n, min_periods=hhll_n).min().shift(1)
+        long_break  = c > df["HH"]
+        short_break = c < df["LL"]
+    else:
+        long_break = pd.Series(False, index=df.index)
+        short_break = pd.Series(False, index=df.index)
 
-    # --- Volumen y volatilidad relativos ---
+    # Condiciones
+    trend_long  = df["EMA_S"] > df["EMA_L"]
+    trend_short = df["EMA_S"] < df["EMA_L"]
+    rsi_long  = df["RSI"] >= rsi_buy
+    rsi_short = df["RSI"] <= rsi_sell
+    adx_ok    = df["ADX"] >= adx_min
+    atr_ok    = (df["ATR_pct"] >= min_atr) & (df["ATR_pct"] <= max_atr)
+
+    # Lógica: 'strict' = todas; 'any' = al menos 3 condiciones (incluyendo trend)
+    if hhll_n and hhll_n > 0:
+        conds_long  = [trend_long, rsi_long, adx_ok, atr_ok, long_break]
+        conds_short = [trend_short, rsi_short, adx_ok, atr_ok, short_break]
+        need = 5 if logic == 'strict' else 3
+    else:
+        conds_long  = [trend_long, rsi_long, adx_ok, atr_ok]
+        conds_short = [trend_short, rsi_short, adx_ok, atr_ok]
+        need = 4 if logic == 'strict' else 3
+
+    df["Long_Signal"]  = (np.sum(conds_long,  axis=0) >= need)
+    df["Short_Signal"] = (np.sum(conds_short, axis=0) >= need)
+
+    # Niveles de TP/SL (TP fijo %, SL por ATR)
+    df["TP_L"] = c * (1.0 + tp_pct)
+    df["SL_L"] = (c - atr_mult * df["ATR"]).clip(lower=1e-8)
+    df["TP_S"] = c * (1.0 - tp_pct)
+    df["SL_S"] = (c + atr_mult * df["ATR"]).clip(lower=1e-8)
+
+    # Columnas informativas opcionales
     df["Avg_Volume"] = v.rolling(window=20).mean()
-    df["Rel_Volume"] = v / df["Avg_Volume"]
+    df["Rel_Volume"] = (v / df["Avg_Volume"]).replace([np.inf, -np.inf], np.nan)
     df["Low_Volume"] = df["Rel_Volume"] < VOL_THRESHOLD
 
-    df["Volatility"] = df["ATR"]  # ATR ya es una medida de volatilidad
-    df["Avg_Volatility"] = df["Volatility"].rolling(window=20).mean()
-    df["Rel_Volatility"] = df["Volatility"] / df["Avg_Volatility"]
-    df["High_Volatility"] = df["Rel_Volatility"] > VOLAT_THRESHOLD
-
-    long_ok  = (
-        df["EMA_S"] > df["EMA_L"],
-        df["RSI"] < RSI_HI,
-        df["ADX"] > ADX_MIN,
-        ~df["Low_Volume"]
-    )
-    short_ok = (
-        df["EMA_S"] < df["EMA_L"],
-        df["RSI"] > RSI_LO,
-        df["ADX"] > ADX_MIN,
-        ~df["Low_Volume"]
-    )
-    SIGNAL_MIN = 4  # Requiere todas las condiciones para señal fuerte
-
-    df["Long_Signal"]  = np.sum(long_ok,  axis=0) >= SIGNAL_MIN
-    df["Short_Signal"] = np.sum(short_ok, axis=0) >= SIGNAL_MIN
     return df
-
-
-# ---------- confirmación 5 m ----------
-def _confirm(df30):
-    if not os.path.exists(PRICE_5):
-        return df30
-
-    df5 = _read(PRICE_5, os.path.getmtime(PRICE_5)).sort_values(["symbol", "date"])
-    # Mapear cada 5m a su ancla de 30m y rank 1..6 dentro del bloque
-    df5["anchor"] = df5["date"].dt.floor("30min")
-    df5["rank"] = df5.groupby(["symbol", "anchor"]).cumcount() + 1
-    # --- indicadores por símbolo (evita mezclar pares) ---
-    grp_close = df5.groupby("symbol")["close"]
-    df5["EMA_S"] = grp_close.transform(lambda s: talib.EMA(s, EMA_S_5M))
-    df5["EMA_L"] = grp_close.transform(lambda s: talib.EMA(s, EMA_L_5M))
-    df5["RSI"]   = grp_close.transform(lambda s: talib.RSI(s, RSI_5M))
-    df5["Rel_V"] = df5["volume"] / df5.groupby("symbol")["volume"].transform(lambda s: s.rolling(20).mean())
-    # Umbral de volumen relativo en 5m conectado al de 30m
-    rel_v_thr_5m = max(1.1, VOL_THRESHOLD * 2.0)
-
-    ok_long  = (df5["EMA_S"] > df5["EMA_L"]) & (df5["RSI"] > 55) & (df5["Rel_V"] >= rel_v_thr_5m) & (df5["rank"] <= 4)
-    ok_short = (df5["EMA_S"] < df5["EMA_L"]) & (df5["RSI"] < 45) & (df5["Rel_V"] >= rel_v_thr_5m) & (df5["rank"] <= 4)
-    MIN_CONFIRM_5M = 3  # Requiere todas las condiciones para confirmar
-
-    cnt_l = df5[ok_long ].groupby(["symbol", "anchor"]).size()
-    cnt_s = df5[ok_short].groupby(["symbol", "anchor"]).size()
-
-    df30 = df30.merge(cnt_l.rename("cnt_l"), left_on=["symbol", "date"], right_index=True, how="left")
-    df30 = df30.merge(cnt_s.rename("cnt_s"), left_on=["symbol", "date"], right_index=True, how="left")
-    df30[["cnt_l", "cnt_s"]] = df30[["cnt_l", "cnt_s"]].fillna(0)
-
-    df30["Long_Signal"]  &= df30["cnt_l"] >= MIN_CONFIRM_5M
-    df30["Short_Signal"] &= df30["cnt_s"] >= MIN_CONFIRM_5M
-    print(f"ℹ️ Confirmación 5m usando Rel_V threshold={rel_v_thr_5m:.2f} (VOL_THRESHOLD base={VOL_THRESHOLD})")
-    return df30.drop(columns=["cnt_l", "cnt_s"])
 
 
 # ---------- main ----------
@@ -174,7 +226,7 @@ def _purge_old():
         limit_date = max_date - pd.Timedelta(days=DAYS_KEEP)
         # Solo purga si el rango es mayor al límite de días
         if days_span > DAYS_KEEP:
-            buffer = int(48 * DAYS_KEEP * 1.2)  # velas 30m por día * días * 20% extra
+            buffer = int(288 * DAYS_KEEP * 1.2)  # velas 5m por día * días * 20% extra
             sdf = sdf[sdf['date'] >= limit_date]
             # Si por alguna razón quedan más de buffer filas (ejemplo, superposición), recorta por filas
             if len(sdf) > buffer:
@@ -187,21 +239,40 @@ def _purge_old():
     print(f"🧹 Purga por símbolo/días: {len(df)-len(new_df)} filas antiguas removidas")
 
 def update_indicators():
-    # Cargar TODO el archivo de precios
-    price = _read(PRICE_30, os.path.getmtime(PRICE_30)).sort_values(["symbol", "date"])
-    if price.empty:
+    # Cargar el archivo de precios 5m
+    if not os.path.exists(PRICE_5):
+        print(f"🚫 No existe {PRICE_5}")
         return
+    price = _read(PRICE_5, os.path.getmtime(PRICE_5)).sort_values(["symbol", "date"])
 
-    # Filtra símbolos con bajo rendimiento si están listados en BLOCKED_SYMBOLS
+    # Whitelist
+    if ALLOWED_SYMBOLS:
+        before = len(price)
+        price = price[price['symbol'].isin(ALLOWED_SYMBOLS)]
+        print(f"✅ Whitelist aplicada: {before}→{len(price)} filas, {len(ALLOWED_SYMBOLS)} símbolos")
+        if price.empty:
+            print("🚫 Whitelist vació el dataset; no hay datos para procesar.")
+            return
+
+    # Blacklist
     if BLOCKED_SYMBOLS:
         price = price[~price['symbol'].isin(BLOCKED_SYMBOLS)]
         if price.empty:
             print("🚫 Todos los símbolos fueron bloqueados; no hay datos para procesar.")
             return
 
-    out = price.groupby("symbol", group_keys=False).apply(_calc)
-    out = _confirm(out)
-    out = out.sort_values(["symbol", "date"])
+    # Calcular por símbolo con parámetros específicos
+    outs = []
+    for sym, sdf in price.groupby('symbol'):
+        try:
+            outs.append(_calc_symbol(sdf.copy(), sym))
+        except Exception as _e:
+            print(f"⚠️  Error calculando {sym}: {_e}")
+    if not outs:
+        print("🚫 No se generaron indicadores")
+        return
+
+    out = pd.concat(outs, ignore_index=True).sort_values(["symbol", "date"]).copy()
 
     os.makedirs(BASE_DIR := os.path.dirname(IND_CSV), exist_ok=True)
     out = out.rename(columns={

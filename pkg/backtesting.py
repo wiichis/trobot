@@ -1,1525 +1,1390 @@
-def resumen_humano(pf, out_dir=None):
-    """Genera un resumen corto "para humanos" en consola y en un TXT.
-    Devuelve también el DataFrame por símbolo ordenado por retorno.
-    """
-    out_dir = BACKTEST_DIR if out_dir is None else out_dir
-    symbols = list(pf.wrapper.columns)
-
-    # --- Tabla por símbolo (ordenada) ---
-    rows = []
-    for sym in symbols:
-        stats = pf.stats(column=sym)
-        rows.append({
-            'symbol': sym,
-            'Total Return [%]': float(stats.loc['Total Return [%]']),
-            'Win Rate [%]': float(stats.loc['Win Rate [%]']),
-            'Sharpe Ratio': float(stats.loc['Sharpe Ratio']),
-        })
-    human = pd.DataFrame(rows).set_index('symbol').sort_values(by='Total Return [%]', ascending=False)
-
-    # --- Agregados simples ---
-    try:
-        rec = pf.trades.records_readable
-        total_trades = int(len(rec))
-        gains = rec[rec['pnl'] > 0]['pnl'].sum()
-        losses = -rec[rec['pnl'] < 0]['pnl'].sum()
-        profit_factor = float(gains / losses) if losses > 0 else float('inf')
-        # Duración media aprox. en minutos (cada barra = 5m)
-        if {'entry_idx', 'exit_idx'}.issubset(rec.columns):
-            avg_hold_min = float(((rec['exit_idx'] - rec['entry_idx']) * 5).mean())
-        else:
-            avg_hold_min = float('nan')
-    except Exception:
-        total_trades = 0
-        profit_factor = float('nan')
-        avg_hold_min = float('nan')
-
-    winrate_mean = float(np.nanmean([pf.stats(column=s).loc['Win Rate [%]'] for s in symbols]))
-    total_return_mean = float(np.nanmean([pf.stats(column=s).loc['Total Return [%]'] for s in symbols]))
-    sharpe_mean = float(np.nanmean([pf.stats(column=s).loc['Sharpe Ratio'] for s in symbols]))
-
-    # --- Texto simple y claro ---
-    top_symbol = human.index[0] if not human.empty else 'N/A'
-    top_ret = human.iloc[0]['Total Return [%]'] if not human.empty else float('nan')
-
-    lines = [
-        "\n════════ Resumen del Backtest ════════",
-        f"Símbolos evaluados: {len(symbols)}",
-        f"Trades cerrados: {total_trades}",
-        f"Winrate medio: {winrate_mean:.1f}% | Profit Factor: {profit_factor:.2f}",
-        f"Retorno medio: {total_return_mean:.1f}% | Sharpe medio: {sharpe_mean:.2f}",
-        f"Duración media por trade: {avg_hold_min:.1f} min" if not np.isnan(avg_hold_min) else "Duración media por trade: N/D",
-        f"Mejor símbolo: {top_symbol} ({top_ret:.1f}%)" if not human.empty else "Mejor símbolo: N/D",
-        "────────────────────────────────────",
-        "Top por retorno (%)\n" + human['Total Return [%]'].round(2).to_string(),
-    ]
-    text = "\n".join(lines) + "\n"
-
-    # Imprime en consola y guarda en TXT
-    print(text)
-    out_path = out_dir / 'resumen.txt'
-    try:
-        with open(out_path, 'w') as f:
-            f.write(text)
-        logger.info(f"Resumen humano guardado en {out_path}")
-    except Exception as e:
-        logger.warning(f"No se pudo guardar resumen humano: {e}")
-
-    return human
+# -*- coding: utf-8 -*-
 """
-Backtesting toolkit for TRobot.
-Features:
-* Loads 5‑minute candles, resamples to 30‑minute.
-* Calculates indicators (EMA, RSI, ATR, ADX, relative volume).
-* Generates trading signals and simulates trades with realistic capital
-  management (fixed stake per trade, TP/SL, slippage, equity updates).
-* Performs grid‑search optimisation and basic reporting.
+backtesting.py — TRobot (versión simple-realista)
 
-2025‑07‑19 – Refactor: logging, capital debit/credit, simple ADX fallback,
-NaN‑safe indicator rows, headless‑safe plotting.
+Objetivo: motor de backtesting compacto y realista pero simple, alineado con
+`archivos/instrucciones_backtesting.md`.
+
+Características principales implementadas:
+- Base 5m (sin marco 30m).
+- ATR(14) absoluto y ATR%_5m = ATR/close para slippage y filtros.
+- Filtro horario: no abrir nuevas posiciones ±30 min de 00:00, 08:00, 16:00 UTC.
+- Slippage dinámico simple: max(0.02%), 0.25 × ATR%_5m, tope 0.06%.
+- Comisiones taker 0.05% por lado. Funding 0.01%/8h prorrateado por barra.
+- Position sizing: min(10% equity, (0.5% equity) / ATR(14)).
+- Entradas: EMA cruz + RSI + ADX + cierre rompe high/low reciente.
+- Salidas: TP fijo (0.5–3%) o k*ATR o sin TP; SL por ATR (fijo→trailing) / trailing desde el inicio / % fijo.
+- Salvaguardas: una ejecución por vela; filtro por ATR%.
+- Validación: split 70/30 con embargo de 1 hora.
+- Métricas de salida + cost_ratio.
+
+Dependencias: pandas, numpy.
+No requiere TA‑Lib.
 """
-
-import pandas as pd
+from __future__ import annotations
+import os
 import json
-import numpy as np
-from pathlib import Path
-
-# --- Opciones de ejecución rápida ---
-QUICK_TEST = False   # True para test rápido, False para test general
-FAST_OPT = True    # True para grid de optimización reducido (acelera el backtest)
-
-# Refinamiento en dos etapas (coarse → fine)
-COARSE_FINE = True   # activa la segunda pasada de optimización refinada cuando FAST_OPT=True
-TOP_N_REFINE = 5     # número de filas TOP del grid rápido a usar para el refinamiento
-
-# Límites globales de optimización
-MAX_COMBOS = 10_000     # tope máximo de combinaciones a evaluar
-RNG_SEED   = 42         # semilla para muestreo reproducible
-OPT_SYMBOLS_LIMIT = 8   # límite de símbolos durante optimize (solo optimización)
-
-# Límites y control del grid refinado (fine)
-REFINE_KEYS = ['ema_s','ema_l','adx_min','rsi_long','rsi_short','vol_thr','rel_v_5m_factor']
-REFINE_DELTAS_SCALE = 1   # usa vecindario ±1*step (no ±2) para reducir combinaciones
-COARSE_FINE_MAX_COMBOS = 10_000  # tope duro de combinaciones en la segunda pasada
-
-# Construye un grid refinado alrededor de los mejores valores del grid coarse
-def _refine_grid_from_top(top_df, keys):
-    import numpy as np
-    from math import prod
-    # 1) Filtrar keys a refinar
-    keys = [k for k in keys if k in REFINE_KEYS]
-    grid = {}
-    for k in keys:
-        if k not in top_df.columns:
-            continue
-        vals = [x for x in top_df[k].dropna().tolist()]
-        if not vals:
-            continue
-        # Normaliza numéricos
-        norm_vals = []
-        for x in vals:
-            try:
-                xv = float(x)
-                norm_vals.append(int(xv) if abs(xv - int(xv)) < 1e-9 else round(xv, 4))
-            except Exception:
-                norm_vals.append(x)
-        uniq = sorted(set(norm_vals))
-        vmin, vmax = (min(uniq), max(uniq)) if all(isinstance(x, (int, float)) for x in uniq) else (None, None)
-        if vmin is None:
-            grid[k] = uniq
-            continue
-        # pasos por parámetro
-        if k in ('ema_s',):
-            step = 2;  lb, ub = 5, 30
-        elif k in ('ema_l',):
-            step = 10; lb, ub = 20, 120
-        elif k in ('rsi_long', 'rsi_short'):
-            step = 2;  lb, ub = 20, 80
-        elif k == 'adx_min':
-            step = 1;  lb, ub = 5, 30
-        elif k == 'rsi_lb':
-            step = 1;  lb, ub = 2, 12
-        elif k == 'vol_thr':
-            step = 0.05; lb, ub = 0.05, 1.0
-        elif k == 'rel_v_5m_factor':
-            step = 0.2;  lb, ub = 1.0, 3.0
-        else:
-            step = 1;  lb, ub = vmin, vmax
-        # 2) Vecindario reducido: ±scale*step
-        scale = max(1, int(REFINE_DELTAS_SCALE))
-        deltas = (-scale*step, 0, scale*step)
-        candidates = set()
-        for v in uniq:
-            for d in deltas:
-                nv = v + d
-                if isinstance(step, float):
-                    nv = round(nv, 4)
-                else:
-                    nv = int(round(nv))
-                if nv < lb or nv > ub:
-                    continue
-                candidates.add(nv)
-        grid[k] = sorted(candidates)
-    # 3) Tope duro de combinaciones: recorta centrando valores
-    def _center_crop(vals, keep):
-        if len(vals) <= keep:
-            return vals
-        mid = len(vals)//2
-        half = keep//2
-        start = max(0, mid - half)
-        return vals[start:start+keep]
-    def _total(grid):
-        sizes = [len(v) for v in grid.values() if len(v)>0]
-        return prod(sizes) if sizes else 0
-    total = _total(grid)
-    if total > COARSE_FINE_MAX_COMBOS:
-        while total > COARSE_FINE_MAX_COMBOS:
-            biggest = sorted(grid.items(), key=lambda kv: len(kv[1]), reverse=True)
-            k, vals = biggest[0]
-            new_vals = _center_crop(vals, 3)
-            if len(new_vals) == len(vals):
-                break
-            grid[k] = new_vals
-            total = _total(grid)
-    return grid
-
-# Opcional: importa talib si usas indicadores técnicos
-try:
-    import talib
-except ImportError:
-    talib = None
-
-import vectorbt as vbt
-import matplotlib.pyplot as plt
-from itertools import product
+import math
+import argparse
+import re
+import itertools
 import sys
+from multiprocessing import Pool, cpu_count
+from dataclasses import dataclass
+from typing import Optional, List, Dict
 
-# --- Generador para limitar combinaciones y muestrear aleatoriamente si excede el tope ---
-from math import prod
+import numpy as np
+import pandas as pd
 
-def _sample_param_combos(param_grid, max_combos=MAX_COMBOS, seed=RNG_SEED):
-    """Genera combinaciones de parámetros. Si el producto total supera max_combos,
-    usa muestreo aleatorio uniforme por parámetro (reproducible) hasta max_combos."""
-    keys = list(param_grid.keys())
-    sizes = [len(param_grid[k]) for k in keys]
-    total = int(prod(sizes)) if sizes else 0
-    if total == 0:
-        return keys, []
-    if total <= max_combos:
-        combos = [dict(zip(keys, vals)) for vals in product(*[param_grid[k] for k in keys])]
-        return keys, combos
-    # RandomizedSearch
-    logger.warning(f"Grid con {total} combinaciones > MAX_COMBOS={max_combos}. Usando muestreo aleatorio.")
-    import numpy as np
-    rng = np.random.RandomState(seed)
-    n_iter = min(max_combos, total)
-    combos, seen = [], set()
-    attempts, max_attempts = 0, n_iter * 10
-    while len(combos) < n_iter and attempts < max_attempts:
-        attempts += 1
-        cfg = {k: rng.choice(param_grid[k]) for k in keys}
-        key = tuple(cfg[k] for k in keys)
-        if key in seen:
-            continue
-        seen.add(key)
-        combos.append(cfg)
-    if len(combos) < n_iter:
-        logger.warning(f"Se generaron {len(combos)} combinaciones únicas (menos de {n_iter}) por duplicados.")
-    return keys, combos
+#
+# ==========================
+# Rutas por defecto
+# ==========================
+DEFAULT_DATA_TEMPLATE = 'archivos/cripto_price_5m_long.csv'  # CSV único con múltiples símbolos
+DEFAULT_OUT_DIR = 'archivos/backtesting'
+
+# ==========================
+# Configuración SIMPLE-RUN (ejecuta con un solo comando, sin flags)
+# ==========================
+# Modo de uso:
+# 1) Ajusta SIMPLE_RUN['MODE'] y demás campos.
+# 2) Ejecuta: `p3 pkg/backtesting.py`  (sin argumentos)
+#    El script inyectará los flags apropiados automáticamente.
+# MODE disponibles:
+#   - 'SWEEP_PRESET'  : usa un preset interno (ej. 'core_winners')
+#   - 'SWEEP_RANGES'  : usa rangos definidos en SIMPLE_RUN['RANGES'] (se guarda un JSON temporal)
+#   - 'SINGLE'        : corre con parámetros fijos en SIMPLE_RUN['SINGLE_PARAMS']
+#   - 'BEST_FROM_FILE': usa --load_best (y opcionalmente winners_from_best)
+SIMPLE_RUN: Dict[str, object] = {
+    'ENABLE': True,
+    'MODE': 'SWEEP_RANGES',
+    'SYMBOLS': 'XRP-USDT,AVAX-USDT,CFX-USDT,DOT-USDT,NEAR-USDT,APT-USDT,HBAR-USDT,BNB-USDT,DOGE-USDT,TRX-USDT',
+    'DATA_TEMPLATE': DEFAULT_DATA_TEMPLATE,
+    'CAPITAL': 300.0,
+    'OUT_DIR': DEFAULT_OUT_DIR,
+    'RANK_BY': 'calmar',
+    'SEARCH_MODE': 'random',        # 'grid' o 'random'
+    'N_TRIALS': 150,                 # combos aleatorios por símbolo (si SEARCH_MODE='random')
+    'RANDOM_SEED': 123,
+    'SECOND_PASS': True,
+    'SECOND_TOPK': 2,
+    'FILTERS': {'min_trades': 3, 'min_winrate': 0.0, 'max_cost_ratio': 0.85, 'max_dd': 0.15},
+    'EXPORT_BEST': 'best_prod.json',
+    'RANGES': {
+        'symbols': 'XRP-USDT,AVAX-USDT,CFX-USDT,DOT-USDT,NEAR-USDT,APT-USDT,HBAR-USDT,BNB-USDT,DOGE-USDT,TRX-USDT',
+        'tp': [0.010, 0.012, 0.013, 0.015, 0.017, 0.019, 0.022],
+        'tp_mode': ['fixed'],
+        'tp_atr_mult': [0.0],
+        'ema_fast': [13, 20, 21],
+        'ema_slow': [55],
+        'rsi_buy': [52, 56, 60, 62],
+        'rsi_sell': [48, 44, 40, 38],
+        'adx_min': [24, 28, 32],
+        'min_atr_pct': [0.0015, 0.002, 0.0025, 0.003],
+        'max_atr_pct': [0.03, 0.04, 0.05],
+        'atr_mult': [2.0],
+        'sl_mode': ['atr_then_trailing'],
+        'sl_pct': [0.0],
+        'be_trigger': [0.0045],
+        'cooldown': [10],
+        'logic': ['strict', 'any'],
+        'hhll_lookback': [10, 12, 14],
+        'time_exit_bars': [30, 48],
+    },
+    'LOAD_BEST_FILE': None,
+    'WINNERS_FROM_BEST': False,
+    'BEST_THRESHOLD': 0.0
+}
+
+def _build_simple_argv(cfg: Dict[str, object]) -> list:
+    """Construye sys.argv para ejecutar el script sin flags según SIMPLE_RUN."""
+    argv = [sys.argv[0]]
+
+    def add(flag: str, val):
+        if val is None:
+            return
+        argv.append(flag)
+        argv.append(str(val))
+
+    # Base
+    add('--symbols', cfg.get('SYMBOLS', 'auto'))
+    add('--data_template', cfg.get('DATA_TEMPLATE', DEFAULT_DATA_TEMPLATE))
+    add('--capital', cfg.get('CAPITAL', 1000.0))
+    add('--out_dir', cfg.get('OUT_DIR', DEFAULT_OUT_DIR))
+    add('--rank_by', cfg.get('RANK_BY', 'pnl_net'))
+    filters = cfg.get('FILTERS') or {}
+    if filters.get('min_trades'):
+        add('--min_trades', filters['min_trades'])
+    if (filters.get('min_winrate') or 0) > 0:
+        add('--min_winrate', filters['min_winrate'])
+    if filters.get('max_cost_ratio') is not None:
+        add('--max_cost_ratio', filters['max_cost_ratio'])
+    if filters.get('max_dd') is not None:
+        add('--max_dd', filters['max_dd'])
+    if cfg.get('EXPORT_BEST'):
+        add('--export_best', cfg.get('EXPORT_BEST'))
+
+    # Añadir flags de búsqueda random/grid si están presentes
+    if cfg.get('SEARCH_MODE'):
+        add('--search_mode', cfg.get('SEARCH_MODE'))
+    if cfg.get('N_TRIALS') is not None:
+        add('--n_trials', cfg.get('N_TRIALS'))
+    if cfg.get('RANDOM_SEED') is not None:
+        add('--random_seed', cfg.get('RANDOM_SEED'))
+    # Propagar flags de segunda pasada si están presentes
+    if cfg.get('SECOND_PASS'):
+        argv.append('--second_pass')
+    if cfg.get('SECOND_TOPK') is not None:
+        add('--second_topk', cfg.get('SECOND_TOPK'))
+
+    mode = cfg.get('MODE', 'SWEEP_RANGES')
+    if mode == 'SWEEP_RANGES':
+        ranges = cfg.get('RANGES') or {}
+        out_dir = cfg.get('OUT_DIR', DEFAULT_OUT_DIR)
+        os.makedirs(out_dir, exist_ok=True)
+        sweep_path = os.path.join(out_dir, 'simple_sweep.json')
+        with open(sweep_path, 'w') as f:
+            json.dump(ranges, f, indent=2)
+        add('--sweep', sweep_path)
+    elif mode == 'SINGLE':
+        sp = cfg.get('SINGLE_PARAMS') or {}
+        symbols = sp.get('symbol_list')
+        if symbols:
+            try:
+                idx = argv.index('--symbols')
+                argv[idx + 1] = symbols
+            except ValueError:
+                add('--symbols', symbols)
+        for k in ['tp','tp_mode','tp_atr_mult','atr_mult','sl_mode','sl_pct',
+                  'ema_fast','ema_slow','rsi_buy','rsi_sell','adx_min',
+                  'min_atr_pct','max_atr_pct','be_trigger','cooldown','logic']:
+            if k in sp and sp[k] is not None:
+                add('--' + k, sp[k])
+    # 'BEST_FROM_FILE' branch omitted as not needed for minimal config
+
+    return argv
+
+# ==========================
+# Detección de símbolos disponibles en CSV único
+# ==========================
+
+def _list_symbols_from_csv(path: str) -> List[str]:
+    if not os.path.exists(path):
+        return []
+    df = pd.read_csv(path, usecols=None)
+    cols_lower = {c.lower(): c for c in df.columns}
+    col_sym = 'symbol' if 'symbol' in df.columns else cols_lower.get('symbol')
+    if col_sym is None:
+        return []
+    return [str(s) for s in df[col_sym].dropna().unique().tolist()]
 
 
-# Modo de detalle en consola (se desactiva durante la optimización)
-DETAILS = True
+def _norm_symbol(s: str) -> str:
+    return re.sub(r'[^A-Z0-9]', '', str(s).upper())
 
-def _progress(i, total, prefix='Optimizando', length=30):
-    """Imprime una barra de progreso en una sola línea."""
+# ==========================
+# Progreso
+# ==========================
+
+def _print_progress(done: int, total: int, prefix: str = "[SWEEP] Progreso"):
     if total <= 0:
         return
-    pct = (i + 1) / total
-    filled = int(length * pct)
-    bar = '#' * filled + '-' * (length - filled)
-    sys.stdout.write(f"\r{prefix} [{bar}] {pct*100:5.1f}% ({i+1}/{total})")
-    sys.stdout.flush()
-    if i + 1 == total:
-        sys.stdout.write("\n")
+    width = 28  # ancho de la barra
+    ratio = max(0.0, min(1.0, done / float(total)))
+    filled = int(width * ratio)
+    bar = '█' * filled + '·' * (width - filled)
+    pct = int(ratio * 100)
+    msg = f"\r{prefix}: |{bar}| {done}/{total} ({pct}%)"
+    print(msg, end='', flush=True)
+    if done >= total:
+        print()  # salto de línea final
+
+# ==========================
+# Utilidades
+# ==========================
+
+def ensure_dt_utc(df: pd.DataFrame, col: str = "date") -> pd.DataFrame:
+    df[col] = pd.to_datetime(df[col], utc=True)
+    return df.sort_values(col).reset_index(drop=True)
 
 
-# Nueva función de backtest con vectorbt
-def backtest_with_vectorbt(parametros):
-    # Carga de velas históricas
-    df = cargar_velas()
-    opt_limit = int(parametros.get('opt_symbols_limit', 0) or 0)
-    if opt_limit > 0:
-        try:
-            keep = (
-                df.groupby('symbol')['volume'].mean().sort_values(ascending=False).head(opt_limit).index.tolist()
-            )
-            df = df[df['symbol'].isin(keep)]
-            logger.info(f"Optimizando con top {len(keep)} símbolos por volumen: {keep}")
-        except Exception as e:
-            logger.warning(f"No se pudo limitar símbolos para optimize: {e}")
-    df = df.set_index('date')
-    # Pivot de cierres por símbolo
-    close_panel = df.pivot(columns='symbol', values='close')
-
-    # Pivot de altos y bajos para ATR/ADX
-    high_panel = df.pivot(columns='symbol', values='high')
-    low_panel  = df.pivot(columns='symbol', values='low')
-
-    # — Indicadores con índice preservado —
-    def _series(fn, panel, **kw):
-        "Aplica función TA‑Lib y conserva el índice como Series"
-        return panel.apply(lambda col: pd.Series(fn(col, **kw), index=panel.index))
-
-    # --- Indicadores ---
-    if talib:
-        ema_s = _series(talib.EMA, close_panel, timeperiod=parametros['ema_s'])
-        ema_l = _series(talib.EMA, close_panel, timeperiod=parametros['ema_l'])
-        rsi   = _series(talib.RSI, close_panel, timeperiod=parametros['rsi'])
-
-        atr = pd.DataFrame({
-            sym: pd.Series(
-                talib.ATR(high_panel[sym], low_panel[sym], close_panel[sym],
-                          timeperiod=parametros['atr']),
-                index=close_panel.index
-            ) for sym in close_panel.columns
-        })
-        adx = pd.DataFrame({
-            sym: pd.Series(
-                talib.ADX(high_panel[sym], low_panel[sym], close_panel[sym],
-                          timeperiod=parametros['adx']),
-                index=close_panel.index
-            ) for sym in close_panel.columns
-        })
-    else:
-        ema_s = vbt.EMA.run(close_panel,  window=parametros['ema_s']).ema
-        ema_l = vbt.EMA.run(close_panel,  window=parametros['ema_l']).ema
-        rsi   = vbt.RSI.run(close_panel,  window=parametros['rsi']).rsi
-        atr   = vbt.ATR.run(high_panel, low_panel, close_panel,
-                            window=parametros['atr']).atr
-        adx   = vbt.ADX.run(high_panel, low_panel, close_panel,
-                            window=parametros['adx']).adx
-
-    # Lookback de RSI en 5m para alinear con la lógica de 30m
-    rsi_lb = int(parametros.get('rsi_lb', 3))
-    rsi_min = rsi.rolling(window=rsi_lb, min_periods=1).min()
-    rsi_max = rsi.rolling(window=rsi_lb, min_periods=1).max()
-
-    # --- Señales vectorizadas alineadas con reglas de producción ---
-    # EMA de TF mayor (aprox 1h en datos de 5m → 12 barras por defecto)
-    ema_h_win = parametros.get('ema_h_5m', 12)
-    if talib:
-        ema_h = _series(talib.EMA, close_panel, timeperiod=ema_h_win)
-    else:
-        ema_h = vbt.EMA.run(close_panel, window=ema_h_win).ema
-
-    # Volumen relativo y umbral dinámico por volatilidad
-    volume_panel = df.pivot(columns='symbol', values='volume')
-    vol_win = parametros.get('vol_win', 50)
-    rel_volume = volume_panel / volume_panel.rolling(vol_win).mean()
-    atr_mean = atr.rolling(vol_win).mean()
-    dynamic_vol_thr = parametros.get('vol_thr', 1.0) * (atr / atr_mean).fillna(1)
-
-    # Cruces y tendencias
-    cross_up = (ema_s.shift(1) <= ema_l.shift(1)) & (ema_s > ema_l)
-    cross_down = (ema_s.shift(1) >= ema_l.shift(1)) & (ema_s < ema_l)
-    trend_long = (ema_s > ema_l) & (ema_h > ema_l)
-    trend_short = (ema_s < ema_l) & (ema_h < ema_l)
-
-    long_entries = (cross_up) & (rsi_min < parametros['rsi_long'])
-    long_exits = (rsi_max > parametros['rsi_long'])
-
-    short_entries = (cross_down) & (rsi_max > parametros['rsi_short'])
-    short_exits = (rsi_min < parametros['rsi_short'])
-    
-    # --- Alineación/booleanos + diagnóstico de señales ---
-    long_entries = long_entries.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
-    long_exits   = long_exits.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
-    short_entries = short_entries.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
-    short_exits   = short_exits.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
-
-    overlap = ((long_entries & long_exits) | (short_entries & short_exits)).sum().sum()
-    logger.info(f"Solapes entry/exit en misma vela: {int(overlap)}")
-
-    l_count = int(long_entries.sum().sum())
-    s_count = int(short_entries.sum().sum())
-    logger.info(f"Signals (pre‑fallback): long={l_count}, short={s_count}")
-    # Controlar fallback vía parámetros (por defecto activo solo en QUICK_TEST)
-    allow_fallback = bool(parametros.get('allow_fallback', QUICK_TEST))
-
-    # Si no hay ninguna señal, relaja filtros para validar funcionamiento base
-    if (l_count + s_count) == 0 and allow_fallback:
-        logger.warning("Sin señales con filtros actuales; relajando filtros (sin ADX/volumen/EMA_H).")
-        long_entries  = ( (ema_s.shift(1) <= ema_l.shift(1)) & (ema_s > ema_l) )
-        long_exits    = ( (ema_s.shift(1) >= ema_l.shift(1)) & (ema_s < ema_l) )
-        short_entries = ( (ema_s.shift(1) >= ema_l.shift(1)) & (ema_s < ema_l) )
-        short_exits   = ( (ema_s.shift(1) <= ema_l.shift(1)) & (ema_s > ema_l) )
-
-        long_entries = long_entries.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
-        long_exits   = long_exits.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
-        short_entries = short_entries.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
-        short_exits   = short_exits.reindex(index=close_panel.index, columns=close_panel.columns).fillna(False).astype(bool)
-
-        l_count = int(long_entries.sum().sum())
-        s_count = int(short_entries.sum().sum())
-        logger.info(f"Signals (post‑fallback): long={l_count}, short={s_count}")
-
-    # Distancias de stop basadas en ATR (vectorizadas)
-
-    # --- Tamaño de posición basado en stake USD (permite fraccional) ---
-    stake_usd = float(parametros.get('stake_value', 30))
-    # tamaño en "unidades" = USD / precio; permite fraccional
-    size_df = (stake_usd / close_panel).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    # Diagnóstico rápido de tamaños
-    try:
-        sz_min, sz_med, sz_max = size_df.min().min(), size_df.median().median(), size_df.max().max()
-        logger.info(f"Sizing stake=${stake_usd} → size[min/med/max]={sz_min:.6f}/{sz_med:.6f}/{sz_max:.6f}")
-    except Exception:
-        pass
-
-    # --- Backtest con vectorbt (precio de llenado, sin stops automáticos aquí) ---
-    pfsig_kwargs = dict(
-        close=close_panel,
-        entries=long_entries,
-        exits=long_exits,
-        short_entries=short_entries,
-        short_exits=short_exits,
-        size=size_df,
-        init_cash=parametros.get('capital_inicial', 300),
-        fees=parametros.get('fee_pct', 0.0007),
-        slippage=parametros.get('slippage_pct', 0.0005),
-        freq='5T'
-    )
-    try:
-        pf = vbt.Portfolio.from_signals(**pfsig_kwargs, fill_price='close')
-    except TypeError:
-        pf = vbt.Portfolio.from_signals(**pfsig_kwargs)
-
-    # --- Diagnóstico: conteo de trades ---
-    try:
-        recs = pf.trades.records
-        n_trades = len(recs) if hasattr(recs, '__len__') else 0
-        logger.info(f"vbt trades cerrados: {n_trades}")
-    except Exception as e:
-        logger.warning(f"No se pudo leer trades de vectorbt: {e}")
-
-    # Estadísticas individuales por símbolo
-    if DETAILS:
-        for sym in close_panel.columns:
-            stats = pf.stats(column=sym)
-            print(f"\nStats for {sym}:")
-            print(stats.loc[['Total Return [%]', 'Win Rate [%]', 'Sharpe Ratio']])
-    return pf
-
-import logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
-
-# Ruta a los archivos de velas
-BASE_DIR = Path(__file__).resolve().parent
-PATH_5M_LONG = BASE_DIR.parent / "archivos" / "cripto_price_5m_long.csv"
-
-# Carpeta de salida para resultados de backtesting
-BACKTEST_DIR = BASE_DIR.parent / "archivos" / "backtesting"
-BACKTEST_DIR.mkdir(parents=True, exist_ok=True)
-
-def cargar_velas(simbolos=None, desde=None, hasta=None):
-    """Carga velas desde CSV; opcionalmente filtra por rango y símbolos."""
-    df = pd.read_csv(PATH_5M_LONG)
-    df['date'] = pd.to_datetime(df['date'], utc=True)
-
-    # Filtra por fechas si se requiere
-    if desde:
-        df = df[df['date'] >= pd.to_datetime(desde)]
-    if hasta:
-        df = df[df['date'] <= pd.to_datetime(hasta)]
-
-    # Filtra símbolos si se requiere
-    if simbolos:
-        df = df[df['symbol'].isin(simbolos)]
-
-    return df.sort_values(['symbol', 'date']).reset_index(drop=True)
-
-# Resamplea un DataFrame de velas de 5 minutos a 30 minutos
-def resample_5m_to_30m(df_5m):
-    """Resamplea velas de 5 minutos a 30 minutos agrupando por símbolo."""
-    # Evita SettingWithCopyWarning asegurando copia independiente
-    df_5m = df_5m.copy()
-    df_5m.loc[:, 'date'] = pd.to_datetime(df_5m['date'])
-    before = len(df_5m)
-    df_30m = (
-        df_5m
-        .set_index('date')
-        .groupby('symbol')
-        .resample('30min')
-        .agg({
-            'open': 'first',
-            'high': 'max',
-            'low': 'min',
-            'close': 'last',
-            'volume': 'sum'
-        })
-        .dropna()
-        .reset_index()
-    )
-    after = len(df_30m)
-    logger.debug(f"Resample 5m→30m | símbolo(s): {df_5m['symbol'].unique()} | input={before} output={after}")
-    return df_30m
-
-def calcular_indicadores(df, parametros):
-    """Calcula indicadores técnicos EMA, RSI, ATR, ADX en el DataFrame."""
-    # Asegúrate de que los datos estén ordenados
-    df = df.sort_values('date').copy()
-
-    # EMA corta y larga
-    df['EMA_S'] = df['close'].ewm(span=parametros['ema_s'], adjust=False).mean()
-    df['EMA_L'] = df['close'].ewm(span=parametros['ema_l'], adjust=False).mean()
-
-    # RSI
-    if talib:
-        df['RSI'] = talib.RSI(df['close'], timeperiod=parametros['rsi'])
-    else:
-        delta = df['close'].diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
-        # Wilder's smoothing for RSI
-        avg_gain = gain.ewm(alpha=1/parametros['rsi'], adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1/parametros['rsi'], adjust=False).mean()
-        rs = avg_gain / avg_loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-
-    # ATR
-    if talib:
-        df['ATR'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=parametros['atr'])
-    else:
-        tr1 = df['high'] - df['low']
-        tr2 = abs(df['high'] - df['close'].shift())
-        tr3 = abs(df['low'] - df['close'].shift())
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        # Wilder's smoothing for ATR
-        df['ATR'] = tr.ewm(alpha=1/parametros['atr'], adjust=False).mean()
-
-    # ADX
-    if talib:
-        df['ADX'] = talib.ADX(df['high'], df['low'], df['close'], timeperiod=parametros['adx'])
-    else:
-        # Simple ADX 14 implementation (Wilder)
-        high = df['high']
-        low = df['low']
-        close = df['close']
-        # Calcula movimientos direccionales manuales
-        delta_high = high.diff()
-        delta_low = -low.diff()
-        plus_dm = delta_high.where((delta_high > delta_low) & (delta_high > 0), 0).fillna(0)
-        minus_dm = delta_low.where((delta_low > delta_high) & (delta_low > 0), 0).fillna(0)
-        tr = pd.concat([
-            high - low,
-            (high - close.shift()).abs(),
-            (low - close.shift()).abs()
-        ], axis=1).max(axis=1)
-        atr = tr.ewm(alpha=1/parametros['adx'], adjust=False).mean()  # Wilder’s smoothing
-        plus_di = 100 * (plus_dm.ewm(alpha=1/parametros['adx'], adjust=False).mean() / atr)
-        minus_di = 100 * (minus_dm.ewm(alpha=1/parametros['adx'], adjust=False).mean() / atr)
-        dx = ( (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan) ) * 100
-        df['ADX'] = dx.rolling(parametros['adx']).mean()
-
-    # Descarta filas con NaN en indicadores clave
-    df = df.dropna(subset=['EMA_S', 'EMA_L', 'RSI', 'ATR', 'ADX']).reset_index(drop=True)
-
-    return df
+def ema(series: pd.Series, span: int) -> pd.Series:
+    return series.ewm(span=span, adjust=False).mean()
 
 
-# Genera las señales LONG/SHORT/ninguna según los parámetros y condiciones de producción
-def generar_senales(df, parametros):
-    """Genera señales de trading LONG, SHORT o ninguna según condiciones."""
-    df = df.copy()
-
-    debug_sig = bool(parametros.get('debug_signals', QUICK_TEST))
-
-    # Filtro de tendencia en TF mayor (1h en data 30m)
-    htf_span = parametros.get('ema_h', 2)  # 2 barras de 30m ≈ 1h
-    df['EMA_H'] = df['close'].ewm(span=htf_span, adjust=False).mean()
-    # Lookback de RSI para permitir que la condición se cumpla en las últimas N velas
-    rsi_lb = int(parametros.get('rsi_lb', 3))
-    rsi_roll_min = df['RSI'].rolling(window=rsi_lb, min_periods=1).min()
-    rsi_roll_max = df['RSI'].rolling(window=rsi_lb, min_periods=1).max()
-
-    # Umbral dinámico de volumen según volatilidad (ATR)
-    window = parametros.get('vol_win', 50)
-    atr_mean = df['ATR'].rolling(window).mean()
-    dynamic_vol_thr = parametros['vol_thr'] * (df['ATR'] / atr_mean).fillna(1)
-
-    # Si falta la columna Rel_Volume, la calcula como volumen actual / promedio móvil de volumen (ventana configurable)
-    if 'Rel_Volume' not in df.columns:
-        window = parametros.get('vol_win', 50)
-        df['Rel_Volume'] = df['volume'] / df['volume'].rolling(window).mean()
-
-    # Inicializa la columna de señales
-    df['signal'] = 0
-
-    # Corte y cierre de EMAs para confirmar entradas
-    cross_up = (df['EMA_S'].shift(1) <= df['EMA_L'].shift(1)) & (df['EMA_S'] > df['EMA_L'])
-    cross_down = (df['EMA_S'].shift(1) >= df['EMA_L'].shift(1)) & (df['EMA_S'] < df['EMA_L'])
-
-    # Tendencia en TF mayor coherente: LONG si EMA_H > EMA_L; SHORT si EMA_H < EMA_L
-    trend_long = (df['EMA_S'] > df['EMA_L']) & (df['EMA_H'] > df['EMA_L'])
-    trend_short = (df['EMA_S'] < df['EMA_L']) & (df['EMA_H'] < df['EMA_L'])
-
-    # --- Diagnóstico de filtros (conteo de verdaderos) ---
-    filt = {}
-    filt['cross_up'] = cross_up
-    filt['cross_down'] = cross_down
-    filt['trend_long'] = trend_long
-    filt['trend_short'] = trend_short
-    filt['rsi_low']  = (rsi_roll_min < parametros['rsi_long'])
-    filt['rsi_high'] = (rsi_roll_max > parametros['rsi_short'])
-    window = parametros.get('vol_win', 50)
-    atr_mean = df['ATR'].rolling(window).mean()
-    dynamic_vol_thr = parametros['vol_thr'] * (df['ATR'] / atr_mean).fillna(1)
-    filt['rel_vol_pass'] = (df['Rel_Volume'] > dynamic_vol_thr)
-    filt['adx_pass'] = (df['ADX'] > parametros['adx_min'])
-    if debug_sig:
-        try:
-            logger.info(
-                'Diag 30m: cross_up=%d, cross_down=%d, trend_long=%d, trend_short=%d, rsi_low=%d, rsi_high=%d, rel_vol=%d, adx=%d',
-                int(filt['cross_up'].sum()), int(filt['cross_down'].sum()),
-                int(filt['trend_long'].sum()), int(filt['trend_short'].sum()),
-                int(filt['rsi_low'].sum()), int(filt['rsi_high'].sum()),
-                int(filt['rel_vol_pass'].sum()), int(filt['adx_pass'].sum())
-            )
-        except Exception:
-            pass
-
-    long_cond = (
-        filt['trend_long'] &
-        filt['cross_up'] &
-        filt['rsi_low'] &
-        filt['adx_pass'] &
-        filt['rel_vol_pass']
-    )
-    short_cond = (
-        filt['trend_short'] &
-        filt['cross_down'] &
-        filt['rsi_high'] &
-        filt['adx_pass'] &
-        filt['rel_vol_pass']
-    )
-
-    df.loc[long_cond, 'signal'] = 1
-    df.loc[short_cond, 'signal'] = -1
-
-    if debug_sig:
-        try:
-            logger.info('Diag 30m: señales long=%d, short=%d', int(long_cond.sum()), int(short_cond.sum()))
-        except Exception:
-            pass
-
-    return df
+def rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    delta = series.diff()
+    up = np.where(delta > 0, delta, 0.0)
+    down = np.where(delta < 0, -delta, 0.0)
+    roll_up = pd.Series(up, index=series.index).ewm(alpha=1/period, adjust=False).mean()
+    roll_down = pd.Series(down, index=series.index).ewm(alpha=1/period, adjust=False).mean()
+    rs = roll_up / (roll_down.replace(0, np.nan))
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50)
 
 
-# Nueva función: Simula trades con control de capital y número máximo de trades
-def simular_trades_realista(df_30m, df_5m, parametros, simbolo, capital_inicial=300, max_trades=10):
-    """Simula trades con capital limitado, stake fijo, TP/SL y reversa."""
-    np.random.seed(parametros.get('seed', 42))
-    trades = []
-    pos = None  # No hay posición abierta al inicio
-    capital_disponible = capital_inicial
-    cantidad_trades = 0
-    discards = []  # logs de señales descartadas con motivo
-    # --- nuevas configuraciones desde parametros ---
-    fee_pct = parametros.get('fee_pct', 0.0007)      # comisión total (por abrir + cerrar)
-    max_trades = parametros.get('max_trades', max_trades)
-    risk_usd = parametros.get('risk_usd', 10)  # riesgo fijo permitido por trade
+def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    h, l, c = df['high'], df['low'], df['close']
+    prev_c = c.shift(1)
+    tr = pd.concat([
+        (h - l),
+        (h - prev_c).abs(),
+        (l - prev_c).abs()
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1/period, adjust=False).mean()
 
-    # --- fallback tick_size y lot_size por defecto para todo el scope ---
-    tick_size = parametros.get('tick_size', 0.0001)
-    lot_size  = parametros.get('lot_size', 0.001)
 
-    spread_mult = parametros.get('spread_mult', 0.05)  # spread como % ATR
-    slip_mult   = parametros.get('slip_mult', 0.10)    # desviación slippage vs ATR
+def adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    # Implementación clásica de ADX sin TA‑Lib
+    h, l, c = df['high'], df['low'], df['close']
+    up_move = h.diff()
+    down_move = -l.diff()
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
 
-    df_30m = df_30m.copy()
-    df_5m = df_5m[df_5m['symbol'] == simbolo].copy()
-    df_5m['date'] = pd.to_datetime(df_5m['date'])
-    df_5m = df_5m.sort_values('date')
-    # ATR 5m para trailing stop
-    atr_win = parametros.get('atr', 14)
-    if 'ATR_5m' not in df_5m.columns:
-        if talib:
-            df_5m['ATR_5m'] = talib.ATR(df_5m['high'], df_5m['low'], df_5m['close'], timeperiod=atr_win)
+    tr = atr(df, period=1)  # true range sin suavizar para DI
+    atr_n = tr.ewm(alpha=1/period, adjust=False).mean()
+
+    plus_di = 100 * pd.Series(plus_dm, index=df.index).ewm(alpha=1/period, adjust=False).mean() / atr_n
+    minus_di = 100 * pd.Series(minus_dm, index=df.index).ewm(alpha=1/period, adjust=False).mean() / atr_n
+
+    dx = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)).fillna(0)
+    adx_val = dx.ewm(alpha=1/period, adjust=False).mean()
+    return adx_val.fillna(0)
+
+
+
+def nearest_funding_minutes(ts: pd.Timestamp) -> int:
+    """Minutos hasta el funding más cercano (00:00, 08:00, 16:00 UTC)."""
+    ts_utc = ts.tz_convert('UTC') if ts.tzinfo else ts.tz_localize('UTC')
+    base = ts_utc.normalize()
+    anchors = [base + pd.Timedelta(hours=h) for h in (0, 8, 16)]
+    # Considera también el ancla del día anterior y siguiente por seguridad
+    anchors += [base - pd.Timedelta(hours=8), base + pd.Timedelta(hours=24)]
+    deltas = [abs((ts_utc - a).total_seconds())/60 for a in anchors]
+    return int(min(deltas))
+
+
+def in_funding_window(ts: pd.Timestamp, window_min: int = 30) -> bool:
+    return nearest_funding_minutes(ts) <= window_min
+
+
+def calc_slippage_rate(atr_pct: float) -> float:
+    # 0.02% mínimo, 0.25 * ATR%_5m con tope 0.06%
+    s = max(0.0002, 0.25 * float(atr_pct))
+    return min(s, 0.0006)
+
+
+def round_qty(qty: float, step: float = 0.0001) -> float:
+    if step <= 0:
+        return qty
+    return math.floor(qty / step) * step
+
+
+# ==========================
+# Data classes
+# ==========================
+@dataclass
+class Trade:
+    symbol: str
+    side: str  # 'long' o 'short'
+    entry_time: pd.Timestamp
+    entry_price: float
+    exit_time: Optional[pd.Timestamp] = None
+    exit_price: Optional[float] = None
+    qty: float = 0.0
+    commission_in: float = 0.0
+    commission_out: float = 0.0
+    slippage_in: float = 0.0
+    slippage_out: float = 0.0
+    funding_cost: float = 0.0
+
+    def pnl(self) -> float:
+        if self.exit_price is None:
+            return 0.0
+        direction = 1 if self.side == 'long' else -1
+        gross = direction * (self.exit_price - self.entry_price) * self.qty
+        costs = self.commission_in + self.commission_out + self.slippage_in + self.slippage_out + self.funding_cost
+        return gross - costs
+
+
+# ==========================
+# Núcleo del backtest
+# ==========================
+class Backtester:
+    def __init__(self,
+                 symbol: str,
+                 df5m: pd.DataFrame,
+                 initial_equity: float = 1000.0,
+                 tp_pct: float = 0.01,            # 1%
+                 tp_mode: str = 'fixed',          # 'fixed' | 'atrx' | 'none'
+                 tp_atr_mult: float = 0.0,        # usado si tp_mode='atrx'
+                 atr_mult_sl: float = 2.0,
+                 sl_mode: str = 'atr_then_trailing',  # 'atr_then_trailing' | 'atr_trailing_only' | 'percent'
+                 sl_pct: float = 0.0,             # usado si sl_mode='percent'
+                 ema_fast: int = 20,
+                 ema_slow: int = 50,
+                 rsi_buy: int = 55,
+                 rsi_sell: int = 45,
+                 adx_min: int = 20,
+                 taker_fee: float = 0.0005,       # 0.05%
+                 funding_8h: float = 0.0001,      # 0.01% por 8h
+                 min_atr_pct: float = 0.0015,     # 0.15%
+                 max_atr_pct: float = 0.02,       # 2.0%
+                 lot_step: float = 0.001,
+                 be_trigger: float = 0.0045,
+                 cooldown_bars: int = 10,
+                 logic: str = 'any',
+                 hhll_lookback: int = 10,
+                 time_exit_bars: Optional[int] = 30):
+        self.symbol = symbol
+        self.df5m = df5m.copy()
+        self.equity = initial_equity
+        self.initial_equity = initial_equity
+        self.tp_pct = tp_pct
+        self.tp_mode = tp_mode
+        self.tp_atr_mult = tp_atr_mult
+        self.atr_mult_sl = atr_mult_sl
+        self.sl_mode = sl_mode
+        self.sl_pct = sl_pct
+        self.ema_fast = ema_fast
+        self.ema_slow = ema_slow
+        self.rsi_buy = rsi_buy
+        self.rsi_sell = rsi_sell
+        self.adx_min = adx_min
+        self.taker_fee = taker_fee
+        self.funding_8h = funding_8h
+        self.min_atr_pct = min_atr_pct
+        self.max_atr_pct = max_atr_pct
+        self.lot_step = lot_step
+
+        self.trades: List[Trade] = []
+        self.open_trade: Optional[Trade] = None
+        self.last_exec_bar: Optional[pd.Timestamp] = None
+
+        self.be_trigger = be_trigger    # 0.45% para activar BE
+        self.cooldown_bars = cooldown_bars
+        self.cooldown = 0               # barras de enfriamiento tras SL
+        self.be_active = False          # bandera de breakeven del trade actual
+        self.logic = logic
+        self.hhll_lookback = hhll_lookback
+        self.time_exit_bars = time_exit_bars
+
+        self._prepare_features()
+
+    def _prepare_features(self):
+        df = self.df5m
+        df = ensure_dt_utc(df)
+        # Indicadores 5m
+        df['ema_f'] = ema(df['close'], self.ema_fast)
+        df['ema_s'] = ema(df['close'], self.ema_slow)
+        df['rsi'] = rsi(df['close'], 14)
+        df['atr'] = atr(df, 14)
+        df['atr_pct'] = (df['atr'] / df['close']).clip(lower=0)
+        df['adx'] = adx(df, 14)
+        # High/Low recientes (price action) con lookback configurable
+        lookback = self.hhll_lookback
+        df['hh'] = df['high'].rolling(lookback, min_periods=lookback).max()
+        df['ll'] = df['low'].rolling(lookback, min_periods=lookback).min()
+
+        self.df5m = df
+
+    # --------------------------
+    # Reglas
+    # --------------------------
+    def _allow_new_trade(self, ts: pd.Timestamp, atr_pct: float) -> bool:
+        if in_funding_window(ts, 30):
+            return False
+        if not (self.min_atr_pct <= atr_pct <= self.max_atr_pct):
+            return False
+        # una ejecución por vela
+        if self.last_exec_bar is not None and ts == self.last_exec_bar:
+            return False
+        # cooldown activo
+        if self.cooldown > 0:
+            return False
+        return True
+
+    def _entry_signal(self, row: pd.Series) -> Optional[str]:
+        # Tendencia 5m
+        trend_up = row['ema_f'] > row['ema_s']
+        trend_dn = row['ema_f'] < row['ema_s']
+        # Momento
+        mom_up = row['rsi'] >= self.rsi_buy
+        mom_dn = row['rsi'] <= self.rsi_sell
+        # Fuerza
+        strong = row['adx'] >= self.adx_min
+        # Price action: cierre fuera de hh/ll
+        long_break = (row['close'] > row['hh']) if not math.isnan(row['hh']) else False
+        short_break = (row['close'] < row['ll']) if not math.isnan(row['ll']) else False
+
+        if self.logic == 'strict':
+            long_ok = trend_up and mom_up and strong and long_break
+            short_ok = trend_dn and mom_dn and strong and short_break
         else:
-            tr1 = df_5m['high'] - df_5m['low']
-            tr2 = (df_5m['high'] - df_5m['close'].shift()).abs()
-            tr3 = (df_5m['low'] - df_5m['close'].shift()).abs()
-            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            df_5m['ATR_5m'] = tr.ewm(alpha=1/atr_win, adjust=False).mean()
+            long_ok = trend_up and strong and (mom_up or long_break)
+            short_ok = trend_dn and strong and (mom_dn or short_break)
+        if long_ok and not short_ok:
+            return 'long'
+        if short_ok and not long_ok:
+            return 'short'
+        return None
 
-    # EMA 5m para micro‑confirmación de entrada
-    ema_s_win = parametros.get('ema_s', 16)
-    ema_l_win = parametros.get('ema_l', 50)
-    if 'EMA_S_5m' not in df_5m.columns or 'EMA_L_5m' not in df_5m.columns:
-        if talib:
-            df_5m['EMA_S_5m'] = talib.EMA(df_5m['close'], timeperiod=ema_s_win)
-            df_5m['EMA_L_5m'] = talib.EMA(df_5m['close'], timeperiod=ema_l_win)
+    def _risk_position_size(self, price: float, atr_abs: float) -> float:
+        if atr_abs <= 0:
+            return 0.0
+        risk_amt = 0.005 * self.equity            # 0.5% del equity
+        qty_risk = risk_amt / atr_abs
+        qty_cap = (0.10 * self.equity) / price    # 10% del equity
+        qty = min(qty_risk, qty_cap)
+        return round_qty(max(qty, 0.0), self.lot_step)
+
+    def _apply_commission(self, notional: float) -> float:
+        return abs(notional) * self.taker_fee
+
+    def _apply_slippage(self, price: float, side: str, slippage_rate: float) -> float:
+        # Para market: empeora el precio a favor del mercado
+        if side == 'long':
+            return price * (1 + slippage_rate)
         else:
-            df_5m['EMA_S_5m'] = df_5m['close'].ewm(span=ema_s_win, adjust=False).mean()
-            df_5m['EMA_L_5m'] = df_5m['close'].ewm(span=ema_l_win, adjust=False).mean()
+            return price * (1 - slippage_rate)
 
-    # Propagar señales de 30m a cada vela de 5m para salida en reversa
-    df_5m = pd.merge_asof(
-        df_5m.sort_values('date'),
-        df_30m[['date', 'signal']].sort_values('date'),
-        on='date',
-        direction='backward'
-    ).rename(columns={'signal': 'signal_30m'})
+    def _update_trailing_sl(self, row: pd.Series, direction: str, entry_price: float, atr_abs: float, anchor: float) -> float:
+        # trailing basado en ATR
+        if direction == 'long':
+            new_anchor = max(anchor, row['close'])
+            sl = new_anchor - self.atr_mult_sl * atr_abs
+        else:
+            new_anchor = min(anchor, row['close'])
+            sl = new_anchor + self.atr_mult_sl * atr_abs
+        return sl
 
-    for i, row in df_30m.iterrows():
-        if cantidad_trades >= max_trades and pos is None:
-            # No abrimos nuevas posiciones, pero seguimos monitoreando la existente
-            continue
+    def run(self, train_ratio: float = 0.7) -> Dict[str, float]:
+        df = self.df5m.copy()
+        if len(df) < 100:
+            raise ValueError("Datos insuficientes")
 
-        # Si no hay posición abierta y hay señal, calcula tamaño basado en riesgo fijo
-        if pos is None and row['signal'] != 0:
-            atr = row['ATR']
-            if atr == 0 or np.isnan(atr):
-                discards.append({'simbolo': simbolo, 'date_30m': row['date'], 'reason': 'no_ATR'})
-                continue
+        # Split + embargo 1h
+        cut_idx = int(len(df) * train_ratio)
+        cut_time = df.loc[cut_idx, 'date']
+        oos_start = cut_time + pd.Timedelta(hours=1)
 
-            # Qty para arriesgar exactamente `risk_usd` con el SL definido
-            qty = risk_usd / (atr * parametros['sl_mult'])
-            if qty <= 0:
-                discards.append({'simbolo': simbolo, 'date_30m': row['date'], 'reason': 'qty_nonpositive'})
-                continue
+        commissions = slippages = funding_costs = 0.0
+        realized_pnl = 0.0
+        anchor_price = None  # para trailing
+        open_bar_idx = None  # índice de barra donde se abrió la posición (para time-exit)
 
-            # Encuentra la primera vela de 5 m posterior para el precio de entrada
-            prox_5m = df_5m[df_5m['date'] > row['date']].head(1)
-            if prox_5m.empty:
-                discards.append({'simbolo': simbolo, 'date_30m': row['date'], 'reason': 'no_next_5m'})
-                continue  # no hay vela siguiente
+        # === Track equity curve ===
+        equity_curve = []
+        equity_time = []
 
-            # --- Micro‑filtro 5m para confirmar la entrada ---
-            ema_s_5 = float(prox_5m.iloc[0]['EMA_S_5m']) if not pd.isna(prox_5m.iloc[0]['EMA_S_5m']) else None
-            ema_l_5 = float(prox_5m.iloc[0]['EMA_L_5m']) if not pd.isna(prox_5m.iloc[0]['EMA_L_5m']) else None
-            close_5 = float(prox_5m.iloc[0]['close'])
-            # Si aún no hay EMAs (por ventana), salta
-            if ema_s_5 is None or ema_l_5 is None:
-                discards.append({'simbolo': simbolo, 'date_30m': row['date'], 'reason': 'ema5_nan'})
-                continue
-            if row['signal'] == 1:
-                # LONG: solo alineación de EMAs
-                if not (ema_s_5 > ema_l_5):
-                    discards.append({'simbolo': simbolo, 'date_30m': row['date'], 'reason': 'microfilter_long_fail'})
+        for i, row in df.iterrows():
+            ts = row['date']
+            if self.cooldown > 0:
+                self.cooldown -= 1
+            price = float(row['close'])
+            atr_abs = float(row['atr']) if not math.isnan(row['atr']) else 0.0
+            atr_pct = float(row['atr_pct']) if not math.isnan(row['atr_pct']) else 0.0
+
+            # funding prorrateado por barra si hay posición abierta
+            if self.open_trade is not None:
+                notional = self.open_trade.qty * price
+                per_bar_rate = self.funding_8h * (5.0 / 480.0)  # 5 minutos sobre 8 horas
+                fcost = abs(notional) * per_bar_rate
+                self.open_trade.funding_cost += fcost
+                funding_costs += fcost
+
+            # Cierre (TP / SL)
+            if self.open_trade is not None:
+                t = self.open_trade
+                # Activación de breakeven cuando el precio avanza a favor
+                if not self.be_active:
+                    if t.side == 'long' and row['high'] >= t.entry_price * (1 + self.be_trigger):
+                        self.be_active = True
+                    elif t.side == 'short' and row['low'] <= t.entry_price * (1 - self.be_trigger):
+                        self.be_active = True
+
+                # SL: según modo
+                if anchor_price is None:
+                    anchor_price = t.entry_price
+
+                if self.sl_mode == 'percent':
+                    # SL fijo por porcentaje, sin trailing (salvo BE para no perder)
+                    if t.side == 'long':
+                        sl_price = t.entry_price * (1 - max(self.sl_pct, 0.0))
+                        if self.be_active:
+                            sl_price = max(sl_price, t.entry_price)
+                    else:
+                        sl_price = t.entry_price * (1 + max(self.sl_pct, 0.0))
+                        if self.be_active:
+                            sl_price = min(sl_price, t.entry_price)
+                else:
+                    # Modos basados en ATR
+                    if (self.sl_mode == 'atr_trailing_only') or (self.be_active and self.sl_mode == 'atr_then_trailing'):
+                        # Trailing por ATR
+                        sl_price = self._update_trailing_sl(row, t.side, t.entry_price, atr_abs, anchor_price)
+                        anchor_price = max(anchor_price, price) if t.side == 'long' else min(anchor_price, price)
+                        # Nunca peor que la entrada una vez activo
+                        if t.side == 'long':
+                            sl_price = max(sl_price, t.entry_price)
+                        else:
+                            sl_price = min(sl_price, t.entry_price)
+                    else:
+                        # SL fijo inicial por ATR (antes de BE)
+                        if t.side == 'long':
+                            sl_price = t.entry_price - self.atr_mult_sl * atr_abs
+                        else:
+                            sl_price = t.entry_price + self.atr_mult_sl * atr_abs
+
+                # TP: según modo
+                hit_tp = False
+                if self.tp_mode == 'fixed':
+                    if t.side == 'long':
+                        tp_price = t.entry_price * (1 + self.tp_pct)
+                        hit_tp = row['high'] >= tp_price
+                    else:
+                        tp_price = t.entry_price * (1 - self.tp_pct)
+                        hit_tp = row['low'] <= tp_price
+                elif self.tp_mode == 'atrx' and atr_abs > 0:
+                    if t.side == 'long':
+                        tp_price = t.entry_price + (self.tp_atr_mult * atr_abs)
+                        hit_tp = row['high'] >= tp_price
+                    else:
+                        tp_price = t.entry_price - (self.tp_atr_mult * atr_abs)
+                        hit_tp = row['low'] <= tp_price
+                else:
+                    # 'none' o ATR inválido: sin TP
+                    tp_price = None
+                    hit_tp = False
+
+                # ¿Se golpea SL?
+                if t.side == 'long':
+                    hit_sl = row['low'] <= sl_price
+                else:
+                    hit_sl = row['high'] >= sl_price
+
+                exit_reason = None
+                exit_price = None
+                if hit_tp:
+                    exit_reason = 'TP'
+                    exit_price = tp_price
+                elif hit_sl:
+                    exit_reason = 'SL'
+                    exit_price = sl_price
+
+                # Salida por tiempo (si está activada y no golpeó TP/SL)
+                if exit_reason is None and self.time_exit_bars and open_bar_idx is not None:
+                    if (i - open_bar_idx) >= int(self.time_exit_bars):
+                        exit_reason = 'TIME'
+                        exit_price = price  # cierra a precio de cierre de la barra
+
+                if exit_reason is not None:
+                    # aplicar slippage y comisión de salida
+                    slip_rate = calc_slippage_rate(atr_pct)
+                    px = self._apply_slippage(exit_price, 'sell' if t.side == 'long' else 'buy', slip_rate)
+                    notional = px * t.qty
+                    fee = self._apply_commission(notional)
+                    sl_out = abs(px - exit_price) * t.qty
+
+                    t.exit_time = ts
+                    t.exit_price = px
+                    t.commission_out = fee
+                    t.slippage_out = sl_out
+
+                    pnl = t.pnl()
+                    realized_pnl += pnl
+                    commissions += fee + t.commission_in
+                    slippages += sl_out + t.slippage_in
+
+                    self.equity += pnl
+                    self.trades.append(t)
+                    self.open_trade = None
+                    self.last_exec_bar = ts  # una ejecución por vela
+                    anchor_price = None
+                    open_bar_idx = None
+                    # Cooldown tras SL y reset de BE
+                    if exit_reason == 'SL':
+                        self.cooldown = self.cooldown_bars
+                    self.be_active = False
+                    # Track equity stepwise per barra
+                    equity_curve.append(self.equity)
+                    equity_time.append(ts)
+                    continue  # no abrir en la misma vela
+
+            # Entrada (solo OOS y si no hay posición)
+            if ts < oos_start:
+                # Track equity stepwise per barra
+                equity_curve.append(self.equity)
+                equity_time.append(ts)
+                continue  # no operamos en train; se podría usar para optimizar
+
+            if self.open_trade is None:
+                if not self._allow_new_trade(ts, atr_pct):
+                    # Track equity stepwise per barra
+                    equity_curve.append(self.equity)
+                    equity_time.append(ts)
                     continue
-            else:
-                # SHORT: solo alineación de EMAs
-                if not (ema_s_5 < ema_l_5):
-                    discards.append({'simbolo': simbolo, 'date_30m': row['date'], 'reason': 'microfilter_short_fail'})
+                signal = self._entry_signal(row)
+                if signal is None:
+                    # Track equity stepwise per barra
+                    equity_curve.append(self.equity)
+                    equity_time.append(ts)
                     continue
 
-            raw_open = prox_5m.iloc[0]['open']
-            fecha_entrada_real = prox_5m.iloc[0]['date']
+                qty = self._risk_position_size(price, atr_abs)
+                if qty <= 0:
+                    # Track equity stepwise per barra
+                    equity_curve.append(self.equity)
+                    equity_time.append(ts)
+                    continue
 
-            # --- Paso 3: añade spread y slippage dinámicos ---
-            spread = atr * spread_mult
-            slip   = abs(np.random.normal(0, atr * slip_mult))
+                slip_rate = calc_slippage_rate(atr_pct)
+                entry_price = self._apply_slippage(price, 'buy' if signal == 'long' else 'sell', slip_rate)
+                notional = entry_price * qty
+                fee = self._apply_commission(notional)
+                sl_in = abs(entry_price - price) * qty
 
-            if row['signal'] == 1:          # LONG: compras al ask
-                entrada = raw_open + spread / 2 + slip
-            else:                           # SHORT: vendes al bid
-                entrada = raw_open - spread / 2 - slip
+                self.open_trade = Trade(
+                    symbol=self.symbol,
+                    side=signal,
+                    entry_time=ts,
+                    entry_price=entry_price,
+                    qty=qty,
+                    commission_in=fee,
+                    slippage_in=sl_in,
+                )
+                self.last_exec_bar = ts
+                open_bar_idx = i
+                # Si el SL es 'atr_trailing_only', activar trailing desde el inicio
+                if self.sl_mode == 'atr_trailing_only':
+                    self.be_active = True
+                    anchor_price = entry_price
+            # Track equity stepwise per barra
+            equity_curve.append(self.equity)
+            equity_time.append(ts)
 
-            # --- Paso 2: redondeo a tick y lote ---
+        # Si quedó abierta la posición, la cerramos al último precio
+        if self.open_trade is not None:
+            row = df.iloc[-1]
+            ts = row['date']
+            price = float(row['close'])
+            atr_pct = float(row['atr_pct'])
+            slip_rate = calc_slippage_rate(atr_pct)
+            px = self._apply_slippage(price, 'sell' if self.open_trade.side == 'long' else 'buy', slip_rate)
+            notional = px * self.open_trade.qty
+            fee = self._apply_commission(notional)
+            sl_out = abs(px - price) * self.open_trade.qty
+            self.open_trade.exit_time = ts
+            self.open_trade.exit_price = px
+            self.open_trade.commission_out = fee
+            self.open_trade.slippage_out = sl_out
+            realized_pnl += self.open_trade.pnl()
+            commissions += fee + self.open_trade.commission_in
+            slippages += sl_out + self.open_trade.slippage_in
+            self.equity += self.open_trade.pnl()
+            self.trades.append(self.open_trade)
+            self.open_trade = None
+            self.be_active = False
+            # Track final equity point
+            equity_curve.append(self.equity)
+            equity_time.append(ts)
 
-            entrada = round(entrada / tick_size) * tick_size
-            qty     = max(lot_size, round(qty / lot_size) * lot_size)
+        gross_pnl = sum([(1 if t.side=='long' else -1) * (t.exit_price - t.entry_price) * t.qty for t in self.trades if t.exit_price is not None])
+        costs_total = commissions + slippages + funding_costs
+        cost_ratio = (costs_total / abs(gross_pnl)) if gross_pnl != 0 else np.nan
 
-            # Capear qty por capital disponible (comprar lo que alcance) usando solo 50% del capital disponible
-            oper_cap = capital_disponible * 0.5
-            max_qty_cap = (oper_cap / entrada) if entrada > 0 else 0
-            max_qty_cap = max(0.0, round(max_qty_cap / lot_size) * lot_size)
-            if max_qty_cap <= 0:
-                discards.append({'simbolo': simbolo, 'date_30m': row['date'], 'reason': 'insufficient_capital_zero'})
-                continue
-            if qty > max_qty_cap:
-                qty = max_qty_cap
+        wins = [t for t in self.trades if t.pnl() > 0]
+        winrate = (len(wins) / len(self.trades)) * 100 if self.trades else 0.0
 
-            # Recalcula monto tras redondeo
-            monto_por_trade = qty * entrada
+        # ==== Métricas adicionales ====
+        # Profit Factor
+        pos = sum([t.pnl() for t in self.trades if t.pnl() > 0])
+        neg = -sum([t.pnl() for t in self.trades if t.pnl() < 0])
+        profit_factor = (pos / neg) if neg > 0 else None
 
-            tp = entrada + parametros['tp_mult'] * atr if row['signal'] == 1 else entrada - parametros['tp_mult'] * atr
-            sl = entrada - parametros['sl_mult'] * atr if row['signal'] == 1 else entrada + parametros['sl_mult'] * atr
+        # Max Drawdown (sobre equity_curve)
+        max_dd_pct = None
+        if len(equity_curve) >= 2:
+            eq = np.array(equity_curve, dtype=float)
+            peak = np.maximum.accumulate(eq)
+            dd = (eq - peak) / peak
+            max_dd_pct = float(dd.min()) if len(dd) else None
 
-            # Redondea TP y SL al tick del exchange
-            tp = round(tp / tick_size) * tick_size
-            sl = round(sl / tick_size) * tick_size
+        # Sharpe anualizado usando retornos por barra de equity
+        sharpe_annual = None
+        if len(equity_curve) >= 3:
+            eq = np.array(equity_curve, dtype=float)
+            rets = np.diff(eq) / eq[:-1]
+            if rets.std() > 1e-12:
+                bars_per_year = 288 * 365  # 5m bars ≈ 105,120/año
+                sharpe_annual = float((rets.mean() / rets.std()) * np.sqrt(bars_per_year))
 
-            # --- Garantizar orden lógico tras redondeo ---
-            if row['signal'] == 1:  # LONG
-                # asegurar sl < entrada < tp; si colisionan, separa 1 tick
-                if not (sl < entrada < tp):
-                    sl = min(sl, entrada - tick_size)
-                    tp = max(tp, entrada + tick_size)
-            else:  # SHORT
-                # asegurar tp < entrada < sl
-                if not (tp < entrada < sl):
-                    tp = min(tp, entrada - tick_size)
-                    sl = max(sl, entrada + tick_size)
-
-            # Verifica capital suficiente
-            if capital_disponible < monto_por_trade:
-                discards.append({'simbolo': simbolo, 'date_30m': row['date'], 'reason': 'insufficient_capital', 'monto': float(monto_por_trade), 'capital': float(capital_disponible)})
-                continue
-
-            # Debita el stake del capital disponible
-            capital_disponible -= monto_por_trade
-            tipo = 'LONG' if row['signal'] == 1 else 'SHORT'
-            pos = {
-                'tipo': tipo,
-                'entrada': entrada,
-                'fecha_entrada': fecha_entrada_real,
-                'tp': tp,
-                'sl': sl,
-                'idx_entrada': i,
-                'fecha_senal_30m': row['date'],
-                'qty': qty,
-                'monto': monto_por_trade,
-            }
-            # Distancia inicial de stop (1R) y flag de break-even
-            pos['sl_dist'] = parametros.get('sl_mult', 2) * row['ATR']
-            pos['be_set'] = False
-            # Estado inicial para trailing por velas de 5m
-            pos['last_close'] = entrada
-            if tipo == 'LONG':
-                pos['trail_peak'] = entrada  # máximo de cierres desde la entrada
-            else:
-                pos['trail_trough'] = entrada  # mínimo de cierres desde la entrada
-            cantidad_trades += 1
-            continue
-
-        # Si hay posición abierta
-        if pos:
-            # Buscar todas las velas de 5m dentro de este periodo de 30m
-            intervalo_inicio = row['date']
-            intervalo_fin = intervalo_inicio + pd.Timedelta(minutes=30)
-            mask = (df_5m['date'] > intervalo_inicio) & (df_5m['date'] <= intervalo_fin)
-            velas_5m = df_5m[mask]  
-
-            salida = None
-            razon = None
-            fecha_salida = None
-
-            # --- Salida intrabar 5m usando OHLC ---
-            salida = None
-            razon = None
-            fecha_salida = None
-
-            # Reglas: para LONG si en la misma vela se tocan TP y SL, asumimos conservador (SL primero).
-            # Para SHORT análogo (SL primero).
-            for _, v in velas_5m.iterrows():
-                # --- Regla de Break-Even (1R) ---
-                # Si el precio se mueve a favor al menos 1R desde la entrada, sube/baja el SL a la entrada una sola vez.
-                if not pos.get('be_set', False):
-                    if pos['tipo'] == 'LONG':
-                        moved = (v['high'] - pos['entrada'])
-                        if moved >= pos.get('sl_dist', 0):
-                            new_sl_be = round(pos['entrada'] / tick_size) * tick_size
-                            # Asegura orden lógico sin invadir TP
-                            pos['sl'] = min(max(pos['sl'], new_sl_be), pos['tp'] - tick_size)
-                            pos['be_set'] = True
-                    else:  # SHORT
-                        moved = (pos['entrada'] - v['low'])
-                        if moved >= pos.get('sl_dist', 0):
-                            new_sl_be = round(pos['entrada'] / tick_size) * tick_size
-                            pos['sl'] = max(min(pos['sl'], new_sl_be), pos['tp'] + tick_size)
-                            pos['be_set'] = True
-
-                # --- Trailing SL por cada vela de 5m (sin lookahead) ---
-                # Usa el cierre anterior acumulado (last_close) para evitar mirar dentro de la vela actual.
-                atr5 = v.get('ATR_5m', np.nan)
-                if pd.isna(atr5) or atr5 == 0:
-                    atr5 = row['ATR']  # fallback al ATR de 30m
-
-                if pos['tipo'] == 'LONG':
-                    # Actualiza el máximo de cierres hasta la vela previa
-                    peak = max(pos.get('trail_peak', pos['entrada']), pos.get('last_close', pos['entrada']))
-                    pos['trail_peak'] = peak
-                    new_sl = peak - parametros.get('sl_mult', 2) * atr5
-                    new_sl = round(new_sl / tick_size) * tick_size
-                    # Mantén orden lógico: sl < tp
-                    if new_sl > pos['sl']:
-                        pos['sl'] = min(new_sl, pos['tp'] - tick_size)
-                else:  # SHORT
-                    trough = min(pos.get('trail_trough', pos['entrada']), pos.get('last_close', pos['entrada']))
-                    pos['trail_trough'] = trough
-                    new_sl = trough + parametros.get('sl_mult', 2) * atr5
-                    new_sl = round(new_sl / tick_size) * tick_size
-                    # Mantén orden lógico: tp < sl
-                    if new_sl < pos['sl']:
-                        pos['sl'] = max(new_sl, pos['tp'] + tick_size)
-
-                o, h, l, c, t = v['open'], v['high'], v['low'], v['close'], v['date']
-                if pos['tipo'] == 'LONG':
-                    hit_tp = h >= pos['tp']
-                    hit_sl = l <= pos['sl']
-                    if hit_tp and hit_sl:
-                        # Empate: conservador → SL primero
-                        salida = pos['sl']
-                        razon = 'SL_samebar'
-                        fecha_salida = t
-                        break
-                    elif hit_sl:
-                        salida = pos['sl']
-                        razon = 'SL'
-                        fecha_salida = t
-                        break
-                    elif hit_tp:
-                        salida = pos['tp']
-                        razon = 'TP'
-                        fecha_salida = t
-                        break
-                else:  # SHORT
-                    hit_tp = l <= pos['tp']
-                    hit_sl = h >= pos['sl']
-                    if hit_tp and hit_sl:
-                        salida = pos['sl']
-                        razon = 'SL_samebar'
-                        fecha_salida = t
-                        break
-                    elif hit_sl:
-                        salida = pos['sl']
-                        razon = 'SL'
-                        fecha_salida = t
-                        break
-                    elif hit_tp:
-                        salida = pos['tp']
-                        razon = 'TP'
-                        fecha_salida = t
-                        break
-                # Actualiza el último cierre para el cálculo de trailing en la próxima vela
-                pos['last_close'] = v['close']
-
-            # Cierre por señal opuesta en 30m (si no hubo TP/SL en los 5m)
-            if salida is None:
-                if (pos['tipo'] == 'LONG' and row['signal'] == -1) or (pos['tipo'] == 'SHORT' and row['signal'] == 1):
-                    salida = row['close']
-                    razon = 'Reversa_30m'
-                    fecha_salida = row['date']
-
-            if salida is not None:
-                # --- Ajusta precio de salida por spread y slippage ---
-                atr_curr = row['ATR']
-                spread_exit = atr_curr * spread_mult
-                slip_exit   = abs(np.random.normal(0, atr_curr * slip_mult))
-
-                if pos['tipo'] == 'LONG':
-                    salida = salida - spread_exit / 2 - slip_exit
-                else:  # SHORT cierra comprando
-                    salida = salida + spread_exit / 2 + slip_exit
-
-                # Redondea al tick del exchange
-                salida = round(salida / tick_size) * tick_size
-                # Calcular qty y ganancia_usd
-                qty = pos['qty']
-                if pos['tipo'] == 'LONG':
-                    ganancia_usd = (salida - pos['entrada']) * qty
-                else:  # SHORT
-                    ganancia_usd = (pos['entrada'] - salida) * qty
-                # aplica fees / slippage
-                fee = (pos['entrada'] * qty + salida * qty) * fee_pct
-                ganancia_usd -= fee
-                # Devuelve stake + P/L al capital
-                capital_disponible += pos['monto'] + ganancia_usd
-                trades.append({
-                    'simbolo': simbolo,
-                    'tipo': pos['tipo'],
-                    'fecha_entrada_30m': pos['fecha_senal_30m'],
-                    'fecha_entrada_real': pos['fecha_entrada'],
-                    'entrada': pos['entrada'],
-                    'fecha_salida': fecha_salida,
-                    'salida': salida,
-                    'razon': razon,
-                    'ganancia_usd': ganancia_usd,
-                    'qty': qty,
-                    'monto': pos['monto'],
-                    'duracion_min': (fecha_salida - pos['fecha_entrada']).total_seconds() / 60 if fecha_salida and pos['fecha_entrada'] else None,
-                    'tp': pos['tp'],
-                    'sl': pos['sl'],
-                    'idx_entrada': pos['idx_entrada'],
-                    'retorno_usd': ganancia_usd,
-                    'entry_signal_30m': 1 if pos['tipo'] == 'LONG' else -1,
-                })
-                pos = None  # Cierra posición
-
-    # --- Cierre forzado al final del dataset (EOD) si queda posición abierta ---
-    if pos:
-        try:
-            # usa el último precio disponible de 5m posterior a la última fecha de 30m
-            last30 = df_30m['date'].max()
-            last5 = df_5m[df_5m['date'] > last30]
-            if last5.empty:
-                last5 = df_5m.tail(1)
-            salida = float(last5.iloc[-1]['close'])
-            t_out = last5.iloc[-1]['date']
-
-            # Ajusta por spread/slippage como en salidas normales
-            atr_curr = df_30m.iloc[-1]['ATR'] if 'ATR' in df_30m.columns else df_5m.iloc[-1].get('ATR_5m', np.nan)
-            if pd.isna(atr_curr) or atr_curr == 0:
-                atr_curr = 0.0
-            spread_exit = atr_curr * spread_mult
-            slip_exit   = abs(np.random.normal(0, atr_curr * slip_mult)) if atr_curr > 0 else 0.0
-            if pos['tipo'] == 'LONG':
-                salida = salida - spread_exit / 2 - slip_exit
-            else:
-                salida = salida + spread_exit / 2 + slip_exit
-            salida = round(salida / tick_size) * tick_size
-
-            qty = pos['qty']
-            if pos['tipo'] == 'LONG':
-                ganancia_usd = (salida - pos['entrada']) * qty
-            else:
-                ganancia_usd = (pos['entrada'] - salida) * qty
-            fee = (pos['entrada'] * qty + salida * qty) * fee_pct
-            ganancia_usd -= fee
-            capital_disponible += pos['monto'] + ganancia_usd
-            trades.append({
-                'simbolo': simbolo,
-                'tipo': pos['tipo'],
-                'fecha_entrada_30m': pos['fecha_senal_30m'],
-                'fecha_entrada_real': pos['fecha_entrada'],
-                'entrada': pos['entrada'],
-                'fecha_salida': t_out,
-                'salida': salida,
-                'razon': 'EOD',
-                'ganancia_usd': ganancia_usd,
-                'qty': qty,
-                'monto': pos['monto'],
-                'duracion_min': (t_out - pos['fecha_entrada']).total_seconds() / 60 if pos['fecha_entrada'] else None,
-                'tp': pos['tp'],
-                'sl': pos['sl'],
-                'idx_entrada': pos['idx_entrada'],
-                'retorno_usd': ganancia_usd,
-                'entry_signal_30m': 1 if pos['tipo'] == 'LONG' else -1,
-            })
-            pos = None
-            logger.info(f"Cierre forzado EOD aplicado en {simbolo}")
-        except Exception as e:
-            logger.warning(f"No se pudo realizar cierre EOD para {simbolo}: {e}")
-
-    # Exporta motivos de descarte de señales
-    if discards:
-        try:
-            disc_df = pd.DataFrame(discards)
-            disc_path = BACKTEST_DIR / f"discarded_signals_{simbolo}.csv"
-            disc_df.to_csv(disc_path, index=False)
-            logger.info(f"Descartes de {simbolo}: {len(disc_df)} filas → {disc_path}")
-        except Exception as e:
-            logger.warning(f"No se pudo exportar descartes de {simbolo}: {e}")
-
-    # Debug opcional: exportar TP/SL por trade
-    try:
-        dbg = pd.DataFrame(trades)
-        if parametros.get('debug_signals', False) and not dbg.empty:
-            dbg_cols = ['simbolo','tipo','fecha_entrada_real','entrada','tp','sl','fecha_salida','salida','razon','ganancia_usd']
-            (dbg[dbg_cols]).to_csv(BACKTEST_DIR / 'tp_sl_debug.csv', index=False)
-            logger.info('tp_sl_debug.csv exportado')
-    except Exception as e:
-        logger.warning(f'No se pudo exportar tp_sl_debug.csv: {e}')
-    return pd.DataFrame(trades)
-
-
-# Analiza los resultados de los trades simulados
-def analizar_resultados(trades):
-    """Analiza resultados: total, winrate, profit factor, drawdown, retornos."""
-    if trades.empty:
-        return {
-            'total_trades': 0,
-            'winrate': 0,
-            'profit_factor': 0,
-            'max_drawdown': 0,
-            'retorno_total_usd': 0,
-            'retorno_promedio_usd': 0,
-            'mejor_trade': 0,
-            'peor_trade': 0
+        result = {
+            'symbol': self.symbol,
+            'trades': len(self.trades),
+            'equity_final': round(self.equity, 2),
+            'pnl_net': round(self.equity - self.initial_equity, 2),
+            'winrate_pct': round(winrate, 2),
+            'profit_factor': round(float(profit_factor), 3) if profit_factor is not None else None,
+            'commissions': round(commissions, 4),
+            'slippage_cost': round(slippages, 4),
+            'funding_cost': round(funding_costs, 4),
+            'cost_ratio': round(float(cost_ratio), 4) if not np.isnan(cost_ratio) else None,
+            'max_dd_pct': round(float(max_dd_pct), 4) if max_dd_pct is not None else None,
+            'sharpe_annual': round(float(sharpe_annual), 3) if sharpe_annual is not None else None,
         }
-    total_trades = len(trades)
-    ganadores = trades[trades['ganancia_usd'] > 0]
-    perdedores = trades[trades['ganancia_usd'] < 0]
-    winrate = len(ganadores) / total_trades * 100
-    profit_factor = ganadores['ganancia_usd'].sum() / abs(perdedores['ganancia_usd'].sum()) if not perdedores.empty else np.inf
-    retorno_total_usd = trades['ganancia_usd'].sum()
-    retorno_promedio_usd = trades['ganancia_usd'].mean()
-    mejor_trade = trades['ganancia_usd'].max()
-    peor_trade = trades['ganancia_usd'].min()
-    # Equity curve para drawdown
-    equity_curve = trades['ganancia_usd'].cumsum()
-    max_drawdown = (equity_curve.cummax() - equity_curve).max()
-    return {
-        'total_trades': total_trades,
-        'winrate': winrate,
-        'profit_factor': profit_factor,
-        'max_drawdown': max_drawdown,
-        'retorno_total_usd': retorno_total_usd,
-        'retorno_promedio_usd': retorno_promedio_usd,
-        'mejor_trade': mejor_trade,
-        'peor_trade': peor_trade
-    }
+        return result
+
+    def export_trades(self, out_path: str):
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        rows = []
+        for t in self.trades:
+            rows.append({
+                'symbol': t.symbol,
+                'side': t.side,
+                'entry_time': t.entry_time,
+                'entry_price': t.entry_price,
+                'exit_time': t.exit_time,
+                'exit_price': t.exit_price,
+                'qty': t.qty,
+                'pnl': t.pnl(),
+                'commission_in': t.commission_in,
+                'commission_out': t.commission_out,
+                'slippage_in': t.slippage_in,
+                'slippage_out': t.slippage_out,
+                'funding_cost': t.funding_cost,
+            })
+        pd.DataFrame(rows).to_csv(out_path, index=False)
 
 
- 
-# --------------------------------------------------
-#  Grid‑search simple para optimizar parámetros
-# --------------------------------------------------
-def optimize_parameters(base_cfg, param_grid):
+# ==========================
+# CLI
+# ==========================
+
+def load_candles(template_or_path: str, symbol: str) -> pd.DataFrame:
+    """Carga velas 5m desde:
+    - Una ruta *templated* con `{symbol}` (ej. 'archivos/{symbol}_5m.csv'), o
+    - Un CSV único con múltiples símbolos (ej. 'archivos/cripto_price_5m_long.csv').
     """
-    Recorre todas las combinaciones de param_grid, ejecuta un backtest
-    con cada configuración y devuelve la que entregue mejor retorno
-    promedio (%) entre todos los símbolos.
-    Además exporta un CSV con los resultados de cada intento.
-    """
-    np.random.seed(42)
-    logger.info(f"MAX_COMBOS activo: {MAX_COMBOS} | OPT_SYMBOLS_LIMIT: {OPT_SYMBOLS_LIMIT}")
-    keys, all_cfgs = _sample_param_combos(param_grid, MAX_COMBOS, RNG_SEED)
-    param_names = keys
-    results     = []
-    best_cfg    = None
-    best_ret    = float("-inf")
-    best_tuple  = (float('-inf'), float('-inf'), float('-inf'), float('-inf'))
-    total_cfgs  = len(all_cfgs)
+    # Caso 1: plantilla por símbolo
+    if '{symbol}' in template_or_path:
+        path = template_or_path.replace('{symbol}', symbol)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"No existe el CSV para {symbol}: {path}")
+        df = pd.read_csv(path)
+    else:
+        # Caso 2: CSV único con columna 'symbol'
+        path = template_or_path
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"No existe el archivo de velas: {path}")
+        df_all = pd.read_csv(path)
+        cols_lower = {c.lower(): c for c in df_all.columns}
+        # Normaliza nombre de columna 'symbol' si viene en mayúsculas u otro casing
+        if 'symbol' not in df_all.columns:
+            if 'symbol' in cols_lower:
+                df_all = df_all.rename(columns={cols_lower['symbol']: 'symbol'})
+            else:
+                raise ValueError(f"El archivo {path} no contiene columna 'symbol'. Columnas: {list(df_all.columns)}")
+        # Normaliza símbolos para permitir 'BTCUSDT' o 'BTC-USDT'
+        df_all['symbol_norm'] = (
+            df_all['symbol'].astype(str)
+            .str.upper()
+            .str.replace(r'[^A-Z0-9]', '', regex=True)
+        )
+        target_norm = re.sub(r'[^A-Z0-9]', '', symbol.upper())
+        df = df_all[df_all['symbol_norm'] == target_norm].copy()
+        if df.empty:
+            # Intento alterno con guion por si viene en otro formato
+            sym_alt = f"{symbol[:-4]}-{symbol[-4:]}" if len(symbol) > 4 else symbol
+            target_norm_alt = re.sub(r'[^A-Z0-9]', '', sym_alt.upper())
+            df = df_all[df_all['symbol_norm'] == target_norm_alt].copy()
+        if df.empty:
+            ej = df_all['symbol'].iloc[0] if len(df_all) else 'N/A'
+            raise ValueError(f"No hay datos para el símbolo {symbol} en {path}. Ejemplo en CSV: '{ej}'")
 
-    global DETAILS
-    prev_details = DETAILS
-    DETAILS = False
-    prev_level = logger.level
-    logger.setLevel(logging.WARNING)
+    # Normaliza nombres básicos y valida columnas mínimas
+    cols_map_lower = {c.lower(): c for c in df.columns}
+    rename = {}
+    for c in ['symbol','open','high','low','close','volume','date']:
+        if c not in df.columns and c in cols_map_lower:
+            rename[cols_map_lower[c]] = c
+    if rename:
+        df = df.rename(columns=rename)
 
-    for i, combo_vals in enumerate(all_cfgs):
-        combo = [combo_vals[k] for k in param_names]
-        cfg = base_cfg.copy()
-        cfg.update(dict(zip(param_names, combo)))
+    missing = [c for c in ['open','high','low','close','volume','date'] if c not in df.columns]
+    if missing:
+        raise ValueError(f"Faltan columnas requeridas ({missing}) en {path}")
 
-        # Backtest
-        pf = backtest_with_vectorbt(cfg)
+    # Garantiza columna 'symbol'
+    if 'symbol' not in df.columns:
+        df['symbol'] = symbol
 
-        # Métricas por símbolo → promedios (multi‑criterio)
-        rets, sharpes, winrates, pfs = [], [], [], []
-        for sym in pf.wrapper.columns:
-            stats = pf.stats(column=sym)
-            rets.append(stats.loc['Total Return [%]'])
-            # Algunos stats pueden faltar según versión; usa get con fallback
-            sharpes.append(float(stats.get('Sharpe Ratio', np.nan)))
-            winrates.append(float(stats.get('Win Rate [%]', np.nan)))
-            pfs.append(float(stats.get('Profit Factor', np.nan)))
-        mean_ret     = float(np.nanmean(rets))
-        sharpe_mean  = float(np.nanmean(sharpes))
-        winrate_mean = float(np.nanmean(winrates))
-        pf_mean      = float(np.nanmean(pfs))
+    # Ordena por fecha y devuelve columnas esperadas en orden
+    df = df[['symbol','open','high','low','close','volume','date']]
+    df = ensure_dt_utc(df, 'date')
+    if 'symbol_norm' in df.columns: df = df.drop(columns=['symbol_norm'])
+    return df
 
-        row = {**dict(zip(param_names, combo)),
-               'mean_total_return_%': mean_ret,
-               'sharpe_mean': sharpe_mean,
-               'winrate_mean_%': winrate_mean,
-               'profit_factor_mean': pf_mean}
-        results.append(row)
 
-        # Selección por tupla (primario: retorno; desempates: sharpe, winrate, PF)
-        sel_tuple = (mean_ret, sharpe_mean, winrate_mean, pf_mean)
-        if sel_tuple > best_tuple:
-            best_tuple = sel_tuple
-            best_ret = mean_ret
-            best_cfg = cfg.copy()
+#
+# ==========================
+# Worker global para multiprocessing (evita pickling de closures)
+# ==========================
 
-        _progress(i, total_cfgs, prefix='Optimizando grid')
-
-    DETAILS = prev_details
-    logger.setLevel(prev_level)
-
-    # Guarda grid completo
-    df = pd.DataFrame(results)
-    df_sorted = df.sort_values(by=['mean_total_return_%','sharpe_mean','winrate_mean_%','profit_factor_mean'], ascending=[False, False, False, False]).reset_index(drop=True)
-    top_row = df_sorted.iloc[0].to_dict() if not df_sorted.empty else None
-    # Verificación de coherencia entre best_cfg y top_row
-    if top_row is not None:
-        mismatch = False
-        for k in param_names:
-            if k in top_row and best_cfg.get(k) != top_row.get(k):
-                mismatch = True
-                break
-        if mismatch:
-            logger.warning('Inconsistencia: best_cfg no coincide con la primera fila ordenada del gridsearch. Revisar criterios.')
-    df_sorted.to_csv(BACKTEST_DIR / 'gridsearch_results.csv', index=False)
-    logger.info(f"Mejor retorno medio {best_ret:.2f}% con cfg={best_cfg}")
-    # Guarda la mejor configuración para uso en producción (dentro de pkg)
-    cfg_path = Path(__file__).resolve().parent / 'best_cfg.json'
-    with open(cfg_path, 'w') as fp:
-        json.dump(best_cfg, fp, indent=2)
-    logger.info(f"best_cfg.json guardado en {cfg_path}")
-    return best_cfg, df
-
+def run_job(job):
+    sym, p, data_template, capital, out_dir = job
+    try:
+        dfj = load_candles(data_template, sym)
+        bt = Backtester(
+            symbol=sym,
+            df5m=dfj,
+            initial_equity=capital,
+            tp_pct=p.get('tp', 0.01),
+            tp_mode=p.get('tp_mode', 'fixed'),
+            tp_atr_mult=p.get('tp_atr_mult', 0.0),
+            atr_mult_sl=p.get('atr_mult', 2.0),
+            sl_mode=p.get('sl_mode', 'atr_then_trailing'),
+            sl_pct=p.get('sl_pct', 0.0),
+            ema_fast=p['ema_fast'],
+            ema_slow=p['ema_slow'],
+            rsi_buy=p['rsi_buy'],
+            rsi_sell=p['rsi_sell'],
+            adx_min=p['adx_min'],
+            min_atr_pct=p['min_atr_pct'],
+            max_atr_pct=p['max_atr_pct'],
+            be_trigger=p['be_trigger'],
+            cooldown_bars=p['cooldown'],
+            logic=p['logic'],
+            hhll_lookback=p.get('hhll_lookback', 10),
+            time_exit_bars=p.get('time_exit_bars', 30),
+        )
+        res = bt.run(train_ratio=0.7)
+        res['params'] = p
+        res['symbol'] = sym
+        # Ya no guardamos trades en cada combinación del sweep aquí.
+        return res
+    except Exception as e:
+        return {'symbol': sym, 'error': str(e), 'params': p}
 
 def main():
-    parametros = {
-        'ema_s': 16,
-        'ema_l': 50,
-        'rsi': 14,
-        'atr': 14,
-        'adx': 14,
-        'rsi_long': 35,
-        'rsi_short': 65,
-        'adx_min': 23,
-        'vol_thr': 0.58,
-        'tp_mult': 6,          # múltiplo de ATR para TP (más realista)
-        'sl_mult': 2,
-        'fee_pct': 0.0007,
-        'slippage_pct': 0.0005,
-        'vol_win': 50,
-        'max_trades': 10,
-        'stake': 'fixed',
-        'stake_value': 30,
-        'capital_inicial': 2000,
-        'rsi_lb': 3,  # lookback de RSI para confirmar nivel en últimas N velas
-        'rel_v_5m_factor': 2.0,
-    }
+    # --- SIMPLE RUN: si no hay argumentos en CLI y está habilitado, inyecta flags ---
+    try:
+        if len(sys.argv) == 1 and isinstance(SIMPLE_RUN, dict) and SIMPLE_RUN.get('ENABLE', False):
+            sys.argv = _build_simple_argv(SIMPLE_RUN)
+            print(f"[SIMPLE] Ejecutando en modo simple → MODE={SIMPLE_RUN.get('MODE')} | symbols={SIMPLE_RUN.get('SYMBOLS')}")
+    except Exception as _e:
+        print(f"[SIMPLE][WARN] No se pudo activar modo simple: {_e}")
+    parser = argparse.ArgumentParser(description='TRobot Backtesting simple-realista')
+    parser.add_argument('--symbols', type=str, default='BTCUSDT', help='Lista separada por comas')
+    parser.add_argument('--data_template', type=str, default=DEFAULT_DATA_TEMPLATE, help='Ruta con {symbol} o CSV único (default: DEFAULT_DATA_TEMPLATE)')
+    parser.add_argument('--capital', type=float, default=1000.0)
+    parser.add_argument('--tp', type=float, default=0.01, help='Take Profit en fracción (0.01 = 1%)')
+    parser.add_argument('--atr_mult', type=float, default=2.0)
+    parser.add_argument('--ema_fast', type=int, default=20)
+    parser.add_argument('--ema_slow', type=int, default=50)
+    parser.add_argument('--rsi_buy', type=int, default=55)
+    parser.add_argument('--rsi_sell', type=int, default=45)
+    parser.add_argument('--adx_min', type=int, default=20)
+    parser.add_argument('--logic', type=str, default='any', choices=['strict','any'], help="'strict' = tendencia & fuerza & momentum & cierre fuera; 'any' = tendencia & fuerza & (momentum OR cierre fuera)")
+    parser.add_argument('--min_atr_pct', type=float, default=0.0015, help='Límite inferior de ATR% (0.0015 = 0.15%)')
+    parser.add_argument('--max_atr_pct', type=float, default=0.02, help='Límite superior de ATR% (0.02 = 2.0%)')
+    parser.add_argument('--be_trigger', type=float, default=0.0045, help='Activación de breakeven (fracción, 0.0045 = 0.45%)')
+    parser.add_argument('--cooldown', type=int, default=10, help='Barras de enfriamiento tras SL')
+    parser.add_argument('--hhll_lookback', type=int, default=10, help='Lookback para HH/LL en velas 5m (rupturas)')
+    parser.add_argument('--time_exit_bars', type=int, default=30, help='Barras máximas a mantener una posición OOS antes de cerrarla (0 desactiva)')
+    parser.add_argument('--sweep', type=str, default=None, help='Ruta a JSON con listas de parámetros para barrido (grid)')
+    parser.add_argument('--tp_mode', type=str, default='fixed', choices=['fixed','atrx','none'], help="Modo de TP: 'fixed'=% , 'atrx'=k*ATR, 'none'=sin TP")
+    parser.add_argument('--tp_atr_mult', type=float, default=0.0, help='Multiplicador de ATR para TP cuando tp_mode=atrx')
+    parser.add_argument('--sl_mode', type=str, default='atr_then_trailing', choices=['atr_then_trailing','atr_trailing_only','percent'], help="Modo de SL: ATR fijo y luego trailing, solo trailing por ATR, o porcentaje fijo")
+    parser.add_argument('--sl_pct', type=float, default=0.0, help='SL en porcentaje (0.01 = 1%) cuando sl_mode=percent')
+    parser.add_argument('--out_dir', type=str, default=DEFAULT_OUT_DIR)
+    parser.add_argument('--rank_by', type=str, default='pnl_net', choices=['pnl_net','sharpe_annual','profit_factor','winrate_pct','cost_ratio','max_dd_pct','calmar'], help="Métrica para ranking y selección por símbolo. 'calmar' = pnl_net / |max_dd_pct|")
+    parser.add_argument('--min_trades', type=int, default=0, help='Filtra combinaciones con menos de este número de trades')
+    parser.add_argument('--min_winrate', type=float, default=0.0, help='Filtra combinaciones con winrate &lt; a este porcentaje')
+    parser.add_argument('--max_cost_ratio', type=float, default=None, help='Filtra combinaciones con cost_ratio &gt; a este valor')
+    parser.add_argument('--max_dd', type=float, default=None, help='Filtra combinaciones con drawdown máximo absoluto mayor a este valor (ej. 0.3 para 30%)')
+    parser.add_argument('--export_best', type=str, default=None, help='Ruta a JSON para exportar el mejor set por símbolo listo para producción')
+    parser.add_argument('--search_mode', type=str, default='grid', choices=['grid','random'], help='Estrategia de búsqueda: grid completo o muestreo aleatorio')
+    parser.add_argument('--n_trials', type=int, default=None, help='Número de combinaciones aleatorias por símbolo (solo search_mode=random)')
+    parser.add_argument('--random_seed', type=int, default=42, help='Semilla para el muestreo aleatorio')
+    parser.add_argument('--second_pass', action='store_true', help='Hacer una segunda pasada local alrededor de los mejores por símbolo')
+    parser.add_argument('--second_topk', type=int, default=1, help='Cuántos mejores por símbolo usar como base para la segunda pasada')
 
-    # ---- Quick Test overrides ----
-    if QUICK_TEST:
-        parametros['adx_min'] = 0       # sin filtro ADX
-        parametros['vol_thr'] = 0.0     # sin filtro volumen relativo
-        parametros['vol_win'] = 10      # ventana más corta de volumen
-        parametros['max_trades'] = 999  # ilimitado en test rápido
-        parametros['debug_signals'] = True
-        parametros['rsi_long'] = 50     # más permisivo para entradas long
-        parametros['rsi_short'] = 50    # igual para short
-        parametros['rsi_lb'] = 10       # más margen de validación RSI
-        parametros['allow_fallback'] = True  # siempre permitir fallback sin filtros
-    else:
-        # Valores razonables para test general
-        parametros['adx_min'] = 18        # filtra mercados muy planos
-        parametros['vol_thr'] = 0.25      # volumen relativo moderado
-        parametros['vol_win'] = 30        # ventana de volumen más estable
-        parametros['max_trades'] = 50     # límite razonable de trades
-        parametros['debug_signals'] = False
-        parametros['rsi_long'] = 45       # entradas long más permisivas que en producción rígida
-        parametros['rsi_short'] = 55      # entradas short más permisivas que en producción rígida
-        parametros['rsi_lb'] = 8          # margen RSI intermedio
-        parametros['allow_fallback'] = True  # permitir fallback si no hay señales
+    args = parser.parse_args()
 
-    # --------------------------------------------------
-    #  Activar grid‑search
-    # --------------------------------------------------
-    OPTIMIZE = not QUICK_TEST  # en quick test saltamos la búsqueda
-    # Cargar best_cfg.json si no vamos a optimizar (producción/quick run)
-    cfg_path = Path(__file__).resolve().parent / 'best_cfg.json'
-    if not OPTIMIZE and cfg_path.exists():
-        try:
-            with open(cfg_path, 'r') as fp:
-                best = json.load(fp)
-            parametros.update(best)
-            logger.info(f"Cargando parámetros desde {cfg_path}")
-        except Exception as e:
-            logger.warning(f"No se pudo cargar {cfg_path}: {e}")
-    if OPTIMIZE:
-        if FAST_OPT:
-            logger.info("Usando modo rápido de optimización (grid compacto)")
-            param_grid = {
-                'ema_s': [10, 16, 20],
-                'ema_l': [40, 50, 60],
-                'adx_min': [15, 18],
-                'rsi_long': [40, 45, 50],
-                'rsi_short': [50, 55, 60],
-                'rsi_lb': [6, 8],
-                'vol_thr': [0.15, 0.25],
-                'rel_v_5m_factor': [1.8, 2.0, 2.2],
-            }
-            if FAST_OPT and not QUICK_TEST:
-                logger.warning("Modo rápido activo: los resultados pueden variar respecto al grid completo")
+    symbols = [s.strip() for s in args.symbols.split(',') if s.strip()]
+    # Si es CSV único (sin {symbol}), ajusta lista de símbolos a los realmente disponibles
+    csv_unique_mode = ('{symbol}' not in args.data_template)
+    sym_map = {}
+    available_symbols = []
+    if csv_unique_mode:
+        raw_syms = _list_symbols_from_csv(args.data_template)
+        # Mapa normalizado -> original
+        sym_map = {_norm_symbol(s): s for s in raw_syms}
+        if len(symbols) == 1 and symbols[0].lower() in ('auto', 'all'):
+            # Usa todos los símbolos del CSV (acotado a 12 por seguridad)
+            available_symbols = [sym_map[k] for k in list(sym_map.keys())[:12]]
         else:
-            # --- Grid completo actual ---
-            param_grid = {
-                'ema_s': [10, 16, 20, 30],
-                'ema_l': [50, 100],
-                'rsi': [14],
-                'rsi_long': [30, 35, 40],
-                'rsi_short': [60, 65, 70],
-                'tp_mult': [1, 3, 5, 10],
-                'sl_mult': [1, 2, 3, 5],
-                'adx_min': [15, 18, 23],
-                'vol_thr': [0.40, 0.50, 0.58],
-                'rel_v_5m_factor': [1.5, 2.0, 2.5],
-            }
-        parametros['opt_symbols_limit'] = OPT_SYMBOLS_LIMIT
-        best_cfg, grid_df = optimize_parameters(parametros, param_grid)
-        parametros = best_cfg.copy()
-        logger.info("\n==== 🏁 Primera pasada (coarse) terminada: iniciando refinamiento fine ====")
-        # Segunda etapa (fine) desde el TOP N del grid rápido
-        if FAST_OPT and COARSE_FINE and not QUICK_TEST:
-            try:
-                # Ordena por los mismos criterios usados al exportar
-                sort_cols = ['mean_total_return_%','sharpe_mean','winrate_mean_%','profit_factor_mean']
-                ascending = [False, False, False, False]
-                if not set(sort_cols).issubset(grid_df.columns):
-                    # fallback: usa retorno si faltan columnas
-                    sort_cols = ['mean_total_return_%']
-                    ascending = [False]
-                top_df = grid_df.sort_values(by=sort_cols, ascending=ascending).head(TOP_N_REFINE)
-                refine_keys = list(param_grid.keys())
-                refined_grid = _refine_grid_from_top(top_df, refine_keys)
-                from math import prod
-                sizes = {k: len(v) for k,v in refined_grid.items()}
-                est_total = prod([n for n in sizes.values()]) if sizes else 0
-                logger.info(f"Grid refinado generado: tamaños={sizes}")
-                logger.info(f"Tamaño final del grid refinado (combinaciones estimadas): {est_total}")
-                best_cfg2, grid_df2 = optimize_parameters(parametros, refined_grid)
-                parametros = best_cfg2.copy()
-                logger.info("Coarse→Fine completo: parámetros refinados aplicados")
-                logger.info("==== ✅ Refinamiento fine terminado: ejecutando backtest con parámetros refinados ====")
-                # Guarda también el grid de la segunda pasada
-                grid_df2.to_csv(BACKTEST_DIR / 'gridsearch_results_refined.csv', index=False)
-            except Exception as e:
-                logger.warning(f"No se pudo ejecutar el refinamiento fine: {e}")
-        parametros['opt_symbols_limit'] = 0  # usa todos los símbolos para el backtest final
+            # Filtra los solicitados por disponibilidad real
+            available_symbols = []
+            for s in symbols:
+                ns = _norm_symbol(s)
+                if ns in sym_map:
+                    available_symbols.append(sym_map[ns])
+        if not available_symbols:
+            print(f"[WARN] Ninguno de los símbolos solicitados está en {args.data_template}. Usando el primero disponible del CSV si existe.")
+            if sym_map:
+                available_symbols = [list(sym_map.values())[0]]
+        symbols = available_symbols
+        print(f"[INFO] Símbolos usados: {symbols}")
+    os.makedirs(args.out_dir, exist_ok=True)
 
-    # Ejecutar backtest optimizado con vectorbt
-    pf = backtest_with_vectorbt(parametros)
 
-    # --- Resumen legible por símbolo + texto humano ---
-    human = resumen_humano(pf)
+    # ==========================
+    # Modo barrido (grid) opcional vía --sweep <config.json> o --preset <nombre>
+    # ==========================
+    if args.sweep is not None:
+        import json as _json
+        with open(args.sweep, 'r') as f:
+            cfg = _json.load(f)
+        print(f"[SWEEP] Usando config desde JSON: {args.sweep}")
+        # Helper para obtener listas desde cfg (si viene escalar, lo volvemos lista)
+        def as_list(x):
+            if x is None:
+                return [None]
+            if isinstance(x, list):
+                return x
+            return [x]
 
-    # ---- Exportar resumen (CSV) ----
-    summary_path = BACKTEST_DIR / "summary_per_symbol.csv"
-    human.to_csv(summary_path)
-    logger.info(f"Resumen por símbolo guardado en {summary_path}")
-
-    # --- Datos para gráfico compuesto (simplificado) ---
-    try:
-        fig, ax = plt.subplots()
-        ax.bar(human.index.astype(str), human['Total Return [%]'])
-        ax.set_ylabel('Retorno total (%)')
-        ax.set_title('Retorno total por símbolo')
-        plt.xticks(rotation=45, ha='right')
-        plt.tight_layout()
-        output_path = BACKTEST_DIR / "retorno_por_simbolo.png"
-        plt.savefig(output_path)
-        plt.close(fig)
-        logger.info(f"Gráfico guardado en {output_path}")
-    except Exception as e:
-        logger.warning(f"No se pudo generar el gráfico compuesto: {e}")
-
-    # ---- Exportar trades detallados para comparación con P&L real ----
-    try:
-        rec_df = pd.DataFrame(pf.trades.records)
-        # Añadir símbolo a partir del índice de columna ('col' → nombre del símbolo)
-        rec_df['symbol'] = rec_df['col'].apply(lambda i: pf.wrapper.columns[int(i)])
-        # Derivar timestamps de entrada y salida usando el índice de precios
-        idx_ts = pf.wrapper.index
-        rec_df['entry_time'] = rec_df['entry_idx'].apply(lambda i: idx_ts[int(i)])
-        rec_df['exit_time']  = rec_df['exit_idx'].apply(lambda i: idx_ts[int(i)])
-        # Renombrar precios y PnL para estandarizar
-        rec_df = rec_df.rename(columns={
-            'entry_price': 'entry_price',
-            'exit_price':  'exit_price',
-            'pnl':         'pnl_usd'
-        })
-        # Seleccionar y re‑ordenar columnas finales
-        export_cols = ['symbol', 'entry_time', 'exit_time', 'entry_price', 'exit_price', 'pnl_usd']
-        trades_std = rec_df[export_cols]
-        std_path = BACKTEST_DIR / "sim_trades.csv"
-        trades_std.to_csv(std_path, index=False)
-        logger.info(f"Trades simulados exportados a {std_path}")
-    except Exception as e:
-        logger.warning(f"No se pudo exportar trades simulados estándar: {e}")
-
-    # ==================================================
-    #  Simulación realista: señal 30m + ejecución en 5m
-    # ==================================================
-    try:
-        df5_all = cargar_velas()
-        if QUICK_TEST:
-            # Limita a 5 símbolos para acelerar y hacer visible la tubería
-            all_syms = sorted(df5_all['symbol'].unique().tolist())
-            keep = all_syms[:5]
-            df5_all = df5_all[df5_all['symbol'].isin(keep)]
-            logger.info(f"QuickTest activos en símbolos: {keep}")
-        # --- Precompute 5m indicators once (saves time across tp/sl loops) ---
-        try:
-            df5_all = df5_all.sort_values(['symbol','date']).copy()
-            atr_win_5m = parametros.get('atr', 14)
-            ema_s_win_5m = parametros.get('ema_s', 16)
-            ema_l_win_5m = parametros.get('ema_l', 50)
-            if 'ATR_5m' not in df5_all.columns:
-                tr1 = df5_all['high'] - df5_all['low']
-                tr2 = (df5_all['high'] - df5_all['close'].shift()).abs()
-                tr3 = (df5_all['low'] - df5_all['close'].shift()).abs()
-                tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-                df5_all['ATR_5m'] = tr.groupby(df5_all['symbol']).apply(lambda s: s.ewm(alpha=1/atr_win_5m, adjust=False).mean()).reset_index(level=0, drop=True)
-            if 'EMA_S_5m' not in df5_all.columns:
-                df5_all['EMA_S_5m'] = df5_all.groupby('symbol')['close'].transform(lambda s: s.ewm(span=ema_s_win_5m, adjust=False).mean())
-            if 'EMA_L_5m' not in df5_all.columns:
-                df5_all['EMA_L_5m'] = df5_all.groupby('symbol')['close'].transform(lambda s: s.ewm(span=ema_l_win_5m, adjust=False).mean())
-            logger.info("Indicadores 5m precomputados (ATR_5m, EMA_S_5m, EMA_L_5m)")
-        except Exception as e:
-            logger.warning(f"No se pudo precomputar indicadores 5m: {e}")
-        if df5_all.empty:
-            logger.warning("No hay datos de 5m para simulación realista.")
-        else:
-            symbols = sorted(df5_all['symbol'].unique().tolist())
-            # Capital total dividido entre símbolos en evaluación
-            capital_total = float(parametros.get('capital_inicial', 300))
-            if len(symbols) > 0:
-                capital_por_simbolo = capital_total / len(symbols)
+        # Símbolos: si en cfg dice 'auto' y estamos en CSV único, usamos los detectados
+        sweep_symbols = cfg.get('symbols', symbols)
+        if isinstance(sweep_symbols, str):
+            if sweep_symbols.lower() in ('auto','all') and csv_unique_mode and sym_map:
+                sweep_symbols = [sym_map[k] for k in list(sym_map.keys())[:12]]
             else:
-                capital_por_simbolo = capital_total
-            logger.info(f"Capital por símbolo: {capital_por_simbolo:.2f} USD (total {capital_total} / {len(symbols)})")
+                sweep_symbols = [s.strip() for s in sweep_symbols.split(',') if s.strip()]
 
-            # --- Precompute 30m indicators + signals once per symbol (independent of tp/sl) ---
-            df30_sig_map = {}
-            for sym in symbols:
-                df5_sym = df5_all[df5_all['symbol'] == sym].copy()
-                if df5_sym.empty:
-                    continue
-                df30_sym = resample_5m_to_30m(df5_sym)
-                if df30_sym.empty:
-                    continue
-                df30_ind = calcular_indicadores(df30_sym, parametros)
-                if df30_ind.empty:
-                    continue
-                df30_sig = generar_senales(df30_ind, parametros)
-                df30_sig_map[sym] = df30_sig
+        print(f"[SWEEP] data_template: {args.data_template} | out_dir: {args.out_dir}")
 
-            # Candidatos de TP/SL para selección (rápida en QuickTest)
-            tp_sl_candidates = parametros.get('tp_sl_candidates', [(3,2),(5,2),(6,2),(8,3)])
-            best_pair = None
-            best_total = float('-inf')
-            best_trades_df = None
+        keys = [
+            ('tp', as_list(cfg.get('tp', args.tp))),
+            ('tp_mode', as_list(cfg.get('tp_mode', args.tp_mode))),
+            ('tp_atr_mult', as_list(cfg.get('tp_atr_mult', args.tp_atr_mult))),
+            ('ema_fast', as_list(cfg.get('ema_fast', args.ema_fast))),
+            ('ema_slow', as_list(cfg.get('ema_slow', args.ema_slow))),
+            ('rsi_buy', as_list(cfg.get('rsi_buy', args.rsi_buy))),
+            ('rsi_sell', as_list(cfg.get('rsi_sell', args.rsi_sell))),
+            ('adx_min', as_list(cfg.get('adx_min', args.adx_min))),
+            ('min_atr_pct', as_list(cfg.get('min_atr_pct', args.min_atr_pct))),
+            ('max_atr_pct', as_list(cfg.get('max_atr_pct', args.max_atr_pct))),
+            ('atr_mult', as_list(cfg.get('atr_mult', args.atr_mult))),
+            ('sl_mode', as_list(cfg.get('sl_mode', args.sl_mode))),
+            ('sl_pct', as_list(cfg.get('sl_pct', args.sl_pct))),
+            ('be_trigger', as_list(cfg.get('be_trigger', args.be_trigger))),
+            ('cooldown', as_list(cfg.get('cooldown', args.cooldown))),
+            ('logic', as_list(cfg.get('logic', args.logic))),
+            ('hhll_lookback', as_list(cfg.get('hhll_lookback', args.hhll_lookback))),
+            ('time_exit_bars', as_list(cfg.get('time_exit_bars', args.time_exit_bars))),
+        ]
 
-            # Búsqueda del mejor par TP/SL por retorno total USD
-            for tp_mult, sl_mult in tp_sl_candidates:
-                trades_realista_list = []
-                for sym in symbols:
-                    df30_sig = df30_sig_map.get(sym)
-                    if df30_sig is None or df30_sig.empty:
-                        continue
-                    # Diagnóstico de cantidad de señales 30m (independientes de tp/sl)
-                    try:
-                        sig_count = int((df30_sig['signal'] != 0).sum())
-                    except Exception:
-                        sig_count = 0
-                    logger.info(f"{sym}: señales 30m = {sig_count} (tp={tp_mult}, sl={sl_mult})")
-                    trades_sym = simular_trades_realista(
-                        df_30m=df30_sig,
-                        df_5m=df5_all,
-                        parametros={**parametros, 'tp_mult': tp_mult, 'sl_mult': sl_mult},
-                        simbolo=sym,
-                        capital_inicial=capital_por_simbolo,
-                        max_trades=parametros.get('max_trades', 10)
-                    )
-                    if not trades_sym.empty:
-                        trades_realista_list.append(trades_sym)
-                if trades_realista_list:
-                    candidate_trades = pd.concat(trades_realista_list, ignore_index=True)
-                    resumen_cand = analizar_resultados(candidate_trades)
-                    logger.info(f"Candidato tp={tp_mult}, sl={sl_mult} → trades={resumen_cand['total_trades']} PnL={resumen_cand['retorno_total_usd']:.2f}")
-                    if resumen_cand['retorno_total_usd'] > best_total:
-                        best_total = resumen_cand['retorno_total_usd']
-                        best_pair = (tp_mult, sl_mult)
-                        best_trades_df = candidate_trades
-            if best_trades_df is not None:
-                best_tp, best_sl = best_pair
-                realista_path = BACKTEST_DIR / f"sim_trades_realista_best_tp{best_tp}_sl{best_sl}.csv"
-                best_trades_df.to_csv(realista_path, index=False)
-                resumen = analizar_resultados(best_trades_df)
-                logger.info(
-                    "Realista 30m→5m BEST | tp=%d sl=%d | trades=%d | winrate=%.1f%% | PF=%.2f | PnL=%.2f USD",
-                    best_tp, best_sl, resumen['total_trades'], resumen['winrate'], resumen['profit_factor'], resumen['retorno_total_usd']
-                )
-                # --- Actualiza best_cfg.json con el mejor TP/SL realista ---
+        # Modo de búsqueda: grid vs random
+        if args.search_mode == 'random':
+            import random as _rnd
+            _rnd.seed(args.random_seed)
+            value_lists = [v for _, v in keys]
+            combos = []
+            seen = set()
+            trials = args.n_trials or 100
+            # Genera "trials" combinaciones aleatorias (sin repetir) por símbolo
+            # Nota: los símbolos se multiplican después; aquí generamos la cesta base
+            while len(combos) < trials:
+                pick = tuple(_rnd.choice(v) for v in value_lists)
+                if pick not in seen:
+                    seen.add(pick)
+                    combos.append(pick)
+            print(f"[SWEEP] Search=random | trials base={len(combos)}")
+        else:
+            combos = list(itertools.product(*[v for _, v in keys]))
+            print(f"[SWEEP] Search=grid | combos base={len(combos)}")
+
+        # Construye trabajos
+        jobs = []
+        for sym in sweep_symbols:
+            for values in combos:
+                params = dict(zip([k for k, _ in keys], values))
+                jobs.append((sym, params, args.data_template, args.capital, args.out_dir))
+
+        os.makedirs(args.out_dir, exist_ok=True)
+        print(f"[SWEEP] Total jobs: {len(jobs)} (symbols={len(sweep_symbols)}, base={len(combos)})")
+
+        # Paraleliza por CPU (cap en 8)
+        procs = min(cpu_count(), 8)
+        results = []
+        total_jobs = len(jobs)
+        with Pool(processes=procs) as pool:
+            for i, res in enumerate(pool.imap_unordered(run_job, jobs, chunksize=1), start=1):
+                results.append(res)
+                _print_progress(i, total_jobs)
+
+        import pandas as _pd
+        dfres = _pd.DataFrame(results)
+        if 'error' in dfres.columns:
+            errs = dfres[~dfres['error'].isna()]
+            if len(errs):
+                print("[SWEEP][WARN] Errores en algunos jobs:")
+                print(errs[['symbol','error']].head())
+        # ---- Filtros de calidad con diagnóstico ----
+        base = dfres[dfres['pnl_net'].notna()].copy()
+        print(f"[SWEEP][DIAG] combos con pnl válido: {len(base)} / {len(dfres)}")
+        good = base.copy()
+        if args.min_trades:
+            before = len(good)
+            good = good[good['trades'].astype(float) >= args.min_trades]
+            print(f"[SWEEP][DIAG] tras min_trades>={args.min_trades}: {len(good)} (−{before-len(good)})")
+        if args.min_winrate > 0.0:
+            before = len(good)
+            good = good[good['winrate_pct'].astype(float) >= args.min_winrate]
+            print(f"[SWEEP][DIAG] tras winrate>={args.min_winrate}%: {len(good)} (−{before-len(good)})")
+        if args.max_cost_ratio is not None:
+            before = len(good)
+            good = good[good['cost_ratio'].astype(float) <= args.max_cost_ratio]
+            print(f"[SWEEP][DIAG] tras cost_ratio<={args.max_cost_ratio}: {len(good)} (−{before-len(good)})")
+        if args.max_dd is not None:
+            before = len(good)
+            good = good[good['max_dd_pct'].abs().astype(float) <= abs(args.max_dd)]
+            print(f"[SWEEP][DIAG] tras max_dd<={abs(args.max_dd)}: {len(good)} (−{before-len(good)})")
+
+        # ---- Ranking por métrica seleccionada ----
+        if len(good):
+            rb = args.rank_by
+            if rb == 'cost_ratio':
+                metric = -good.get('cost_ratio', np.nan).astype(float)
+            elif rb == 'max_dd_pct':
+                metric = -good.get('max_dd_pct', np.nan).abs().astype(float)
+            elif rb == 'calmar':
+                dd = good.get('max_dd_pct', np.nan).abs().astype(float).replace(0, np.nan)
+                metric = good.get('pnl_net', np.nan).astype(float) / dd
+            else:
+                metric = good.get(rb, np.nan).astype(float)
+            metric = metric.where(metric.notna(), other=-np.inf)
+            good['__metric__'] = metric
+            symbol_best = good.sort_values(['symbol','__metric__'], ascending=[True, False]).groupby('symbol').head(1).copy()
+
+            # Exportar resumen (JSON) y config de producción
+            out_json = os.path.join(args.out_dir, 'resumen.json')
+            with open(out_json, 'w') as f:
+                f.write(good.drop(columns=['__metric__'], errors='ignore').to_json(orient='records', indent=2))
+            print(f"[SWEEP] Resumen guardado en {out_json}")
+
+            if args.export_best and len(symbol_best):
+                prod = []
+                for _, r in symbol_best.iterrows():
+                    prod.append({'symbol': r['symbol'], 'params': r['params']})
+                outp = args.export_best if os.path.isabs(args.export_best) else os.path.join(args.out_dir, args.export_best)
+                with open(outp, 'w') as f:
+                    json.dump(prod, f, indent=2)
+                print(f"[SWEEP] Config de producción exportada en {outp}")
+                # Copia a pkg/best_prod.json para que el runtime lo lea directo
                 try:
-                    best_cfg_path = BACKTEST_DIR / "best_cfg.json"
-                    cfg = {}
-                    if best_cfg_path.exists():
-                        with open(best_cfg_path, "r", encoding="utf-8") as f:
-                            try:
-                                cfg = json.load(f) or {}
-                            except json.JSONDecodeError:
-                                cfg = {}
-
-                    # Mantén el resto de parámetros y pisa solo TP/SL con los ganadores del realista
-                    cfg["tp"] = int(best_tp)
-                    cfg["sl"] = int(best_sl)
-                    # Asegura que el factor de confirmación 5m quede persistido para el bot
-                    if 'rel_v_5m_factor' not in cfg:
-                        cfg['rel_v_5m_factor'] = parametros.get('rel_v_5m_factor', 2.0)
-
-                    with open(best_cfg_path, "w", encoding="utf-8") as f:
-                        json.dump(cfg, f, ensure_ascii=False, indent=2)
-
-                    logger.info(f"best_cfg.json actualizado con TP={cfg['tp']}, SL={cfg['sl']}, rel_v_5m_factor={cfg.get('rel_v_5m_factor')}")
-                except Exception as e:
-                    logger.warning(f"No se pudo actualizar best_cfg.json con TP/SL: {e}")
-                logger.info(f"Simulación realista (mejor TP/SL) exportada en {realista_path}")
-
-                # ---- Un solo archivo de señales (ALL) para el mejor TP/SL ----
+                    _pkg_best = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+                    with open(_pkg_best, 'w') as _pf:
+                        json.dump(prod, _pf, indent=2)
+                    print(f"[SWEEP] Copia de producción para pkg en {_pkg_best}")
+                except Exception as _e:
+                    print(f"[SWEEP][WARN] No se pudo escribir copia en pkg: {_e}")
+                # ---- Resumen en consola (ganancia por portafolio usando best por símbolo) ----
                 try:
-                    all_signals_rows = []
-                    cols_dbg = ['date','open','high','low','close','volume','EMA_S','EMA_L','RSI','ADX','ATR','Rel_Volume','signal']
-                    for sym in symbols:
-                        df30_sig_b = df30_sig_map.get(sym)
-                        if df30_sig_b is None or df30_sig_b.empty:
-                            continue
-                        sig_rows = df30_sig_b.loc[df30_sig_b['signal'] != 0, cols_dbg].copy()
-                        if not sig_rows.empty:
-                            sig_rows['symbol'] = sym
-                            all_signals_rows.append(sig_rows[['symbol'] + cols_dbg])
-                    if all_signals_rows:
-                        signals_all = pd.concat(all_signals_rows, ignore_index=True)
-                        sig_all_path = BACKTEST_DIR / 'signals_30m_all.csv'
-                        signals_all.to_csv(sig_all_path, index=False)
-                        logger.info(f"Señales 30m combinadas exportadas en {sig_all_path}")
+                    tot_pnl = float(symbol_best['pnl_net'].astype(float).sum()) if 'pnl_net' in symbol_best.columns else float('nan')
+                    tot_trades = int(symbol_best['trades'].astype(float).sum()) if 'trades' in symbol_best.columns else 0
+                    avg_win = float(symbol_best['winrate_pct'].astype(float).mean()) if 'winrate_pct' in symbol_best.columns else float('nan')
+                    worst_dd = float(symbol_best['max_dd_pct'].astype(float).min()) if 'max_dd_pct' in symbol_best.columns else float('nan')
+                    # worst_dd viene como fracción negativa; mostramos porcentaje absoluto
+                    if not np.isnan(worst_dd):
+                        worst_dd_str = f"{abs(worst_dd)*100:.2f}%"
                     else:
-                        logger.info("No hubo señales 30m para exportar en el conjunto ALL.")
-                except Exception as e:
-                    logger.warning(f"No se pudo generar signals_30m_all.csv: {e}")
+                        worst_dd_str = "N/A"
+                    print(f"[RESUMEN] Portafolio (best por símbolo) → N={len(symbol_best)} | PnL Neto Total={tot_pnl:.2f} | Trades={tot_trades} | Winrate Prom={avg_win:.1f}% | MaxDD peor={worst_dd_str}")
+                except Exception as _e:
+                    print(f"[RESUMEN][WARN] No se pudo calcular el resumen de portafolio: {_e}")
 
-                # ---- Resumen compacto y legible por símbolo (TOP 5) ----
-                try:
-                    dfb = best_trades_df.copy()
-                    # KPIs por símbolo
-                    grp = dfb.groupby('simbolo')
-                    kpis = grp['ganancia_usd'].agg(['count','sum'])
-                    kpis = kpis.rename(columns={'count':'trades','sum':'pnl_usd'})
-                    wins = dfb[dfb['ganancia_usd'] > 0].groupby('simbolo')['ganancia_usd'].sum()
-                    losses = -dfb[dfb['ganancia_usd'] < 0].groupby('simbolo')['ganancia_usd'].sum()
-                    kpis['winrate_%'] = grp.apply(lambda g: (g['ganancia_usd'] > 0).mean() * 100)
-                    kpis['pf'] = wins.reindex(kpis.index).fillna(0) / losses.reindex(kpis.index).replace(0, np.nan)
-                    kpis = kpis.fillna({'pf': np.inf})
-                    top5 = kpis.sort_values('pnl_usd', ascending=False).head(5)
+                # ---- Segunda pasada local (vecindad) opcional ----
+                if args.second_pass and len(symbol_best):
+                    print("[SECOND] Iniciando segunda pasada local (vecindad)")
+                    import random as _rnd
+                    _rnd.seed(int(args.random_seed) + 1)
 
-                    # Exportar KPIs por símbolo (todas las monedas)
-                    kpis_out = kpis.reset_index().rename(columns={'simbolo':'symbol'})
-                    kpis_out_path = BACKTEST_DIR / 'realista_kpis_per_symbol.csv'
-                    kpis_out.to_csv(kpis_out_path, index=False)
-                    logger.info(f"KPIs por símbolo (realista BEST) guardados en {kpis_out_path}")
+                    # Armar seeds: top-K por símbolo (según __metric__ ya calculado)
+                    try:
+                        topk = max(1, int(args.second_topk))
+                    except Exception:
+                        topk = 1
+                    seeds = (
+                        good.sort_values(['symbol','__metric__'], ascending=[True, False])
+                            .groupby('symbol')
+                            .head(topk)
+                            .copy()
+                    )
 
-                    # Texto bonito
-                    lines = []
-                    lines.append("\n🟢 Realista BEST resumen (por símbolo)")
-                    lines.append(f"TP={best_tp} · SL={best_sl} · Trades totales={len(dfb)} · PnL total={dfb['ganancia_usd'].sum():.2f} USD")
-                    lines.append("Top 5 por PnL:")
-                    for sym, row in top5.iterrows():
-                        lines.append(f" - {sym}: PnL={row['pnl_usd']:.2f} USD | trades={int(row['trades'])} | winrate={row['winrate_%']:.1f}% | PF={(row['pf'] if np.isfinite(row['pf']) else float('inf')):.2f}")
-                    text = "\n".join(lines)
-                    print(text)
-                    # Guardar a TXT
-                    out_path = BACKTEST_DIR / 'resumen_realista_best.txt'
-                    with open(out_path, 'w') as f:
-                        f.write(text + "\n")
-                    logger.info(f"Resumen realista (BEST) guardado en {out_path}")
-                except Exception as e:
-                    logger.warning(f"No se pudo generar resumen realista BEST: {e}")
-            else:
-                logger.warning("La simulación realista no generó trades con ningún TP/SL candidato.")
-    except Exception as e:
-        logger.exception(f"Error en simulación realista 30m→5m: {e}")
+                    # Helpers de vecindad
+                    tp_list = None
+                    try:
+                        if isinstance(cfg, dict):
+                            tp_list = cfg.get('tp', None)
+                    except Exception:
+                        tp_list = None
+                    def nearest_tp_vals(base):
+                        try:
+                            b = float(base)
+                        except Exception:
+                            return [base]
+                        if isinstance(tp_list, list) and len(tp_list):
+                            s = sorted(set([float(x) for x in tp_list]))
+                            if b in s:
+                                i = s.index(b)
+                                cand = [b]
+                                if i-1 >= 0: cand.append(s[i-1])
+                                if i+1 < len(s): cand.append(s[i+1])
+                                return sorted(set(cand))
+                        # fallback ±0.002 con límites sensatos
+                        lo, hi = 0.005, 0.03
+                        return sorted(set([max(lo, round(b-0.002, 6)), b, min(hi, round(b+0.002, 6))]))
+
+                    def clamp(v, lo, hi):
+                        try:
+                            vv = float(v)
+                        except Exception:
+                            return v
+                        return max(lo, min(hi, vv))
+
+                    # Construye trabajos de vecindad
+                    neigh_jobs = []
+                    for _, row in seeds.iterrows():
+                        sym = row['symbol']
+                        p0 = row['params']
+                        if not isinstance(p0, dict):
+                            continue
+                        # Dominio pequeño alrededor del seed
+                        tp_vals = nearest_tp_vals(p0.get('tp', 0.015))
+                        rsi_buy0 = int(p0.get('rsi_buy', 55))
+                        rsi_sell0 = int(p0.get('rsi_sell', 45))
+                        adx0 = int(p0.get('adx_min', 20))
+                        min_atr0 = float(p0.get('min_atr_pct', 0.0015))
+                        max_atr0 = float(p0.get('max_atr_pct', 0.03))
+                        be0 = float(p0.get('be_trigger', 0.0045))
+                        logic0 = str(p0.get('logic', 'any'))
+
+                        rsi_buy_vals = sorted(set([clamp(rsi_buy0-2, 45, 65), rsi_buy0, clamp(rsi_buy0+2, 45, 65)]))
+                        rsi_sell_vals = sorted(set([clamp(rsi_sell0-2, 35, 60), rsi_sell0, clamp(rsi_sell0+2, 35, 60)]))
+                        adx_vals = sorted(set([int(clamp(adx0-4, 15, 50)), int(clamp(adx0, 15, 50)), int(clamp(adx0+4, 15, 50))]))
+                        min_atr_vals = sorted(set([round(clamp(min_atr0-0.0005, 0.0008, 0.004), 6), round(min_atr0, 6), round(clamp(min_atr0+0.0005, 0.0008, 0.004), 6)]))
+                        max_atr_vals = sorted(set([min(max_atr0, 0.03), 0.04]))
+                        atr_mult_vals = [1.8, 2.0, 2.2]
+                        be_vals = sorted(set([round(clamp(be0-0.001, 0.0035, 0.0055), 6), round(be0, 6), round(clamp(be0+0.001, 0.0035, 0.0055), 6)]))
+                        logic_vals = [logic0, ('strict' if logic0 == 'any' else 'any')]
+
+                        # Muestreo aleatorio de la vecindad (~24 combos por seed)
+                        dims = [tp_vals, rsi_buy_vals, rsi_sell_vals, adx_vals, min_atr_vals, max_atr_vals, atr_mult_vals, be_vals, logic_vals]
+                        trials_local = 24
+                        seen_local = set()
+                        while len(seen_local) < trials_local:
+                            pick = (
+                                _rnd.choice(tp_vals),
+                                _rnd.choice(rsi_buy_vals),
+                                _rnd.choice(rsi_sell_vals),
+                                _rnd.choice(adx_vals),
+                                _rnd.choice(min_atr_vals),
+                                _rnd.choice(max_atr_vals),
+                                _rnd.choice(atr_mult_vals),
+                                _rnd.choice(be_vals),
+                                _rnd.choice(logic_vals),
+                            )
+                            if pick in seen_local:
+                                continue
+                            seen_local.add(pick)
+                            tp, rsi_b, rs, adxm, minatr, maxatr, atrm, be, lg = pick
+                            p = dict(p0)  # copia del seed
+                            p.update({
+                                'tp': float(tp),
+                                'tp_mode': 'fixed',
+                                'tp_atr_mult': 0.0,
+                                'rsi_buy': int(rsi_b),
+                                'rsi_sell': int(rs),
+                                'adx_min': int(adxm),
+                                'min_atr_pct': float(minatr),
+                                'max_atr_pct': float(maxatr),
+                                'atr_mult': float(atrm),
+                                'be_trigger': float(be),
+                                'logic': str(lg),
+                            })
+                            neigh_jobs.append((sym, p, args.data_template, args.capital, args.out_dir))
+
+                    if len(neigh_jobs):
+                        print(f"[SECOND] Vecindad jobs: {len(neigh_jobs)}")
+                        procs2 = min(cpu_count(), 8)
+                        results2 = []
+                        with Pool(processes=procs2) as pool:
+                            for i, res in enumerate(pool.imap_unordered(run_job, neigh_jobs, chunksize=1), start=1):
+                                results2.append(res)
+                                _print_progress(i, len(neigh_jobs), prefix='[SECOND] Progreso')
+
+                        df2 = _pd.DataFrame(results2)
+                        df2 = df2[df2['pnl_net'].notna()].copy()
+                        # Reaplica filtros de calidad
+                        if args.min_trades:
+                            df2 = df2[df2['trades'].astype(float) >= args.min_trades]
+                        if args.min_winrate > 0.0:
+                            df2 = df2[df2['winrate_pct'].astype(float) >= args.min_winrate]
+                        if args.max_cost_ratio is not None:
+                            df2 = df2[df2['cost_ratio'].astype(float) <= args.max_cost_ratio]
+                        if args.max_dd is not None:
+                            df2 = df2[df2['max_dd_pct'].abs().astype(float) <= abs(args.max_dd)]
+
+                        if len(df2):
+                            # Métrica y comparación contra best inicial
+                            rank_key = args.rank_by
+                            if rank_key == 'cost_ratio':
+                                metric2 = -df2.get('cost_ratio', np.nan).astype(float)
+                            elif rank_key == 'max_dd_pct':
+                                metric2 = -df2.get('max_dd_pct', np.nan).abs().astype(float)
+                            elif rank_key == 'calmar':
+                                dd2 = df2.get('max_dd_pct', np.nan).abs().astype(float).replace(0, np.nan)
+                                metric2 = df2.get('pnl_net', np.nan).astype(float) / dd2
+                            else:
+                                metric2 = df2.get(rank_key, np.nan).astype(float)
+                            metric2 = metric2.where(metric2.notna(), other=-np.inf)
+                            df2['__metric__'] = metric2
+
+                            # Merge por símbolo el mejor entre initial y second
+                            current_best = symbol_best.copy()
+                            cand_best = df2.sort_values(['symbol','__metric__'], ascending=[True, False]).groupby('symbol').head(1).copy()
+                            merged = current_best.merge(cand_best[['symbol','__metric__']], on='symbol', how='left', suffixes=('', '_cand'))
+                            take_cand = merged['__metric___cand'].notna() & (merged['__metric___cand'] > merged['__metric__'])
+                            # Construye nuevo symbol_best
+                            improved = []
+                            for sym in current_best['symbol'].unique():
+                                c0 = current_best[current_best['symbol'] == sym]
+                                c1 = cand_best[cand_best['symbol'] == sym]
+                                if len(c1) and (len(c0)==0 or float(c1['__metric__'].iloc[0]) > float(c0['__metric__'].iloc[0])):
+                                    improved.append(c1.iloc[0])
+                                else:
+                                    improved.append(c0.iloc[0])
+                            symbol_best = _pd.DataFrame(improved)
+                            # Re-exporta best_prod.json final
+                            prod2 = []
+                            for _, r in symbol_best.iterrows():
+                                prod2.append({'symbol': r['symbol'], 'params': r['params']})
+                            outp2 = args.export_best if os.path.isabs(args.export_best) else os.path.join(args.out_dir, args.export_best)
+                            with open(outp2, 'w') as f:
+                                json.dump(prod2, f, indent=2)
+                            print(f"[SECOND] Refinamiento completado. Config de producción actualizada en {outp2}")
+                            # Copia a pkg/best_prod.json tras refinamiento
+                            try:
+                                _pkg_best2 = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+                                with open(_pkg_best2, 'w') as _pf2:
+                                    json.dump(prod2, _pf2, indent=2)
+                                print(f"[SECOND] Copia de producción para pkg en {_pkg_best2}")
+                            except Exception as _e:
+                                print(f"[SECOND][WARN] No se pudo escribir copia en pkg: {_e}")
+                            # Resumen consola post-second
+                            try:
+                                tot_pnl2 = float(symbol_best['pnl_net'].astype(float).sum()) if 'pnl_net' in symbol_best.columns else float('nan')
+                                tot_tr2 = int(symbol_best['trades'].astype(float).sum()) if 'trades' in symbol_best.columns else 0
+                                avg_win2 = float(symbol_best['winrate_pct'].astype(float).mean()) if 'winrate_pct' in symbol_best.columns else float('nan')
+                                worst_dd2 = float(symbol_best['max_dd_pct'].astype(float).min()) if 'max_dd_pct' in symbol_best.columns else float('nan')
+                                worst_dd2_str = f"{abs(worst_dd2)*100:.2f}%" if not np.isnan(worst_dd2) else "N/A"
+                                print(f"[RESUMEN][SECOND] Portafolio → N={len(symbol_best)} | PnL Neto Total={tot_pnl2:.2f} | Trades={tot_tr2} | Winrate Prom={avg_win2:.1f}% | MaxDD peor={worst_dd2_str}")
+                            except Exception as _e:
+                                print(f"[SECOND][WARN] No se pudo calcular resumen: {_e}")
+                    else:
+                        print('[SECOND] No se generaron jobs de vecindad')
+        else:
+            print('[SWEEP] No hubo resultados válidos')
+            # Top-5 por pnl_net ignorando filtros para diagnóstico
+            try:
+                tmp = dfres[dfres['pnl_net'].notna()].copy()
+                if len(tmp):
+                    top5 = tmp.sort_values('pnl_net', ascending=False).head(5)
+                    print('[SWEEP][DIAG] Top-5 sin filtros:')
+                    cols = ['symbol','pnl_net','trades','winrate_pct','cost_ratio','max_dd_pct','params']
+                    print(top5[cols].to_string(index=False))
+            except Exception as _e:
+                print(f"[SWEEP][DIAG][WARN] No se pudo imprimir top-5: {_e}")
+
+        return  # Termina main en modo sweep
+
+    summary = []
+    for sym in symbols:
+        try:
+            df = load_candles(args.data_template, sym)
+        except Exception as e:
+            print(f"[SKIP] {sym}: {e}")
+            continue
+        p = {
+            'tp_pct': args.tp,
+            'tp_mode': args.tp_mode,
+            'tp_atr_mult': args.tp_atr_mult,
+            'atr_mult_sl': args.atr_mult,
+            'sl_mode': args.sl_mode,
+            'sl_pct': args.sl_pct,
+            'ema_fast': args.ema_fast,
+            'ema_slow': args.ema_slow,
+            'rsi_buy': args.rsi_buy,
+            'rsi_sell': args.rsi_sell,
+            'adx_min': args.adx_min,
+            'min_atr_pct': args.min_atr_pct,
+            'max_atr_pct': args.max_atr_pct,
+            'be_trigger': args.be_trigger,
+            'cooldown_bars': args.cooldown,
+            'logic': args.logic,
+        }
+        bt = Backtester(
+            symbol=sym,
+            df5m=df,
+            initial_equity=args.capital,
+            tp_pct=p['tp_pct'],
+            tp_mode=p['tp_mode'],
+            tp_atr_mult=p['tp_atr_mult'],
+            atr_mult_sl=p['atr_mult_sl'],
+            sl_mode=p['sl_mode'],
+            sl_pct=p['sl_pct'],
+            ema_fast=p['ema_fast'],
+            ema_slow=p['ema_slow'],
+            rsi_buy=p['rsi_buy'],
+            rsi_sell=p['rsi_sell'],
+            adx_min=p['adx_min'],
+            min_atr_pct=p['min_atr_pct'],
+            max_atr_pct=p['max_atr_pct'],
+            be_trigger=p['be_trigger'],
+            cooldown_bars=p['cooldown_bars'],
+            logic=p['logic'],
+            hhll_lookback=args.hhll_lookback,
+            time_exit_bars=args.time_exit_bars,
+        )
+        res = bt.run(train_ratio=0.7)
+        summary.append(res)
+        print(f"[{sym}] Trades: {res['trades']}, PnL neto: {res['pnl_net']}, Winrate: {res['winrate_pct']}%, CostRatio: {res['cost_ratio']}")
+
+    out_json = os.path.join(args.out_dir, 'resumen.json')
+    with open(out_json, 'w') as f:
+        json.dump(summary, f, indent=2, default=str)
+    print(f"Resumen guardado en {out_json}")
+    # ---- Resumen en consola (ganancia total y métricas básicas) ----
+    try:
+        if isinstance(summary, list) and len(summary):
+            import math as _math
+            pnl_vals = [float(r.get('pnl_net', 0.0)) for r in summary if r is not None]
+            trades_vals = [int(r.get('trades', 0) or 0) for r in summary if r is not None]
+            win_vals = [float(r.get('winrate_pct', float('nan'))) for r in summary if r is not None]
+            dd_vals = [float(r.get('max_dd_pct', float('nan'))) for r in summary if r is not None]
+            tot_pnl = float(np.nansum(pnl_vals)) if len(pnl_vals) else 0.0
+            tot_trades = int(np.nansum(trades_vals)) if len(trades_vals) else 0
+            avg_win = float(np.nanmean(win_vals)) if len(win_vals) else float('nan')
+            worst_dd = float(np.nanmin(dd_vals)) if len(dd_vals) else float('nan')
+            worst_dd_str = f"{abs(worst_dd)*100:.2f}%" if not _math.isnan(worst_dd) else "N/A"
+            print(f"[RESUMEN] Portafolio (run directo) → N={len(summary)} | PnL Neto Total={tot_pnl:.2f} | Trades={tot_trades} | Winrate Prom={avg_win:.1f}% | MaxDD peor={worst_dd_str}")
+    except Exception as _e:
+        print(f"[RESUMEN][WARN] No se pudo calcular resumen: {_e}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

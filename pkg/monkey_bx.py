@@ -219,6 +219,22 @@ def obteniendo_ordenes_pendientes():
 def colocando_ordenes():
     pkg.monkey_bx.obteniendo_ordenes_pendientes()
     currencies = pkg.price_bingx_5m.currencies_list()
+    # --- Whitelist desde best_prod.json (si existe) ---
+    best_prod_path = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+    whitelist = None
+    params_by_symbol = {}
+    try:
+        if os.path.exists(best_prod_path):
+            with open(best_prod_path, 'r') as f:
+                _prod = json.load(f)
+            whitelist = set(str(x.get('symbol', '')).upper() for x in _prod if isinstance(x, dict))
+            params_by_symbol = {str(x.get('symbol', '')).upper(): (x.get('params') or {}) for x in _prod if isinstance(x, dict)}
+    except Exception as _e:
+        whitelist = None
+        params_by_symbol = {}
+    if whitelist:
+        currencies = [c for c in currencies if str(c).upper() in whitelist]
+    # ---------------------------------------------------
     df_orders = pd.read_csv('./archivos/order_id_register.csv')
     df_positions = pd.read_csv('./archivos/position_id_register.csv')
 
@@ -347,19 +363,32 @@ def colocando_ordenes():
         decs = max(0, -int(round(math.log10(step_size))))
         currency_amount = round(currency_amount, decs)
 
-        # Definir factores de stop loss y profit
+        # Determinar lado de la orden
         if "LONG" in str(tipo):
-            stop_loss_factor = 0.995   # −0.5 %
-            profit_factor   = 1.010   # +1.0 %
             order_side = "BUY"
             position_side = "LONG"
         elif "SHORT" in str(tipo):
-            stop_loss_factor = 1.005   # +0.5 %
-            profit_factor   = 0.990   # −1.0 %
             order_side = "SELL"
             position_side = "SHORT"
         else:
             continue  # Si no es ninguno, no colocar la orden
+
+        # ---- Niveles TP/SL: usar indicadores.csv; fallback a best_prod.json ----
+        tp_price, sl_price = get_last_take_profit_stop_loss(currency)
+        if tp_price is None or sl_price is None:
+            # Fallback: usa 'tp' de best_prod para el TP del mensaje; SL conservador ±0.5%
+            p = params_by_symbol.get(str(currency).upper(), {})
+            try:
+                tp_pct = float(p.get('tp', 0.015))
+            except Exception:
+                tp_pct = 0.015
+            if position_side == 'LONG':
+                tp_price = price_last * (1.0 + tp_pct)
+                sl_price = price_last * 0.995  # -0.5% como fallback textual
+            else:  # SHORT
+                tp_price = price_last * (1.0 - tp_pct)
+                sl_price = price_last * 1.005  # +0.5% como fallback textual
+        # -----------------------------------------------------------------------
 
         # Colocando la orden
         pkg.bingx.post_order(
@@ -374,24 +403,22 @@ def colocando_ordenes():
         })
         df_positions = pd.concat([df_positions, nueva_fila], ignore_index=True)
 
-        # Cálculo porcentajes para mostrar variación TP/SL
-        if "LONG" in str(tipo):
-            profit_pct = (profit_factor - 1) * 100         # Ej: +0.60 %
-            sl_pct = (stop_loss_factor - 1) * 100          # Ej: -0.20 %
-        else:  # SHORT
-            profit_pct = (1 - profit_factor) * 100         # Negativo
-            sl_pct = (1 - stop_loss_factor) * 100
-
-        # ---------- NUEVO FORMATO DE ALERTA MARKDOWN ----------
+        # ---------- NUEVO FORMATO DE ALERTA MARKDOWN (coherente con indicadores) ----------
+        try:
+            profit_pct = (tp_price / price_last - 1.0) * 100.0
+            sl_pct = (sl_price / price_last - 1.0) * 100.0
+        except Exception:
+            profit_pct = 0.0
+            sl_pct = 0.0
         alert = (
             "💎 *TRADE ALERT* 💎\n"
-            f"`{currency}` | {'🟢 LONG' if 'LONG' in tipo else '🔴 SHORT'}\n\n"
+            f"`{currency}` | {'🟢 LONG' if position_side=='LONG' else '🔴 SHORT'}\n\n"
             f"*Entrada:* `{round(price_last, 4)}`\n"
-            f"*TP:* `{round(price_last * profit_factor, 4)}` (+{profit_pct:.2f}%)\n"
-            f"*SL:* `{round(price_last * stop_loss_factor, 4)}` ({sl_pct:.2f}%)\n\n"
+            f"*TP:* `{round(tp_price, 4)}` ({profit_pct:+.2f}%)\n"
+            f"*SL:* `{round(sl_price, 4)}` ({sl_pct:+.2f}%)\n\n"
             f"💰 *Capital:* `${round(trade, 2)}` — *{peso*100:.2f}%*"
         )
-        # ------------------------------------------------------
+        # -------------------------------------------------------------------------------
         pkg.monkey_bx.bot_send_text(alert)
 
     # Guardando Posiciones fuera del bucle
