@@ -9,7 +9,18 @@ import os
 import math
  # Paso mínimo global de lote (0.001).  Si en el futuro necesitas pasos específicos,
 # vuelve a añadir un diccionario STEP_SIZES y usa .get().
+
 STEP_SIZE_DEFAULT = 0.001
+# Splits por defecto para TP escalonado (50%, 30%, 20%)
+TP_SPLITS = (0.50, 0.30, 0.20)
+
+def _round_step(qty: float, step: float = STEP_SIZE_DEFAULT) -> float:
+    """Redondea cantidad al múltiplo permitido por el contrato."""
+    if step <= 0:
+        return float(qty)
+    raw = math.floor(float(qty) / step) * step
+    decs = max(0, -int(round(math.log10(step))))
+    return round(raw, decs)
 
 import pkg.price_bingx_5m
 
@@ -39,6 +50,43 @@ def get_last_take_profit_stop_loss(symbol):
 
     # Si no existen columnas estándar, retorna None
     return None, None
+
+
+# Extraer TP ladder y SL de indicadores para un símbolo y lado
+def extract_tp_sl_from_latest(latest_values: pd.DataFrame, symbol: str, side: str):
+    """
+    Devuelve (tp_levels:list, sl_level:float) para el símbolo y lado dados usando columnas de indicadores.
+    Si no hay columnas escalonadas, intenta usar el TP clásico como único nivel.
+    side ∈ {"LONG","SHORT"}
+    """
+    side = str(side).upper()
+    sym = str(symbol).upper()
+    row = latest_values[latest_values['symbol'] == sym]
+    if row.empty:
+        return [], None
+    r = row.iloc[0]
+    tps = []
+    sl = None
+    if side == 'LONG':
+        # Preferir escalonados
+        if all(col in row.columns for col in ['TP1_L','TP2_L','TP3_L']):
+            tps = [float(r['TP1_L']), float(r['TP2_L']), float(r['TP3_L'])]
+        elif 'Take_Profit_Long' in row.columns:
+            tps = [float(r['Take_Profit_Long'])]
+        # SL
+        if 'Stop_Loss_Long' in row.columns:
+            sl = float(r['Stop_Loss_Long'])
+    else:  # SHORT
+        if all(col in row.columns for col in ['TP1_S','TP2_S','TP3_S']):
+            tps = [float(r['TP1_S']), float(r['TP2_S']), float(r['TP3_S'])]
+        elif 'Take_Profit_Short' in row.columns:
+            tps = [float(r['Take_Profit_Short'])]
+        if 'Stop_Loss_Short' in row.columns:
+            sl = float(r['Stop_Loss_Short'])
+    # Limpieza
+    tps = [float(x) for x in tps if pd.notna(x)]
+    sl = float(sl) if sl is not None and pd.notna(sl) else None
+    return tps, sl
 
 
 #Funcion Enviar Mensajes
@@ -219,6 +267,17 @@ def obteniendo_ordenes_pendientes():
 def colocando_ordenes():
     pkg.monkey_bx.obteniendo_ordenes_pendientes()
     currencies = pkg.price_bingx_5m.currencies_list()
+    # Cargar últimas señales de indicadores para mostrar TP escalonados en alertas
+    latest_values = None
+    try:
+        _ind_path = './archivos/indicadores.csv'
+        if os.path.exists(_ind_path):
+            _dfi = pd.read_csv(_ind_path)
+            if 'date' in _dfi.columns:
+                _dfi['date'] = pd.to_datetime(_dfi['date'])
+            latest_values = _dfi.sort_values(['symbol','date']).groupby('symbol').last().reset_index()
+    except Exception as _e:
+        latest_values = None
     # --- Whitelist desde best_prod.json (si existe) ---
     best_prod_path = os.path.join(os.path.dirname(__file__), 'best_prod.json')
     whitelist = None
@@ -403,21 +462,56 @@ def colocando_ordenes():
         })
         df_positions = pd.concat([df_positions, nueva_fila], ignore_index=True)
 
-        # ---------- NUEVO FORMATO DE ALERTA MARKDOWN (coherente con indicadores) ----------
-        try:
-            profit_pct = (tp_price / price_last - 1.0) * 100.0
-            sl_pct = (sl_price / price_last - 1.0) * 100.0
-        except Exception:
-            profit_pct = 0.0
-            sl_pct = 0.0
-        alert = (
-            "💎 *TRADE ALERT* 💎\n"
-            f"`{currency}` | {'🟢 LONG' if position_side=='LONG' else '🔴 SHORT'}\n\n"
-            f"*Entrada:* `{round(price_last, 4)}`\n"
-            f"*TP:* `{round(tp_price, 4)}` ({profit_pct:+.2f}%)\n"
-            f"*SL:* `{round(sl_price, 4)}` ({sl_pct:+.2f}%)\n\n"
+        # ---------- ALERTA MARKDOWN con TP escalonados ----------
+        # Intentar extraer TP ladder y SL desde indicadores; fallback a best_prod
+        tps = []
+        sl_level = None
+        if latest_values is not None:
+            try:
+                tps, sl_level = extract_tp_sl_from_latest(latest_values, currency, position_side)
+            except Exception:
+                tps, sl_level = [], None
+        if not tps:
+            # Fallback a un solo TP usando best_prod.json (tp_pct) si existe
+            p = params_by_symbol.get(str(currency).upper(), {})
+            try:
+                tp_pct = float(p.get('tp', 0.015))
+            except Exception:
+                tp_pct = 0.015
+            if position_side == 'LONG':
+                tps = [price_last * (1.0 + tp_pct)]
+            else:
+                tps = [price_last * (1.0 - tp_pct)]
+        if sl_level is None:
+            # Fallback conservador para SL sólo para el texto
+            sl_level = price_last * (0.995 if position_side == 'LONG' else 1.005)
+
+        # Pct firmados respecto a la entrada (positivos si a favor)
+        sign = 1.0 if position_side == 'LONG' else -1.0
+        def pct_to_str(px):
+            try:
+                return f"{sign * (px/price_last - 1.0) * 100:+.2f}%"
+            except Exception:
+                return "+0.00%"
+
+        lines_tp = []
+        for i, tp_px in enumerate(tps[:3], start=1):
+            lines_tp.append(f"*TP{i}:* `{round(float(tp_px), 4)}` ({pct_to_str(float(tp_px))})")
+        sl_pct_str = pct_to_str(float(sl_level))
+        splits_line = "TP splits: 50% / 30% / 20%" if len(tps) >= 3 else "TP split: 100%"
+
+        alert_lines = [
+            "💎 *TRADE ALERT* 💎",
+            f"`{currency}` | {'🟢 LONG' if position_side=='LONG' else '🔴 SHORT'}",
+            "",
+            f"*Entrada:* `{round(price_last, 4)}`",
+            *lines_tp,
+            f"*SL:* `{round(float(sl_level), 4)}` ({sl_pct_str})",
+            "",
+            splits_line,
             f"💰 *Capital:* `${round(trade, 2)}` — *{peso*100:.2f}%*"
-        )
+        ]
+        alert = "\n".join(alert_lines)
         # -------------------------------------------------------------------------------
         pkg.monkey_bx.bot_send_text(alert)
 
@@ -496,71 +590,152 @@ def colocando_TK_SL():
 
             symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
 
-            # Obtener los niveles de Take Profit y Stop Loss según el lado de la posición
-            symbol_data = latest_values[latest_values['symbol'] == symbol]
-
             if positionSide == 'LONG':
-                # Obtener niveles TP/SL estándar
-                if {'Take_Profit_Long', 'Stop_Loss_Long'}.issubset(symbol_data.columns):
-                    take_profit = symbol_data['Take_Profit_Long'].iloc[0]
-                    stop_loss  = symbol_data['Stop_Loss_Long'].iloc[0]
-                else:
-                    # Fallback de emergencia (1 % arriba/abajo)
-                    take_profit = price * 1.01
-                    stop_loss   = price * 0.995
-                # Comprobar qué órdenes faltan
-                exito_sl = sl_exists
-                exito_tp = tp_exists
+                # Niveles TP (escalonados si existen) y SL desde indicadores
+                desired_tps, sl_level = extract_tp_sl_from_latest(latest_values, symbol, 'LONG')
+                # Fallbacks de emergencia si no hay datos
+                if not desired_tps:
+                    desired_tps = [price * 1.01]
+                if sl_level is None:
+                    sl_level = price * 0.995
 
-                if not sl_exists:
+                # ¿Qué órdenes existen ya?
+                symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
+                existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
+                existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
+                existing_tp_prices = set()
+                if 'stopPrice' in existing_tp.columns:
                     try:
-                        pkg.bingx.post_order(symbol, positionAmt, 0, stop_loss, "LONG", "STOP_MARKET", "SELL")
+                        existing_tp_prices = set(float(x) for x in existing_tp['stopPrice'].tolist() if pd.notna(x))
+                    except Exception:
+                        existing_tp_prices = set()
+
+                # Colocar SL si falta
+                exito_sl = not existing_sl.empty
+                if not exito_sl:
+                    try:
+                        pkg.bingx.post_order(symbol, positionAmt, 0, sl_level, "LONG", "STOP_MARKET", "SELL")
                         exito_sl = True
                         time.sleep(1)
                     except Exception as e:
                         print(f"Error colocando SL para {symbol}: {e}")
 
-                if not tp_exists:
-                    try:
-                        pkg.bingx.post_order(symbol, positionAmt, 0, take_profit, "LONG", "TAKE_PROFIT_MARKET", "SELL")
-                        exito_tp = True
-                    except Exception as e:
-                        print(f"Error colocando TP para {symbol}: {e}")
+                # Cantidades parciales para TPs
+                try:
+                    pos_qty = abs(float(positionAmt))
+                except Exception:
+                    pos_qty = 0.0
+                splits = TP_SPLITS if len(desired_tps) >= 3 else (1.0,)
+                split_qtys = [ _round_step(pos_qty * s, STEP_SIZE_DEFAULT) for s in splits ]
 
-                # Si ambos existen ahora, eliminamos la marca para este símbolo
-                if exito_sl and exito_tp:
+                # Colocar TPs faltantes (comparando por precio exacto)
+                placed_all_tps = True
+                for idx, tp_px in enumerate(desired_tps[:len(split_qtys)]):
+                    # ¿Existe un TP muy parecido ya? (tolerancia relativa ~1e-4)
+                    exists = any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
+                    if exists:
+                        continue
+                    try:
+                        tp_qty = split_qtys[idx]
+                        if tp_qty <= 0:
+                            continue
+                        pkg.bingx.post_order(symbol, tp_qty, 0, float(tp_px), "LONG", "TAKE_PROFIT_MARKET", "SELL")
+                        time.sleep(0.3)
+                    except Exception as e:
+                        placed_all_tps = False
+                        print(f"Error colocando TP{idx+1} para {symbol}: {e}")
+
+                # Recalcular si ya existen todos los TP deseados
+                # (vuelve a leer órdenes pendientes para asegurarse)
+                try:
+                    _orders = obteniendo_ordenes_pendientes()
+                    df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+                    symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
+                    existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
+                    existing_tp_prices = set(float(x) for x in existing_tp['stopPrice'].tolist() if pd.notna(x)) if 'stopPrice' in existing_tp.columns else set()
+                    target_count = len(split_qtys)
+                    have_count = 0
+                    for tp_px in desired_tps[:target_count]:
+                        if any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices):
+                            have_count += 1
+                    placed_all_tps = (have_count >= target_count)
+                except Exception:
+                    pass
+
+                # Si SL existe y todos los TP están listos, retirar de la cola
+                if exito_sl and placed_all_tps:
                     df_posiciones.drop(index, inplace=True)
 
             elif positionSide == 'SHORT':
-                # Obtener niveles TP/SL estándar
-                if {'Take_Profit_Short', 'Stop_Loss_Short'}.issubset(symbol_data.columns):
-                    take_profit = symbol_data['Take_Profit_Short'].iloc[0]
-                    stop_loss  = symbol_data['Stop_Loss_Short'].iloc[0]
-                else:
-                    # Fallback de emergencia (1 % arriba/abajo)
-                    take_profit = price * 0.99
-                    stop_loss   = price * 1.005
-                # Comprobar qué órdenes faltan
-                exito_sl = sl_exists
-                exito_tp = tp_exists
+                # Niveles TP (escalonados si existen) y SL desde indicadores
+                desired_tps, sl_level = extract_tp_sl_from_latest(latest_values, symbol, 'SHORT')
+                if not desired_tps:
+                    desired_tps = [price * 0.99]
+                if sl_level is None:
+                    sl_level = price * 1.005
 
-                if not sl_exists:
+                # ¿Qué órdenes existen ya?
+                symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
+                existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
+                existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
+                existing_tp_prices = set()
+                if 'stopPrice' in existing_tp.columns:
                     try:
-                        pkg.bingx.post_order(symbol, positionAmt, 0, stop_loss, "SHORT", "STOP_MARKET", "BUY")
+                        existing_tp_prices = set(float(x) for x in existing_tp['stopPrice'].tolist() if pd.notna(x))
+                    except Exception:
+                        existing_tp_prices = set()
+
+                # SL si falta
+                exito_sl = not existing_sl.empty
+                if not exito_sl:
+                    try:
+                        pkg.bingx.post_order(symbol, positionAmt, 0, sl_level, "SHORT", "STOP_MARKET", "BUY")
                         exito_sl = True
                         time.sleep(1)
                     except Exception as e:
                         print(f"Error colocando SL para {symbol}: {e}")
 
-                if not tp_exists:
-                    try:
-                        pkg.bingx.post_order(symbol, positionAmt, 0, take_profit, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
-                        exito_tp = True
-                    except Exception as e:
-                        print(f"Error colocando TP para {symbol}: {e}")
+                # Cantidades parciales
+                try:
+                    pos_qty = abs(float(positionAmt))
+                except Exception:
+                    pos_qty = 0.0
+                splits = TP_SPLITS if len(desired_tps) >= 3 else (1.0,)
+                split_qtys = [ _round_step(pos_qty * s, STEP_SIZE_DEFAULT) for s in splits ]
 
-                # Si ambos existen ahora, eliminamos la marca para este símbolo
-                if exito_sl and exito_tp:
+                # Colocar TPs faltantes
+                placed_all_tps = True
+                for idx, tp_px in enumerate(desired_tps[:len(split_qtys)]):
+                    exists = any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
+                    if exists:
+                        continue
+                    try:
+                        tp_qty = split_qtys[idx]
+                        if tp_qty <= 0:
+                            continue
+                        pkg.bingx.post_order(symbol, tp_qty, 0, float(tp_px), "SHORT", "TAKE_PROFIT_MARKET", "BUY")
+                        time.sleep(0.3)
+                    except Exception as e:
+                        placed_all_tps = False
+                        print(f"Error colocando TP{idx+1} para {symbol}: {e}")
+
+                # Revalidar existencia de todos los TP
+                try:
+                    _orders = obteniendo_ordenes_pendientes()
+                    df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+                    symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
+                    existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
+                    existing_tp_prices = set(float(x) for x in existing_tp['stopPrice'].tolist() if pd.notna(x)) if 'stopPrice' in existing_tp.columns else set()
+                    target_count = len(split_qtys)
+                    have_count = 0
+                    for tp_px in desired_tps[:target_count]:
+                        if any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices):
+                            have_count += 1
+                    placed_all_tps = (have_count >= target_count)
+                except Exception:
+                    pass
+
+                if exito_sl and placed_all_tps:
                     df_posiciones.drop(index, inplace=True)
 
         except Exception as e:
@@ -632,7 +807,18 @@ def unrealized_profit_positions():
     
     # Agrupar por 'symbol' y obtener la última fila de cada grupo
     latest_values = df_indicadores.groupby('symbol').last().reset_index()
-    
+
+    # Cargar parametros por símbolo (para be_trigger) desde pkg/best_prod.json
+    params_by_symbol = {}
+    try:
+        _best_path = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+        if os.path.exists(_best_path):
+            with open(_best_path, 'r') as _f:
+                _prod = json.load(_f) or []
+            params_by_symbol = {str(x.get('symbol', '')).upper(): (x.get('params') or {}) for x in _prod if isinstance(x, dict)}
+    except Exception as _e:
+        params_by_symbol = {}
+
     # Obtener datos filtrados de la función anterior
     data_filtered = filtrando_posiciones_antiguas()
     
@@ -649,51 +835,68 @@ def unrealized_profit_positions():
     
     for symbol in symbols:
         # Silenciado: print(f"Procesando símbolo: {symbol}")
-        
+
         # Obtener datos del símbolo en 'latest_values'
         symbol_data = latest_values[latest_values['symbol'] == symbol]
-        
+
         # Verificar si 'symbol_data' está vacío
         if symbol_data.empty:
             # Silenciado: print(f"No hay datos de indicadores para el símbolo: {symbol}")
             continue
-        
+
         # Obtener el precio actual
         precio_actual = symbol_data['close'].iloc[0]
-        
+
         # Obtener datos de posición utilizando 'total_positions'
         result = total_positions(symbol)
-        
+
         # Verificar si 'result' es None o no tiene suficientes datos
         if not result or result[0] is None:
             # Silenciado: print(f"No hay datos de posición para el símbolo: {symbol}")
             continue  # Saltar a la siguiente iteración del bucle
-        
+
         # Desempaquetar el resultado
         symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
-        
+
+        # Parámetro de break-even por símbolo (default 0.0 desactivado)
+        p = params_by_symbol.get(str(symbol).upper(), {})
+        try:
+            be_trigger = float(p.get('be_trigger', 0.0))
+        except Exception:
+            be_trigger = 0.0
+        TINY_BE = 0.0002  # 2 bps para cubrir fees/ticks
+
         # Obtener el último valor de 'stopPrice' y 'orderId' para el símbolo
         filtered_data = data_filtered[data_filtered['symbol'] == symbol]
-        
+
         # Verificar si 'filtered_data' está vacío
         if filtered_data.empty:
             # Silenciado: print(f"No se encontraron datos de 'order_id_register.csv' para el símbolo: {symbol}")
             continue
-        
+
         # Acceder de forma segura a 'stopPrice' y 'orderId'
         last_stop_price = filtered_data['stopPrice'].iloc[-1]
         orderId = filtered_data['orderId'].iloc[-1]
-        
+
         # Asegurar que 'positionAmt' es numérico
         try:
             positionAmt = float(positionAmt)
         except ValueError:
             # Silenciado: print(f"Cantidad de posición inválida para {symbol}: {positionAmt}")
             continue
-        
+
         if positionSide == 'LONG':
             stop_loss = symbol_data['Stop_Loss_Long'].iloc[0]
             potencial_nuevo_sl = stop_loss
+            # Break-Even: si el avance supera be_trigger, subir SL a entrada + tiny
+            if be_trigger > 0.0:
+                try:
+                    be_price = float(price) * (1.0 + be_trigger)
+                    if float(precio_actual) >= be_price:
+                        be_stop = float(price) * (1.0 + TINY_BE)
+                        potencial_nuevo_sl = max(potencial_nuevo_sl, be_stop)
+                except Exception:
+                    pass
             if potencial_nuevo_sl > last_stop_price and potencial_nuevo_sl != last_stop_price:
                 try:
                     pkg.bingx.cancel_order(symbol, orderId)
@@ -708,6 +911,15 @@ def unrealized_profit_positions():
         elif positionSide == 'SHORT':
             stop_loss = symbol_data['Stop_Loss_Short'].iloc[0]
             potencial_nuevo_sl = stop_loss
+            # Break-Even: si la ganancia supera be_trigger, bajar SL a entrada - tiny
+            if be_trigger > 0.0:
+                try:
+                    be_price = float(price) * (1.0 - be_trigger)
+                    if float(precio_actual) <= be_price:
+                        be_stop = float(price) * (1.0 - TINY_BE)
+                        potencial_nuevo_sl = min(potencial_nuevo_sl, be_stop)
+                except Exception:
+                    pass
             if potencial_nuevo_sl < last_stop_price and potencial_nuevo_sl != last_stop_price:
                 try:
                     pkg.bingx.cancel_order(symbol, orderId)

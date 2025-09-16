@@ -11,7 +11,10 @@ import json
 from datetime import datetime, timedelta  # NUEVO: para purgar registros antiguos
 
 # === Parámetros base (alineados al backtest) ===
+# === Parámetros base (alineados al backtest) ===
 RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 14, 14, 8, 30, 14
+# Escalonado de TP: factores para ladder de take-profit
+TP_FACTORS = (0.6, 1.0, 1.6)  # escalonado: 60%, 100%, 160% del tp base
 # Multiplicadores legacy (NO usados en prod, mantenidos como fallback si no hay best_prod.json)
 TP_M, SL_M, SIGNAL_MIN = 8, 2, 3
 # Umbrales legacy (fallback)
@@ -185,10 +188,21 @@ def _calc_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     df["Long_Signal"]  = (np.sum(conds_long,  axis=0) >= need)
     df["Short_Signal"] = (np.sum(conds_short, axis=0) >= need)
 
-    # Niveles de TP/SL (TP fijo %, SL por ATR)
-    df["TP_L"] = c * (1.0 + tp_pct)
+    # Niveles de TP/SL (TP fijo %, SL por ATR) + escalonados
+    f1, f2, f3 = TP_FACTORS
+    # LONG ladder
+    df["TP1_L"] = c * (1.0 + f1 * tp_pct)
+    df["TP2_L"] = c * (1.0 + f2 * tp_pct)
+    df["TP3_L"] = c * (1.0 + f3 * tp_pct)
+    # SHORT ladder
+    df["TP1_S"] = c * (1.0 - f1 * tp_pct)
+    df["TP2_S"] = c * (1.0 - f2 * tp_pct)
+    df["TP3_S"] = c * (1.0 - f3 * tp_pct)
+    # TP clásico (compatibilidad) = TP2
+    df["TP_L"] = df["TP2_L"]
+    df["TP_S"] = df["TP2_S"]
+    # SL por ATR
     df["SL_L"] = (c - atr_mult * df["ATR"]).clip(lower=1e-8)
-    df["TP_S"] = c * (1.0 - tp_pct)
     df["SL_S"] = (c + atr_mult * df["ATR"]).clip(lower=1e-8)
 
     # Columnas informativas opcionales
