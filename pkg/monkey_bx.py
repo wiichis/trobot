@@ -486,6 +486,34 @@ def colocando_ordenes():
             # Fallback conservador para SL sólo para el texto
             sl_level = price_last * (0.995 if position_side == 'LONG' else 1.005)
 
+        # --- Ajuste opcional de TP1 (más cerca) desde best_prod.json ---
+        try:
+            p = params_by_symbol.get(str(currency).upper(), {})
+            tp1_factor = p.get('tp1_factor', None)
+            tp1_pct_override = p.get('tp1_pct_override', None)
+            # Normalizar a float si vienen como string
+            tp1_factor = float(tp1_factor) if tp1_factor is not None else None
+            tp1_pct_override = float(tp1_pct_override) if tp1_pct_override is not None else None
+        except Exception:
+            tp1_factor = None
+            tp1_pct_override = None
+
+        if tps:
+            if tp1_pct_override is not None and tp1_pct_override > 0:
+                # Override absoluto en % desde precio de entrada de mercado
+                if position_side == 'LONG':
+                    tps[0] = float(price_last) * (1.0 + tp1_pct_override)
+                else:  # SHORT
+                    tps[0] = float(price_last) * (1.0 - tp1_pct_override)
+            elif tp1_factor is not None and 0.0 < tp1_factor < 1.0:
+                # Comprimir distancia del TP1 hacia la entrada
+                base = float(tps[0])
+                if position_side == 'LONG':
+                    tps[0] = float(price_last) + (base - float(price_last)) * tp1_factor
+                else:
+                    tps[0] = float(price_last) - (float(price_last) - base) * tp1_factor
+        # ---------------------------------------------------------------
+
         # Pct firmados respecto a la entrada (positivos si a favor)
         sign = 1.0 if position_side == 'LONG' else -1.0
         def pct_to_str(px):
@@ -548,6 +576,17 @@ def colocando_TK_SL():
         df_indicadores['symbol'] = df_indicadores['symbol'].str.strip().str.upper()
     latest_values = df_indicadores.groupby('symbol').last().reset_index()
 
+    # Cargar parametros por símbolo (para ajustar TP1) desde pkg/best_prod.json
+    params_by_symbol = {}
+    try:
+        _best_path = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+        if os.path.exists(_best_path):
+            with open(_best_path, 'r') as _f:
+                _prod = json.load(_f) or []
+            params_by_symbol = {str(x.get('symbol', '')).upper(): (x.get('params') or {}) for x in _prod if isinstance(x, dict)}
+    except Exception as _e:
+        params_by_symbol = {}
+
     # Agrega un pequeño delay antes de buscar la posición en BingX para dar tiempo a que la posición MARKET aparezca
     time.sleep(2)
     for index, row in df_posiciones.iterrows():
@@ -598,6 +637,24 @@ def colocando_TK_SL():
                     desired_tps = [price * 1.01]
                 if sl_level is None:
                     sl_level = price * 0.995
+
+                # Ajuste opcional de TP1 desde best_prod.json (más cerca del precio de entrada)
+                try:
+                    p = params_by_symbol.get(str(symbol).upper(), {})
+                    tp1_factor = p.get('tp1_factor', None)
+                    tp1_pct_override = p.get('tp1_pct_override', None)
+                    tp1_factor = float(tp1_factor) if tp1_factor is not None else None
+                    tp1_pct_override = float(tp1_pct_override) if tp1_pct_override is not None else None
+                except Exception:
+                    tp1_factor = None
+                    tp1_pct_override = None
+
+                if desired_tps:
+                    if tp1_pct_override is not None and tp1_pct_override > 0:
+                        desired_tps[0] = float(price) * (1.0 + tp1_pct_override)
+                    elif tp1_factor is not None and 0.0 < tp1_factor < 1.0:
+                        base = float(desired_tps[0])
+                        desired_tps[0] = float(price) + (base - float(price)) * tp1_factor
 
                 # ¿Qué órdenes existen ya?
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
@@ -673,6 +730,24 @@ def colocando_TK_SL():
                     desired_tps = [price * 0.99]
                 if sl_level is None:
                     sl_level = price * 1.005
+
+                # Ajuste opcional de TP1 desde best_prod.json para SHORT
+                try:
+                    p = params_by_symbol.get(str(symbol).upper(), {})
+                    tp1_factor = p.get('tp1_factor', None)
+                    tp1_pct_override = p.get('tp1_pct_override', None)
+                    tp1_factor = float(tp1_factor) if tp1_factor is not None else None
+                    tp1_pct_override = float(tp1_pct_override) if tp1_pct_override is not None else None
+                except Exception:
+                    tp1_factor = None
+                    tp1_pct_override = None
+
+                if desired_tps:
+                    if tp1_pct_override is not None and tp1_pct_override > 0:
+                        desired_tps[0] = float(price) * (1.0 - tp1_pct_override)
+                    elif tp1_factor is not None and 0.0 < tp1_factor < 1.0:
+                        base = float(desired_tps[0])
+                        desired_tps[0] = float(price) - (float(price) - base) * tp1_factor
 
                 # ¿Qué órdenes existen ya?
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]

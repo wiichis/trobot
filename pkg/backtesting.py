@@ -90,6 +90,9 @@ SIMPLE_RUN: Dict[str, object] = {
         'logic': ['strict', 'any'],
         'hhll_lookback': [10, 12, 14],
         'time_exit_bars': [30, 48],
+        'max_dist_emaslow': [0.015], 
+        'fresh_cross_max_bars': [6],
+        'require_rsi_cross': [True],
     },
     'LOAD_BEST_FILE': None,
     'WINNERS_FROM_BEST': False,
@@ -282,6 +285,23 @@ def round_qty(qty: float, step: float = 0.0001) -> float:
 
 
 # ==========================
+# Helper: barras desde último evento True
+# ==========================
+def bars_since(event: pd.Series) -> pd.Series:
+    """Cuenta barras desde el último True (0 en la barra del evento). NaN si nunca ocurrió."""
+    vals = event.astype(bool).values
+    out = np.full(len(vals), np.nan, dtype=float)
+    last = -1
+    for i, flag in enumerate(vals):
+        if flag:
+            last = i
+            out[i] = 0.0
+        elif last >= 0:
+            out[i] = float(i - last)
+    return pd.Series(out, index=event.index)
+
+
+# ==========================
 # Data classes
 # ==========================
 @dataclass
@@ -336,7 +356,10 @@ class Backtester:
                  cooldown_bars: int = 10,
                  logic: str = 'any',
                  hhll_lookback: int = 10,
-                 time_exit_bars: Optional[int] = 30):
+                 time_exit_bars: Optional[int] = 30,
+                 max_dist_emaslow: float = 0.015,
+                 fresh_cross_max_bars: int = 6,
+                 require_rsi_cross: bool = True):
         self.symbol = symbol
         self.df5m = df5m.copy()
         self.equity = initial_equity
@@ -369,6 +392,9 @@ class Backtester:
         self.logic = logic
         self.hhll_lookback = hhll_lookback
         self.time_exit_bars = time_exit_bars
+        self.max_dist_emaslow = float(max_dist_emaslow)
+        self.fresh_cross_max_bars = int(fresh_cross_max_bars)
+        self.require_rsi_cross = bool(require_rsi_cross)
 
         self._prepare_features()
 
@@ -387,12 +413,31 @@ class Backtester:
         df['hh'] = df['high'].rolling(lookback, min_periods=lookback).max()
         df['ll'] = df['low'].rolling(lookback, min_periods=lookback).min()
 
+        # Cruces EMA recientes
+        ema_up_evt = (df['ema_f'] > df['ema_s']) & (df['ema_f'].shift(1) <= df['ema_s'].shift(1))
+        ema_dn_evt = (df['ema_f'] < df['ema_s']) & (df['ema_f'].shift(1) >= df['ema_s'].shift(1))
+        df['ema_up_bars'] = bars_since(ema_up_evt)
+        df['ema_dn_bars'] = bars_since(ema_dn_evt)
+        look = int(self.fresh_cross_max_bars)
+        df['ema_cross_up_recent'] = df['ema_up_bars'].le(look)
+        df['ema_cross_dn_recent'] = df['ema_dn_bars'].le(look)
+
+        # Cruces RSI recientes respecto a rsi_buy / rsi_sell
+        rsi_up_evt = (df['rsi'] >= self.rsi_buy) & (df['rsi'].shift(1) < self.rsi_buy)
+        rsi_dn_evt = (df['rsi'] <= self.rsi_sell) & (df['rsi'].shift(1) > self.rsi_sell)
+        df['rsi_up_bars'] = bars_since(rsi_up_evt)
+        df['rsi_dn_bars'] = bars_since(rsi_dn_evt)
+        df['rsi_cross_up_recent'] = df['rsi_up_bars'].le(look)
+        df['rsi_cross_dn_recent'] = df['rsi_dn_bars'].le(look)
+
         self.df5m = df
 
     # --------------------------
     # Reglas
     # --------------------------
-    def _allow_new_trade(self, ts: pd.Timestamp, atr_pct: float) -> bool:
+    def _allow_new_trade(self, row: pd.Series) -> bool:
+        ts = row['date']
+        atr_pct = float(row.get('atr_pct', np.nan))
         if in_funding_window(ts, 30):
             return False
         if not (self.min_atr_pct <= atr_pct <= self.max_atr_pct):
@@ -403,6 +448,16 @@ class Backtester:
         # cooldown activo
         if self.cooldown > 0:
             return False
+        # Anti-chase: distancia a EMA_slow
+        try:
+            ema_s = float(row.get('ema_s', np.nan))
+            close = float(row.get('close', np.nan))
+            if not (math.isnan(ema_s) or ema_s == 0 or math.isnan(close)):
+                dist = abs(close / ema_s - 1.0)
+                if dist > float(self.max_dist_emaslow):
+                    return False
+        except Exception:
+            pass
         return True
 
     def _entry_signal(self, row: pd.Series) -> Optional[str]:
@@ -424,6 +479,23 @@ class Backtester:
         else:
             long_ok = trend_up and strong and (mom_up or long_break)
             short_ok = trend_dn and strong and (mom_dn or short_break)
+
+        # --- Gate por recencia de cruces ---
+        ema_long_recent = bool(row.get('ema_cross_up_recent', False))
+        ema_short_recent = bool(row.get('ema_cross_dn_recent', False))
+        if long_ok and not ema_long_recent:
+            long_ok = False
+        if short_ok and not ema_short_recent:
+            short_ok = False
+
+        if self.require_rsi_cross:
+            rsi_long_recent = bool(row.get('rsi_cross_up_recent', False))
+            rsi_short_recent = bool(row.get('rsi_cross_dn_recent', False))
+            if long_ok and not rsi_long_recent:
+                long_ok = False
+            if short_ok and not rsi_short_recent:
+                short_ok = False
+
         if long_ok and not short_ok:
             return 'long'
         if short_ok and not long_ok:
@@ -619,7 +691,7 @@ class Backtester:
                 continue  # no operamos en train; se podría usar para optimizar
 
             if self.open_trade is None:
-                if not self._allow_new_trade(ts, atr_pct):
+                if not self._allow_new_trade(row):
                     # Track equity stepwise per barra
                     equity_curve.append(self.equity)
                     equity_time.append(ts)
@@ -857,6 +929,9 @@ def run_job(job):
             logic=p['logic'],
             hhll_lookback=p.get('hhll_lookback', 10),
             time_exit_bars=p.get('time_exit_bars', 30),
+            max_dist_emaslow=p.get('max_dist_emaslow', 0.015),
+            fresh_cross_max_bars=p.get('fresh_cross_max_bars', 6),
+            require_rsi_cross=p.get('require_rsi_cross', True),
         )
         res = bt.run(train_ratio=0.7)
         res['params'] = p
@@ -892,6 +967,11 @@ def main():
     parser.add_argument('--cooldown', type=int, default=10, help='Barras de enfriamiento tras SL')
     parser.add_argument('--hhll_lookback', type=int, default=10, help='Lookback para HH/LL en velas 5m (rupturas)')
     parser.add_argument('--time_exit_bars', type=int, default=30, help='Barras máximas a mantener una posición OOS antes de cerrarla (0 desactiva)')
+    parser.add_argument('--max_dist_emaslow', type=float, default=0.015, help='Distancia máxima relativa a EMA_slow para abrir (0.015 = 1.5%)')
+    parser.add_argument('--fresh_cross_max_bars', type=int, default=6, help='Máximo de barras para considerar cruce EMA/RSI como reciente')
+    parser.add_argument('--require_rsi_cross', dest='require_rsi_cross', action='store_true', help='Exigir cruce reciente de RSI (ON)')
+    parser.add_argument('--no_require_rsi_cross', dest='require_rsi_cross', action='store_false', help='No exigir cruce reciente de RSI')
+    parser.set_defaults(require_rsi_cross=True)
     parser.add_argument('--sweep', type=str, default=None, help='Ruta a JSON con listas de parámetros para barrido (grid)')
     parser.add_argument('--tp_mode', type=str, default='fixed', choices=['fixed','atrx','none'], help="Modo de TP: 'fixed'=% , 'atrx'=k*ATR, 'none'=sin TP")
     parser.add_argument('--tp_atr_mult', type=float, default=0.0, help='Multiplicador de ATR para TP cuando tp_mode=atrx')
@@ -985,6 +1065,9 @@ def main():
             ('logic', as_list(cfg.get('logic', args.logic))),
             ('hhll_lookback', as_list(cfg.get('hhll_lookback', args.hhll_lookback))),
             ('time_exit_bars', as_list(cfg.get('time_exit_bars', args.time_exit_bars))),
+            ('max_dist_emaslow', as_list(cfg.get('max_dist_emaslow', args.max_dist_emaslow))), 
+            ('fresh_cross_max_bars', as_list(cfg.get('fresh_cross_max_bars', args.fresh_cross_max_bars))),
+            ('require_rsi_cross', as_list(cfg.get('require_rsi_cross', args.require_rsi_cross))),
         ]
 
         # Modo de búsqueda: grid vs random
@@ -1333,10 +1416,14 @@ def main():
             'adx_min': args.adx_min,
             'min_atr_pct': args.min_atr_pct,
             'max_atr_pct': args.max_atr_pct,
+            'max_dist_emaslow': args.max_dist_emaslow,
             'be_trigger': args.be_trigger,
             'cooldown_bars': args.cooldown,
             'logic': args.logic,
+            'fresh_cross_max_bars': args.fresh_cross_max_bars,
+            'require_rsi_cross': args.require_rsi_cross,
         }
+        
         bt = Backtester(
             symbol=sym,
             df5m=df,
@@ -1359,6 +1446,9 @@ def main():
             logic=p['logic'],
             hhll_lookback=args.hhll_lookback,
             time_exit_bars=args.time_exit_bars,
+            max_dist_emaslow=p['max_dist_emaslow'],
+            fresh_cross_max_bars=p['fresh_cross_max_bars'],
+            require_rsi_cross=p['require_rsi_cross'],
         )
         res = bt.run(train_ratio=0.7)
         summary.append(res)
