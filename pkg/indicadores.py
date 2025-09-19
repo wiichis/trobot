@@ -114,6 +114,30 @@ DAYS_KEEP = 10  # Días a mantener por símbolo en indicadores
 PRICE_5  = f"{BASE}/cripto_price_5m.csv"
 IND_CSV  = f"{BASE}/indicadores.csv"
 
+# Cooldown por SL (opcional; lo escribe monkey)
+COOLDOWN_CSV = f"{BASE}/cooldown.csv"
+
+def _load_cooldowns():
+    """Lee cooldowns por símbolo desde COOLDOWN_CSV con columnas: symbol,last_sl_ts,cooldown_min"""
+    try:
+        if os.path.exists(COOLDOWN_CSV):
+            df = pd.read_csv(COOLDOWN_CSV, parse_dates=["last_sl_ts"])  # columnas esperadas
+            m = {}
+            for _, r in df.iterrows():
+                sym = str(r.get("symbol", "")).upper()
+                if not sym:
+                    continue
+                last_ts = r.get("last_sl_ts")
+                cd_min = r.get("cooldown_min", 10)
+                try:
+                    cd_min = int(cd_min)
+                except Exception:
+                    cd_min = 10
+                m[sym] = (last_ts, cd_min)
+            return m
+    except Exception:
+        pass
+    return {}
 
 # ---------- util ----------
 @lru_cache(maxsize=4)
@@ -149,6 +173,18 @@ def _calc_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     logic    = str(p.get('logic', 'strict'))
     hhll_n   = int(p.get('hhll_lookback', 0) or 0)
 
+    # --- Nuevos knobs alineados al backtesting (con defaults "lean") ---
+    require_close_vs_emas = bool(p.get('require_close_vs_emas', True))
+    min_ema_spread = float(p.get('min_ema_spread', 0.001))
+    min_vol_ratio  = float(p.get('min_vol_ratio', 1.1))
+    vol_ma_len     = int(p.get('vol_ma_len', 30))
+    adx_slope_len  = int(p.get('adx_slope_len', 3))
+    adx_slope_min  = float(p.get('adx_slope_min', 0.4))
+    fresh_breakout_only = bool(p.get('fresh_breakout_only', False))
+    fresh_cross_max_bars = int(p.get('fresh_cross_max_bars', 3))
+    max_dist_emaslow = float(p.get('max_dist_emaslow', 0.010))
+    require_rsi_cross = bool(p.get('require_rsi_cross', True))
+
     # Indicadores
     df["RSI"]   = talib.RSI(c, RSI_P)
     df["ATR"]   = talib.ATR(h, l, c, ATR_P)
@@ -156,6 +192,36 @@ def _calc_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     df["EMA_S"] = talib.EMA(c, ema_f)
     df["EMA_L"] = talib.EMA(c, ema_s)
     df["ADX"]   = talib.ADX(h, l, c, ADX_P)
+
+    # --- Features adicionales ---
+    # Volumen relativo
+    try:
+        df["VOL_MA"] = v.rolling(vol_ma_len, min_periods=vol_ma_len).mean()
+    except Exception:
+        df["VOL_MA"] = np.nan
+    df["VOL_OK"] = (v >= (min_vol_ratio * df["VOL_MA"])) if min_vol_ratio > 0 else True
+
+    # Separación mínima EMAs (evita cruces planos)
+    # Nota: EMA_S es la rápida y EMA_L la lenta en este módulo
+    with np.errstate(divide='ignore', invalid='ignore'):
+        df["EMA_SPREAD"] = (df["EMA_S"] / df["EMA_L"]) - 1.0
+    df["EMA_SPREAD_OK"] = (df["EMA_SPREAD"] >= min_ema_spread) if min_ema_spread > 0 else True
+
+    # Pendiente de ADX (fuerza aumentando)
+    try:
+        df["ADX_SLOPE"] = df["ADX"] - df["ADX"].shift(adx_slope_len)
+    except Exception:
+        df["ADX_SLOPE"] = np.nan
+    df["ADX_SLOPE_OK"] = (df["ADX_SLOPE"] >= adx_slope_min) if adx_slope_min > 0 else True
+
+    # Precio relativo a EMAs
+    df["PRICE_LONG_OK"]  = (c > df["EMA_S"]) & (df["EMA_S"] > df["EMA_L"])  # close>EMA_f>EMA_s
+    df["PRICE_SHORT_OK"] = (c < df["EMA_S"]) & (df["EMA_S"] < df["EMA_L"])  # close<EMA_f<EMA_s
+
+    # Distancia máxima a EMA lenta (no perseguir)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        df["DIST_EMA_L"] = (c / df["EMA_L"] - 1.0).abs()
+    df["DIST_OK"] = (df["DIST_EMA_L"] <= max_dist_emaslow) if max_dist_emaslow > 0 else True
 
     # Breakouts HH/LL opcionales
     if hhll_n and hhll_n > 0:
@@ -175,18 +241,50 @@ def _calc_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     adx_ok    = df["ADX"] >= adx_min
     atr_ok    = (df["ATR_pct"] >= min_atr) & (df["ATR_pct"] <= max_atr)
 
-    # Lógica: 'strict' = todas; 'any' = al menos 3 condiciones (incluyendo trend)
-    if hhll_n and hhll_n > 0:
-        conds_long  = [trend_long, rsi_long, adx_ok, atr_ok, long_break]
-        conds_short = [trend_short, rsi_short, adx_ok, atr_ok, short_break]
-        need = 5 if logic == 'strict' else 3
+    # Recencia de cruces RSI
+    cross_up = (df["RSI"] >= rsi_buy) & (df["RSI"].shift(1) < rsi_buy)
+    cross_dn = (df["RSI"] <= rsi_sell) & (df["RSI"].shift(1) > rsi_sell)
+    if fresh_cross_max_bars and fresh_cross_max_bars > 0:
+        df["RSI_LONG_RECENT"] = cross_up.rolling(fresh_cross_max_bars, min_periods=1).max().astype(bool)
+        df["RSI_SHORT_RECENT"] = cross_dn.rolling(fresh_cross_max_bars, min_periods=1).max().astype(bool)
     else:
-        conds_long  = [trend_long, rsi_long, adx_ok, atr_ok]
-        conds_short = [trend_short, rsi_short, adx_ok, atr_ok]
-        need = 4 if logic == 'strict' else 3
+        df["RSI_LONG_RECENT"] = rsi_long
+        df["RSI_SHORT_RECENT"] = rsi_short
 
-    df["Long_Signal"]  = (np.sum(conds_long,  axis=0) >= need)
-    df["Short_Signal"] = (np.sum(conds_short, axis=0) >= need)
+    # Breakouts frescos opcionales
+    if hhll_n and hhll_n > 0:
+        df["FRESH_LONG_BREAK"] = (c > df["HH"]) & (c.shift(1) <= df["HH"].shift(1))
+        df["FRESH_SHORT_BREAK"] = (c < df["LL"]) & (c.shift(1) >= df["LL"].shift(1))
+        long_break_use = df["FRESH_LONG_BREAK"] if fresh_breakout_only else long_break
+        short_break_use = df["FRESH_SHORT_BREAK"] if fresh_breakout_only else short_break
+    else:
+        long_break_use = long_break
+        short_break_use = short_break
+
+    # Gating base (siempre requerido)
+    base_long = trend_long & adx_ok & atr_ok & df["DIST_OK"]
+    base_short = trend_short & adx_ok & atr_ok & df["DIST_OK"]
+    if require_close_vs_emas:
+        base_long = base_long & df["PRICE_LONG_OK"]
+        base_short = base_short & df["PRICE_SHORT_OK"]
+
+    # Endurecedores
+    gates_long = df["EMA_SPREAD_OK"] & df["VOL_OK"] & df["ADX_SLOPE_OK"]
+    gates_short = df["EMA_SPREAD_OK"] & df["VOL_OK"] & df["ADX_SLOPE_OK"]
+
+    # Disparadores (momentum / price action)
+    rsi_trig_long = df["RSI_LONG_RECENT"] if require_rsi_cross else rsi_long
+    rsi_trig_short = df["RSI_SHORT_RECENT"] if require_rsi_cross else rsi_short
+
+    if logic == 'strict':
+        trigger_long = rsi_trig_long & long_break_use
+        trigger_short = rsi_trig_short & short_break_use
+    else:  # 'any'
+        trigger_long = rsi_trig_long | long_break_use
+        trigger_short = rsi_trig_short | short_break_use
+
+    df["Long_Signal"]  = (base_long & gates_long & trigger_long)
+    df["Short_Signal"] = (base_short & gates_short & trigger_short)
 
     # Niveles de TP/SL (TP fijo %, SL por ATR) + escalonados
     f1, f2, f3 = TP_FACTORS
@@ -295,6 +393,23 @@ def update_indicators():
         "TP_L": "Take_Profit_Long",
         "TP_S": "Take_Profit_Short"
     })
+
+    # Aplicar cooldown por SL si existe archivo de estado
+    cool = _load_cooldowns()
+    if cool:
+        # Asumimos que 'date' ya es datetime
+        for sym, (last_ts, cd_min) in cool.items():
+            if pd.isna(last_ts):
+                continue
+            sym_mask = out['symbol'].str.upper() == str(sym).upper()
+            if not sym_mask.any():
+                continue
+            start_ts = pd.to_datetime(last_ts)
+            end_ts = start_ts + pd.Timedelta(minutes=int(cd_min))
+            cd_mask = sym_mask & (out['date'] >= start_ts) & (out['date'] < end_ts)
+            if cd_mask.any():
+                out.loc[cd_mask, ['Long_Signal', 'Short_Signal']] = False
+
     out.to_csv(IND_CSV, index=False, na_rep="NA")
     _purge_old()
 
@@ -309,6 +424,18 @@ def ema_alert(symbol):
         return None, None
     # Tomar solo la última vela cerrada
     last_row = df_symbol.iloc[-1]
+
+    # Silenciar señales si el símbolo está en cooldown por SL
+    cool = _load_cooldowns()
+    info = cool.get(str(symbol).upper()) if isinstance(cool, dict) else None
+    if info:
+        last_ts, cd_min = info
+        if pd.notna(last_ts):
+            start_ts = pd.to_datetime(last_ts)
+            end_ts = start_ts + pd.Timedelta(minutes=int(cd_min))
+            if start_ts <= last_row.date < end_ts:
+                return None, None
+
     if last_row.Long_Signal or last_row.Short_Signal:
         side = "LONG" if last_row.Long_Signal else "SHORT"
         return last_row.close, f"Alerta de {side}"

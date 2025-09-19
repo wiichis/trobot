@@ -79,20 +79,28 @@ SIMPLE_RUN: Dict[str, object] = {
         'ema_slow': [55],
         'rsi_buy': [52, 56, 60, 62],
         'rsi_sell': [48, 44, 40, 38],
-        'adx_min': [24, 28, 32],
-        'min_atr_pct': [0.0015, 0.002, 0.0025, 0.003],
-        'max_atr_pct': [0.03, 0.04, 0.05],
-        'atr_mult': [2.0],
+        'adx_min': [15, 18],
+        'min_atr_pct': [0.0012, 0.0015],
+        'max_atr_pct': [0.010, 0.012],
+        'atr_mult': [1.4, 1.6, 1.8],
         'sl_mode': ['atr_then_trailing'],
         'sl_pct': [0.0],
         'be_trigger': [0.0045],
         'cooldown': [10],
-        'logic': ['strict', 'any'],
+        'logic': ['any'],
         'hhll_lookback': [10, 12, 14],
         'time_exit_bars': [30, 48],
-        'max_dist_emaslow': [0.015], 
+        'max_dist_emaslow': [0.010], 
         'fresh_cross_max_bars': [6],
         'require_rsi_cross': [True],
+        # Nuevos endurecedores:
+        'min_ema_spread': [0.001],   # 0.10% separación EMA_f/EMA_s
+        'require_close_vs_emas': [True],    # close>EMA_f>EMA_s (long) | close<EMA_f<EMA_s (short)
+        'min_vol_ratio': [1.05, 1.10, 1.15],        # volumen >= X * vol_ma
+        'vol_ma_len': [30],                 # lookback MA de volumen
+        'adx_slope_len': [3],               # barras para pendiente ADX
+        'adx_slope_min': [0.3, 0.5],       # pendiente mínima ADX
+        'fresh_breakout_only': [False],      # permitir ruptura no fresca
     },
     'LOAD_BEST_FILE': None,
     'WINNERS_FROM_BEST': False,
@@ -359,7 +367,15 @@ class Backtester:
                  time_exit_bars: Optional[int] = 30,
                  max_dist_emaslow: float = 0.015,
                  fresh_cross_max_bars: int = 6,
-                 require_rsi_cross: bool = True):
+                 require_rsi_cross: bool = True,
+                 min_ema_spread: float = 0.0,
+                 require_close_vs_emas: bool = False,
+                 min_vol_ratio: float = 0.0,
+                 vol_ma_len: int = 50,
+                 adx_slope_len: int = 3,
+                 adx_slope_min: float = 0.0,
+                 fresh_breakout_only: bool = False
+                 ):
         self.symbol = symbol
         self.df5m = df5m.copy()
         self.equity = initial_equity
@@ -396,6 +412,14 @@ class Backtester:
         self.fresh_cross_max_bars = int(fresh_cross_max_bars)
         self.require_rsi_cross = bool(require_rsi_cross)
 
+        self.min_ema_spread = float(min_ema_spread)
+        self.require_close_vs_emas = bool(require_close_vs_emas)
+        self.min_vol_ratio = float(min_vol_ratio)
+        self.vol_ma_len = int(vol_ma_len)
+        self.adx_slope_len = int(adx_slope_len)
+        self.adx_slope_min = float(adx_slope_min)
+        self.fresh_breakout_only = bool(fresh_breakout_only)
+
         self._prepare_features()
 
     def _prepare_features(self):
@@ -408,10 +432,25 @@ class Backtester:
         df['atr'] = atr(df, 14)
         df['atr_pct'] = (df['atr'] / df['close']).clip(lower=0)
         df['adx'] = adx(df, 14)
+        # Señales de volumen y tendencia ADX (pendiente)
+        try:
+            vlen = max(2, int(self.vol_ma_len))
+        except Exception:
+            vlen = 50
+        df['vol_ma'] = df['volume'].rolling(vlen, min_periods=vlen).mean()
+        try:
+            alen = max(1, int(self.adx_slope_len))
+        except Exception:
+            alen = 3
+        df['adx_slope'] = df['adx'] - df['adx'].shift(alen)
         # High/Low recientes (price action) con lookback configurable
         lookback = self.hhll_lookback
         df['hh'] = df['high'].rolling(lookback, min_periods=lookback).max()
         df['ll'] = df['low'].rolling(lookback, min_periods=lookback).min()
+
+        # Breakouts frescos (primera ruptura del rango hh/ll)
+        df['fresh_long_break'] = (df['close'] > df['hh']) & (df['close'].shift(1) <= df['hh'].shift(1))
+        df['fresh_short_break'] = (df['close'] < df['ll']) & (df['close'].shift(1) >= df['ll'].shift(1))
 
         # Cruces EMA recientes
         ema_up_evt = (df['ema_f'] > df['ema_s']) & (df['ema_f'].shift(1) <= df['ema_s'].shift(1))
@@ -473,6 +512,11 @@ class Backtester:
         long_break = (row['close'] > row['hh']) if not math.isnan(row['hh']) else False
         short_break = (row['close'] < row['ll']) if not math.isnan(row['ll']) else False
 
+        # Si se exige breakout fresco, sustituye las condiciones de ruptura
+        if getattr(self, 'fresh_breakout_only', False):
+            long_break = bool(row.get('fresh_long_break', False))
+            short_break = bool(row.get('fresh_short_break', False))
+
         if self.logic == 'strict':
             long_ok = trend_up and mom_up and strong and long_break
             short_ok = trend_dn and mom_dn and strong and short_break
@@ -495,6 +539,58 @@ class Backtester:
                 long_ok = False
             if short_ok and not rsi_short_recent:
                 short_ok = False
+
+        # --- Endurecedores adicionales ---
+        # 1) Separación mínima entre EMAs (evitar cruces planos)
+        ema_spread_ok = True
+        try:
+            if self.min_ema_spread > 0:
+                ema_s = float(row.get('ema_s', np.nan))
+                ema_f = float(row.get('ema_f', np.nan))
+                if not (math.isnan(ema_s) or math.isnan(ema_f) or ema_s == 0):
+                    ema_spread_ok = (ema_f / ema_s - 1.0) >= self.min_ema_spread
+                else:
+                    ema_spread_ok = False
+        except Exception:
+            ema_spread_ok = False
+
+        # 2) Precio relativo a EMAs
+        price_long_ok = True
+        price_short_ok = True
+        if self.require_close_vs_emas:
+            try:
+                price_long_ok = (row['close'] > row['ema_f']) and (row['ema_f'] > row['ema_s'])
+                price_short_ok = (row['close'] < row['ema_f']) and (row['ema_f'] < row['ema_s'])
+            except Exception:
+                price_long_ok = price_short_ok = False
+
+        # 3) Pendiente mínima de ADX (tendencia ganando fuerza)
+        adx_slope_ok = True
+        if self.adx_slope_min > 0:
+            try:
+                adx_slope_ok = float(row.get('adx_slope', 0.0)) >= self.adx_slope_min
+            except Exception:
+                adx_slope_ok = False
+
+        # 4) Filtro de volumen: volumen actual por encima de su media
+        vol_ok = True
+        if self.min_vol_ratio > 0:
+            try:
+                vma = float(row.get('vol_ma', np.nan))
+                vol_ok = (not math.isnan(vma) and vma > 0 and float(row.get('volume', 0.0)) >= self.min_vol_ratio * vma)
+            except Exception:
+                vol_ok = False
+
+        if long_ok:
+            if not ema_spread_ok: long_ok = False
+            if not adx_slope_ok: long_ok = False
+            if not vol_ok: long_ok = False
+            if not price_long_ok: long_ok = False
+        if short_ok:
+            if not ema_spread_ok: short_ok = False
+            if not adx_slope_ok: short_ok = False
+            if not vol_ok: short_ok = False
+            if not price_short_ok: short_ok = False
 
         if long_ok and not short_ok:
             return 'long'
@@ -932,6 +1028,13 @@ def run_job(job):
             max_dist_emaslow=p.get('max_dist_emaslow', 0.015),
             fresh_cross_max_bars=p.get('fresh_cross_max_bars', 6),
             require_rsi_cross=p.get('require_rsi_cross', True),
+            min_ema_spread=p.get('min_ema_spread', 0.0),
+            require_close_vs_emas=p.get('require_close_vs_emas', False),
+            min_vol_ratio=p.get('min_vol_ratio', 0.0),
+            vol_ma_len=p.get('vol_ma_len', 50),
+            adx_slope_len=p.get('adx_slope_len', 3),
+            adx_slope_min=p.get('adx_slope_min', 0.0),
+            fresh_breakout_only=p.get('fresh_breakout_only', False),
         )
         res = bt.run(train_ratio=0.7)
         res['params'] = p
@@ -959,19 +1062,30 @@ def main():
     parser.add_argument('--ema_slow', type=int, default=50)
     parser.add_argument('--rsi_buy', type=int, default=55)
     parser.add_argument('--rsi_sell', type=int, default=45)
-    parser.add_argument('--adx_min', type=int, default=20)
+    parser.add_argument('--adx_min', type=int, default=15)
     parser.add_argument('--logic', type=str, default='any', choices=['strict','any'], help="'strict' = tendencia & fuerza & momentum & cierre fuera; 'any' = tendencia & fuerza & (momentum OR cierre fuera)")
-    parser.add_argument('--min_atr_pct', type=float, default=0.0015, help='Límite inferior de ATR% (0.0015 = 0.15%)')
-    parser.add_argument('--max_atr_pct', type=float, default=0.02, help='Límite superior de ATR% (0.02 = 2.0%)')
+    parser.add_argument('--min_atr_pct', type=float, default=0.0012, help='Límite inferior de ATR% (0.0012 = 0.12%)')
+    parser.add_argument('--max_atr_pct', type=float, default=0.012, help='Límite superior de ATR% (0.012 = 1.2%)')
     parser.add_argument('--be_trigger', type=float, default=0.0045, help='Activación de breakeven (fracción, 0.0045 = 0.45%)')
     parser.add_argument('--cooldown', type=int, default=10, help='Barras de enfriamiento tras SL')
     parser.add_argument('--hhll_lookback', type=int, default=10, help='Lookback para HH/LL en velas 5m (rupturas)')
     parser.add_argument('--time_exit_bars', type=int, default=30, help='Barras máximas a mantener una posición OOS antes de cerrarla (0 desactiva)')
-    parser.add_argument('--max_dist_emaslow', type=float, default=0.015, help='Distancia máxima relativa a EMA_slow para abrir (0.015 = 1.5%)')
-    parser.add_argument('--fresh_cross_max_bars', type=int, default=6, help='Máximo de barras para considerar cruce EMA/RSI como reciente')
+    parser.add_argument('--max_dist_emaslow', type=float, default=0.010, help='Distancia máxima relativa a EMA_slow para abrir (0.010 = 1.0%)')
+    parser.add_argument('--fresh_cross_max_bars', type=int, default=3, help='Máximo de barras para considerar cruce EMA/RSI como reciente')
     parser.add_argument('--require_rsi_cross', dest='require_rsi_cross', action='store_true', help='Exigir cruce reciente de RSI (ON)')
     parser.add_argument('--no_require_rsi_cross', dest='require_rsi_cross', action='store_false', help='No exigir cruce reciente de RSI')
     parser.set_defaults(require_rsi_cross=True)
+    parser.add_argument('--min_ema_spread', type=float, default=0.001, help='Mínima separación relativa entre EMA_f y EMA_s (0.001 = 0.1%)')
+    parser.add_argument('--require_close_vs_emas', dest='require_close_vs_emas', action='store_true', help='Exigir close>EMA_f>EMA_s (long) o close<EMA_f<EMA_s (short)')
+    parser.add_argument('--no_require_close_vs_emas', dest='require_close_vs_emas', action='store_false', help='No exigir relación close/EMAs')
+    parser.set_defaults(require_close_vs_emas=True)
+    parser.add_argument('--min_vol_ratio', type=float, default=1.1, help='Volumen mínimo como múltiplo de su media (1.2 = 120%)')
+    parser.add_argument('--vol_ma_len', type=int, default=30, help='Ventana para media de volumen')
+    parser.add_argument('--adx_slope_len', type=int, default=3, help='Barras para calcular pendiente de ADX')
+    parser.add_argument('--adx_slope_min', type=float, default=0.4, help='Pendiente mínima de ADX requerida')
+    parser.add_argument('--fresh_breakout_only', dest='fresh_breakout_only', action='store_true', help='Exigir que el breakout HH/LL sea el primero (fresco)')
+    parser.add_argument('--no_fresh_breakout_only', dest='fresh_breakout_only', action='store_false', help='Permitir rupturas no frescas')
+    parser.set_defaults(fresh_breakout_only=False)
     parser.add_argument('--sweep', type=str, default=None, help='Ruta a JSON con listas de parámetros para barrido (grid)')
     parser.add_argument('--tp_mode', type=str, default='fixed', choices=['fixed','atrx','none'], help="Modo de TP: 'fixed'=% , 'atrx'=k*ATR, 'none'=sin TP")
     parser.add_argument('--tp_atr_mult', type=float, default=0.0, help='Multiplicador de ATR para TP cuando tp_mode=atrx')
@@ -1068,6 +1182,14 @@ def main():
             ('max_dist_emaslow', as_list(cfg.get('max_dist_emaslow', args.max_dist_emaslow))), 
             ('fresh_cross_max_bars', as_list(cfg.get('fresh_cross_max_bars', args.fresh_cross_max_bars))),
             ('require_rsi_cross', as_list(cfg.get('require_rsi_cross', args.require_rsi_cross))),
+            # Endurecedores nuevos:
+            ('min_ema_spread', as_list(cfg.get('min_ema_spread', args.min_ema_spread))),
+            ('require_close_vs_emas', as_list(cfg.get('require_close_vs_emas', args.require_close_vs_emas))),
+            ('min_vol_ratio', as_list(cfg.get('min_vol_ratio', args.min_vol_ratio))),
+            ('vol_ma_len', as_list(cfg.get('vol_ma_len', args.vol_ma_len))),
+            ('adx_slope_len', as_list(cfg.get('adx_slope_len', args.adx_slope_len))),
+            ('adx_slope_min', as_list(cfg.get('adx_slope_min', args.adx_slope_min))),
+            ('fresh_breakout_only', as_list(cfg.get('fresh_breakout_only', args.fresh_breakout_only))),
         ]
 
         # Modo de búsqueda: grid vs random
@@ -1422,6 +1544,14 @@ def main():
             'logic': args.logic,
             'fresh_cross_max_bars': args.fresh_cross_max_bars,
             'require_rsi_cross': args.require_rsi_cross,
+            # Nuevos endurecedores:
+            'min_ema_spread': args.min_ema_spread,
+            'require_close_vs_emas': args.require_close_vs_emas,
+            'min_vol_ratio': args.min_vol_ratio,
+            'vol_ma_len': args.vol_ma_len,
+            'adx_slope_len': args.adx_slope_len,
+            'adx_slope_min': args.adx_slope_min,
+            'fresh_breakout_only': args.fresh_breakout_only,
         }
         
         bt = Backtester(
@@ -1449,6 +1579,13 @@ def main():
             max_dist_emaslow=p['max_dist_emaslow'],
             fresh_cross_max_bars=p['fresh_cross_max_bars'],
             require_rsi_cross=p['require_rsi_cross'],
+            min_ema_spread=p['min_ema_spread'],
+            require_close_vs_emas=p['require_close_vs_emas'],
+            min_vol_ratio=p['min_vol_ratio'],
+            vol_ma_len=p['vol_ma_len'],
+            adx_slope_len=p['adx_slope_len'],
+            adx_slope_min=p['adx_slope_min'],
+            fresh_breakout_only=p['fresh_breakout_only'],
         )
         res = bt.run(train_ratio=0.7)
         summary.append(res)
