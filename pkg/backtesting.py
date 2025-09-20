@@ -29,6 +29,7 @@ import argparse
 import re
 import itertools
 import sys
+import atexit
 from multiprocessing import Pool, cpu_count
 from dataclasses import dataclass
 from typing import Optional, List, Dict
@@ -174,6 +175,78 @@ def _build_simple_argv(cfg: Dict[str, object]) -> list:
     # 'BEST_FROM_FILE' branch omitted as not needed for minimal config
 
     return argv
+
+# ==========================
+# Normalización de archivo 'best' exportado
+# ==========================
+def _normalize_best_file(path_in: str, save_to: str = os.path.join('pkg', 'best_prod.json')) -> None:
+    """
+    Garantiza que el JSON de 'best' tenga el esquema:
+        [ {"symbol": "AVAX-USDT", "params": {...}}, ... ]
+    Soporta entradas como lista de strings, dict por símbolo o lista de dicts heterogénea.
+    """
+    try:
+        if not os.path.exists(path_in):
+            return
+        with open(path_in, 'r') as f:
+            data = json.load(f)
+    except Exception:
+        return
+
+    out = []
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, str):
+                out.append({'symbol': item.upper(), 'params': {}})
+            elif isinstance(item, dict):
+                # caso preferido: {"symbol": "X", "params": {...}}
+                if 'symbol' in item and 'params' in item:
+                    sym = str(item.get('symbol', '')).upper()
+                    params = item.get('params') or {}
+                    out.append({'symbol': sym, 'params': params if isinstance(params, dict) else {}})
+                else:
+                    # fallback: dict con claves de params + 'symbol'
+                    sym = str(item.get('symbol', '')).upper()
+                    if sym:
+                        params = {k: v for k, v in item.items() if k.lower() != 'symbol'}
+                        out.append({'symbol': sym, 'params': params})
+    elif isinstance(data, dict):
+        # {"AVAX-USDT": {...}, "BNB-USDT": {...}}
+        for sym, params in data.items():
+            out.append({'symbol': str(sym).upper(), 'params': params if isinstance(params, dict) else {}})
+    else:
+        return
+
+    try:
+        os.makedirs(os.path.dirname(save_to), exist_ok=True)
+        with open(save_to, 'w') as f:
+            json.dump(out, f, indent=2)
+    except Exception:
+        # en caso de fallo de escritura, no bloquear ejecución
+        pass
+
+
+def _post_run_normalize_best():
+    """
+    Al terminar la ejecución, intenta normalizar el archivo de 'best' sin asumir
+    exactamente dónde lo escribió el runner.
+    """
+    candidates = set()
+    # lo que el usuario configuró
+    cfg_path = SIMPLE_RUN.get('EXPORT_BEST') or 'best_prod.json'
+    candidates.add(cfg_path)
+    # posible ubicación en out_dir
+    out_dir = SIMPLE_RUN.get('OUT_DIR', DEFAULT_OUT_DIR) or DEFAULT_OUT_DIR
+    candidates.add(os.path.join(out_dir, os.path.basename(cfg_path)))
+    # fallback por defecto
+    candidates.add(os.path.join(out_dir, 'best_prod.json'))
+    for p in list(candidates):
+        try:
+            _normalize_best_file(p, os.path.join('pkg', 'best_prod.json'))
+        except Exception:
+            continue
+
+atexit.register(_post_run_normalize_best)
 
 # ==========================
 # Detección de símbolos disponibles en CSV único
