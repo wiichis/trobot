@@ -1359,6 +1359,12 @@ def main():
                 for _, r in symbol_best.iterrows():
                     prod.append({'symbol': r['symbol'], 'params': r['params']})
                 outp = args.export_best if os.path.isabs(args.export_best) else os.path.join(args.out_dir, args.export_best)
+                try:
+                    out_dirname = os.path.dirname(outp)
+                    if out_dirname:
+                        os.makedirs(out_dirname, exist_ok=True)
+                except Exception:
+                    pass
                 with open(outp, 'w') as f:
                     json.dump(prod, f, indent=2)
                 print(f"[SWEEP] Config de producción exportada en {outp}")
@@ -1552,6 +1558,12 @@ def main():
                             for _, r in symbol_best.iterrows():
                                 prod2.append({'symbol': r['symbol'], 'params': r['params']})
                             outp2 = args.export_best if os.path.isabs(args.export_best) else os.path.join(args.out_dir, args.export_best)
+                            try:
+                                out_dirname2 = os.path.dirname(outp2)
+                                if out_dirname2:
+                                    os.makedirs(out_dirname2, exist_ok=True)
+                            except Exception:
+                                pass
                             with open(outp2, 'w') as f:
                                 json.dump(prod2, f, indent=2)
                             print(f"[SECOND] Refinamiento completado. Config de producción actualizada en {outp2}")
