@@ -114,29 +114,9 @@ DAYS_KEEP = 10  # Días a mantener por símbolo en indicadores
 PRICE_5  = f"{BASE}/cripto_price_5m.csv"
 IND_CSV  = f"{BASE}/indicadores.csv"
 
-# Cooldown por SL (opcional; lo escribe monkey)
-COOLDOWN_CSV = f"{BASE}/cooldown.csv"
 
 def _load_cooldowns():
-    """Lee cooldowns por símbolo desde COOLDOWN_CSV con columnas: symbol,last_sl_ts,cooldown_min"""
-    try:
-        if os.path.exists(COOLDOWN_CSV):
-            df = pd.read_csv(COOLDOWN_CSV, parse_dates=["last_sl_ts"])  # columnas esperadas
-            m = {}
-            for _, r in df.iterrows():
-                sym = str(r.get("symbol", "")).upper()
-                if not sym:
-                    continue
-                last_ts = r.get("last_sl_ts")
-                cd_min = r.get("cooldown_min", 10)
-                try:
-                    cd_min = int(cd_min)
-                except Exception:
-                    cd_min = 10
-                m[sym] = (last_ts, cd_min)
-            return m
-    except Exception:
-        pass
+    """Cooldown desactivado: siempre retorna vacío."""
     return {}
 
 # ---------- util ----------
@@ -394,22 +374,6 @@ def update_indicators():
         "TP_S": "Take_Profit_Short"
     })
 
-    # Aplicar cooldown por SL si existe archivo de estado
-    cool = _load_cooldowns()
-    if cool:
-        # Asumimos que 'date' ya es datetime
-        for sym, (last_ts, cd_min) in cool.items():
-            if pd.isna(last_ts):
-                continue
-            sym_mask = out['symbol'].str.upper() == str(sym).upper()
-            if not sym_mask.any():
-                continue
-            start_ts = pd.to_datetime(last_ts)
-            end_ts = start_ts + pd.Timedelta(minutes=int(cd_min))
-            cd_mask = sym_mask & (out['date'] >= start_ts) & (out['date'] < end_ts)
-            if cd_mask.any():
-                out.loc[cd_mask, ['Long_Signal', 'Short_Signal']] = False
-
     out.to_csv(IND_CSV, index=False, na_rep="NA")
     _purge_old()
 
@@ -425,16 +389,6 @@ def ema_alert(symbol):
     # Tomar solo la última vela cerrada
     last_row = df_symbol.iloc[-1]
 
-    # Silenciar señales si el símbolo está en cooldown por SL
-    cool = _load_cooldowns()
-    info = cool.get(str(symbol).upper()) if isinstance(cool, dict) else None
-    if info:
-        last_ts, cd_min = info
-        if pd.notna(last_ts):
-            start_ts = pd.to_datetime(last_ts)
-            end_ts = start_ts + pd.Timedelta(minutes=int(cd_min))
-            if start_ts <= last_row.date < end_ts:
-                return None, None
 
     if last_row.Long_Signal or last_row.Short_Signal:
         side = "LONG" if last_row.Long_Signal else "SHORT"
