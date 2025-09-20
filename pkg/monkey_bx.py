@@ -14,6 +14,24 @@ COOLDOWN_CSV = './archivos/cooldown.csv'
 # Registro local de SL colocados para detectar fills
 SL_WATCH_CSV = './archivos/sl_watch.csv'
 
+def _normalize_orders_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Asegura columnas coherentes: ['symbol','orderId','type','stopPrice','time'] cuando existan.
+    Mapea 'orderType'→'type', 'symbol' en mayúsculas y 'stopPrice' numérico.
+    """
+    if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+        return pd.DataFrame(columns=['symbol','orderId','type','stopPrice','time'])
+    df = df.copy()
+    if 'type' not in df.columns and 'orderType' in df.columns:
+        df = df.rename(columns={'orderType': 'type'})
+    if 'type' not in df.columns:
+        df['type'] = ''
+    if 'symbol' in df.columns:
+        df['symbol'] = df['symbol'].astype(str).str.upper()
+    if 'stopPrice' in df.columns:
+        df['stopPrice'] = pd.to_numeric(df['stopPrice'], errors='coerce')
+    return df
+
 def _cooldown_minutes_for_symbol(params_by_symbol: dict, symbol: str, default: int = 10) -> int:
     try:
         p = params_by_symbol.get(str(symbol).upper(), {}) if isinstance(params_by_symbol, dict) else {}
@@ -356,6 +374,7 @@ def obteniendo_ordenes_pendientes():
         df = pd.DataFrame(orders)
 
     try:
+        df = _normalize_orders_df(df)
         csv_file = './archivos/order_id_register.csv'
         df.to_csv(csv_file, index=False)
     except Exception as e:
@@ -396,8 +415,16 @@ def colocando_ordenes():
     if whitelist:
         currencies = [c for c in currencies if str(c).upper() in whitelist]
     # ---------------------------------------------------
-    df_orders = pd.read_csv('./archivos/order_id_register.csv')
-    df_positions = pd.read_csv('./archivos/position_id_register.csv')
+    try:
+        df_orders = pd.read_csv('./archivos/order_id_register.csv')
+    except FileNotFoundError:
+        df_orders = pd.DataFrame(columns=['symbol','orderId','type','stopPrice','time'])
+    df_orders = _normalize_orders_df(df_orders)
+
+    try:
+        df_positions = pd.read_csv('./archivos/position_id_register.csv')
+    except FileNotFoundError:
+        df_positions = pd.DataFrame(columns=['symbol','tipo','counter'])
 
     # Cargar los pesos actualizados
     PESOS_ACTUALIZADOS_PATH = './archivos/pesos_actualizados.csv'
@@ -532,6 +559,8 @@ def colocando_ordenes():
         # Redondeo para evitar floats interminables
         decs = max(0, -int(round(math.log10(step_size))))
         currency_amount = round(currency_amount, decs)
+        if currency_amount <= 0:
+            continue
 
         # Determinar lado de la orden
         if "LONG" in str(tipo):
@@ -665,26 +694,31 @@ def colocando_ordenes():
     df_positions.to_csv('./archivos/position_id_register.csv', index=False)
 
 def sync_cooldowns_from_sl_fills():
-    """Detecta SL ejecutados y registra cooldown por símbolo."""
+    """Detecta SL ejecutados y registra cooldown por símbolo de forma conservadora."""
     try:
         if not os.path.exists(SL_WATCH_CSV):
             return
         dfw = pd.read_csv(SL_WATCH_CSV)
         if dfw.empty:
             return
-        # Normalizar tipos
         if 'posted_at' in dfw.columns:
             dfw['posted_at'] = pd.to_datetime(dfw['posted_at'], errors='coerce')
         if 'symbol' in dfw.columns:
             dfw['symbol'] = dfw['symbol'].astype(str).str.upper()
-        # Cargar pendientes actuales
+        # Sólo el último registro por símbolo (tras mover SL puede haber varios)
+        try:
+            dfw = dfw.sort_values('posted_at').groupby('symbol', as_index=False).last()
+        except Exception:
+            pass
+
+        # Pendientes normalizados
         try:
             df_pend = pd.read_csv('./archivos/order_id_register.csv')
         except Exception:
             df_pend = pd.DataFrame(columns=['symbol','orderId','type','stopPrice'])
-        if 'symbol' in df_pend.columns:
-            df_pend['symbol'] = df_pend['symbol'].astype(str).str.upper()
-        # Cargar últimos OHLC para heurística
+        df_pend = _normalize_orders_df(df_pend)
+
+        # OHLC para heurística (opcional)
         df_ind = None
         try:
             if os.path.exists('./archivos/indicadores.csv'):
@@ -695,7 +729,8 @@ def sync_cooldowns_from_sl_fills():
                     df_ind['symbol'] = df_ind['symbol'].astype(str).str.upper()
         except Exception:
             df_ind = None
-        # Cargar params (cooldown_min)
+
+        # cooldown_min por símbolo
         params_by_symbol = {}
         try:
             _best_path = os.path.join(os.path.dirname(__file__), 'best_prod.json')
@@ -708,10 +743,18 @@ def sync_cooldowns_from_sl_fills():
 
         keep_rows = []
         now_ts = pd.Timestamp.now()
+
         for _, r in dfw.iterrows():
             sym = str(r.get('symbol','')).upper()
             if not sym:
                 continue
+            # TTL para evitar carreras justo después de postear
+            try:
+                if pd.notna(r.get('posted_at')) and (now_ts - r['posted_at']) < pd.Timedelta(seconds=60):
+                    keep_rows.append(r); continue
+            except Exception:
+                pass
+
             oid = r.get('orderId', '')
             try:
                 spx = float(r.get('stopPrice', 'nan'))
@@ -721,46 +764,36 @@ def sync_cooldowns_from_sl_fills():
 
             # ¿Sigue pendiente el STOP?
             still_pending = False
-            if isinstance(oid, (int, float)) and not pd.isna(oid):
-                try:
+            try:
+                if isinstance(oid, (int, float)) and not pd.isna(oid):
                     still_pending = not df_pend[(df_pend['symbol']==sym) & (df_pend['orderId']==oid) & (df_pend['type']=='STOP_MARKET')].empty
-                except Exception:
-                    still_pending = False
-            else:
-                # Sin orderId: intentar casar por precio
-                try:
+                else:
                     m = df_pend[(df_pend['symbol']==sym) & (df_pend['type']=='STOP_MARKET')].copy()
-                    if not m.empty and 'stopPrice' in m.columns:
-                        m['stopPrice'] = pd.to_numeric(m['stopPrice'], errors='coerce')
-                        if not pd.isna(spx):
-                            m['diff'] = (m['stopPrice'] - spx).abs() / m['stopPrice'].abs().clip(lower=1e-9)
-                            m = m.sort_values('diff')
-                            if not m.empty and m['diff'].iloc[0] < 1e-3:
-                                still_pending = True
-                                # actualizar orderId si podemos
-                                try:
-                                    oid = m['orderId'].iloc[0]
-                                except Exception:
-                                    pass
-                except Exception:
-                    pass
+                    if not m.empty and 'stopPrice' in m.columns and not pd.isna(spx):
+                        m['diff'] = (m['stopPrice'] - spx).abs() / m['stopPrice'].abs().clip(lower=1e-9)
+                        m = m.sort_values('diff')
+                        if not m.empty and m['diff'].iloc[0] < 1e-3:
+                            still_pending = True
+            except Exception:
+                still_pending = False
 
             if still_pending:
-                keep_rows.append(r)
-                continue
+                keep_rows.append(r); continue
 
-            # ¿Sigue la posición abierta? si sí, probablemente cancelado/reemplazado
+            # ¿Hay posición abierta?
+            pos_open = False
             try:
                 pos = total_positions(sym)
                 if pos and pos[0] is not None and abs(float(pos[3])) > 0:
-                    # posición viva → mantener en watch un poco más
-                    keep_rows.append(r)
-                    continue
+                    pos_open = True
             except Exception:
-                pass
+                pos_open = False
 
-            # Heurística: ¿tocó el stop en OHLC reciente?
-            touched = True  # por defecto confiar en cierre de posición
+            if pos_open:
+                keep_rows.append(r); continue
+
+            # No STOP pendiente y no posición → probablemente SL ejecutado
+            touched = False
             try:
                 if df_ind is not None and {'symbol','date'}.issubset(df_ind.columns) and {'low','high'}.issubset(set(df_ind.columns)) and not pd.isna(spx):
                     tail = df_ind[df_ind['symbol']==sym].sort_values('date').tail(2)
@@ -770,23 +803,19 @@ def sync_cooldowns_from_sl_fills():
                         elif side == 'SHORT':
                             touched = (tail['high'] >= (spx * 0.9995)).any()
             except Exception:
-                pass
+                touched = False
 
-            # Registrar cooldown si parece SL ejecutado
-            if touched:
+            if touched or df_ind is None:
                 cd_min = _cooldown_minutes_for_symbol(params_by_symbol, sym, default=10)
                 _write_cooldown(sym, now_ts, cd_min)
-                # (no re-agregar a keep_rows → lo sacamos del watch)
+                # no se re-agrega → sale del watch
             else:
-                # No hay evidencia clara: conservar por ahora
                 keep_rows.append(r)
 
-        # Persistir watch actualizado
         try:
             if keep_rows:
                 pd.DataFrame(keep_rows).to_csv(SL_WATCH_CSV, index=False)
             else:
-                # archivo vacío limpiado
                 if os.path.exists(SL_WATCH_CSV):
                     os.remove(SL_WATCH_CSV)
         except Exception as e:
@@ -804,18 +833,11 @@ def colocando_TK_SL():
     if not df_posiciones.empty:
         df_posiciones['counter'] += 1
 
-    # Obteniendo órdenes pendientes
-    df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
-    # --- Normalizar columnas y evitar KeyError ---------------------------
-    # Asegurar que exista la columna 'type'.
-    # Algunos registros de BingX devuelven 'orderType' o ninguna de las dos.
-    if 'type' not in df_ordenes.columns:
-        if 'orderType' in df_ordenes.columns:
-            df_ordenes = df_ordenes.rename(columns={'orderType': 'type'})
-        else:
-            # Crear columna vacía para evitar KeyError posteriores
-            df_ordenes['type'] = ''
-    # --------------------------------------------------------------------
+    try:
+        df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+    except FileNotFoundError:
+        df_ordenes = pd.DataFrame(columns=['symbol','orderId','type','stopPrice','time'])
+    df_ordenes = _normalize_orders_df(df_ordenes)
 
     # Leer los últimos valores de indicadores
     df_indicadores = pd.read_csv('./archivos/indicadores.csv')
@@ -1299,6 +1321,21 @@ def unrealized_profit_positions():
                     pkg.bingx.cancel_order(symbol, orderId)
                     time.sleep(1)
                     pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
+                    # Actualizar watch con el nuevo SL
+                    try:
+                        _ = obteniendo_ordenes_pendientes()
+                        df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+                        df_ordenes = _normalize_orders_df(df_ordenes)
+                        m = df_ordenes[(df_ordenes['symbol']==symbol) & (df_ordenes['type']=='STOP_MARKET')].copy()
+                        order_id = None
+                        if not m.empty and 'stopPrice' in m.columns:
+                            m['diff'] = (m['stopPrice'] - float(potencial_nuevo_sl)).abs() / float(potencial_nuevo_sl)
+                            m = m.sort_values('diff')
+                            if not m.empty and m['diff'].iloc[0] < 1e-3:
+                                order_id = m['orderId'].iloc[0] if 'orderId' in m.columns else None
+                        _append_sl_watch(symbol, float(potencial_nuevo_sl), 'LONG', order_id)
+                    except Exception:
+                        _append_sl_watch(symbol, float(potencial_nuevo_sl), 'LONG', None)
                     print(f"Stop Loss actualizado para {symbol} (LONG) a {potencial_nuevo_sl}")
                 except Exception as e:
                     print(f"Error al actualizar el Stop Loss para {symbol}: {e}")
@@ -1322,6 +1359,22 @@ def unrealized_profit_positions():
                     pkg.bingx.cancel_order(symbol, orderId)
                     time.sleep(1)
                     pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
+                    # Actualizar watch con el nuevo SL
+                    try:
+                        _ = obteniendo_ordenes_pendientes()
+                        df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+                        df_ordenes = _normalize_orders_df(df_ordenes)
+                        m = df_ordenes[(df_ordenes['symbol']==symbol) & (df_ordenes['type']=='STOP_MARKET')].copy()
+                        order_id = None
+                        if not m.empty and 'stopPrice' in m.columns:
+                            m['diff'] = (m['stopPrice'] - float(potencial_nuevo_sl)).abs() / float(potencial_nuevo_sl)
+                            m = m.sort_values('diff')
+                            if not m.empty and m['diff'].iloc[0] < 1e-3:
+                                order_id = m['orderId'].iloc[0] if 'orderId' in m.columns else None
+                        _append_sl_watch(symbol, float(potencial_nuevo_sl), 'SHORT', order_id)
+                    except Exception:
+                        _append_sl_watch(symbol, float(potencial_nuevo_sl), 'SHORT', None)
+
                     print(f"Stop Loss actualizado para {symbol} (SHORT) a {potencial_nuevo_sl}")
                 except Exception as e:
                     print(f"Error al actualizar el Stop Loss para {symbol}: {e}")
