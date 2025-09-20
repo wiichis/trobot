@@ -76,22 +76,53 @@ except Exception as _e:
     # Silencioso en producción; solo informativo en debug
     pass
 
- # --- Cargar parámetros por símbolo desde best_prod.json ---
+# --- Cargar parámetros por símbolo desde best_prod.json ---
+def _load_best_prod_and_params(path: str):
+    """
+    Lee best_prod.json y devuelve:
+      - whitelist: lista de símbolos en MAYÚSCULAS
+      - params_map: dict {SYMBOL: {params...}} (vacío si no hay params)
+    Soporta esquemas:
+      * [{"symbol": "AVAX-USDT", "params": {...}}, ...]
+      * ["AVAX-USDT", "BNB-USDT", ...]
+      * {"AVAX-USDT": {...}, "BNB-USDT": {...}}
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return [], {}
+    wl = []
+    pm = {}
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, str):
+                wl.append(item.upper())
+            elif isinstance(item, dict):
+                sym = str(item.get("symbol", "")).upper()
+                if sym:
+                    wl.append(sym)
+                    p = item.get("params") or {}
+                    pm[sym] = p if isinstance(p, dict) else {}
+    elif isinstance(data, dict):
+        for k, v in data.items():
+            sym = str(k).upper()
+            wl.append(sym)
+            pm[sym] = v if isinstance(v, dict) else {}
+    # de-dup ordenado
+    wl = sorted(set(wl))
+    return wl, pm
+
 BEST_PROD_PATH = Path(__file__).resolve().parent / "best_prod.json"
 PARAMS_BY_SYMBOL = {}
 try:
-    if BEST_PROD_PATH.exists():
-        with open(BEST_PROD_PATH, "r", encoding="utf-8") as f:
-            _bestp = json.load(f) or []
-        for item in _bestp:
-            sym = str(item.get('symbol', '')).upper()
-            pr  = item.get('params') or {}
-            if sym:
-                PARAMS_BY_SYMBOL[sym] = pr
-        # Si no hay whitelist explícita, usa las llaves de best_prod.json
-        if not ALLOWED_SYMBOLS and PARAMS_BY_SYMBOL:
-            ALLOWED_SYMBOLS = list(PARAMS_BY_SYMBOL.keys())
-            print(f"✅ Whitelist derivada de best_prod.json ({len(ALLOWED_SYMBOLS)})")
+  if BEST_PROD_PATH.exists():
+      wl, params_map = _load_best_prod_and_params(str(BEST_PROD_PATH))
+      PARAMS_BY_SYMBOL = params_map
+      # Si no hay whitelist explícita, usa la derivada del best_prod.json
+      if not ALLOWED_SYMBOLS and wl:
+          ALLOWED_SYMBOLS = wl
+          print(f"✅ Whitelist derivada de best_prod.json ({len(ALLOWED_SYMBOLS)})")
 except Exception as _e:
     PARAMS_BY_SYMBOL = {}
 
