@@ -157,12 +157,19 @@ def _read(path, mtime=None):
         "Long_Signal": "boolean",
         "Short_Signal": "boolean"
     }
-    return pd.read_csv(
+    df = pd.read_csv(
         path,
         parse_dates=["date"],
         dtype=dtypes,
         na_values=["NA"]
     )
+    # Normaliza señales a bool estrictos evitando ambigüedad de pd.NA
+    for col in ("Long_Signal", "Short_Signal"):
+        if col not in df.columns:
+            df[col] = False
+        else:
+            df[col] = df[col].fillna(False).astype(bool)
+    return df
 
 
 # ---------- indicadores ----------
@@ -420,9 +427,17 @@ def ema_alert(symbol):
     # Tomar solo la última vela cerrada
     last_row = df_symbol.iloc[-1]
 
+    def _as_bool(x):
+        try:
+            return bool(x) if pd.notna(x) else False
+        except Exception:
+            return False
 
-    if last_row.Long_Signal or last_row.Short_Signal:
-        side = "LONG" if last_row.Long_Signal else "SHORT"
+    ls = _as_bool(last_row.get("Long_Signal", False))
+    ss = _as_bool(last_row.get("Short_Signal", False))
+
+    if ls or ss:
+        side = "LONG" if ls else "SHORT"
         return last_row.close, f"Alerta de {side}"
     return None, None
 

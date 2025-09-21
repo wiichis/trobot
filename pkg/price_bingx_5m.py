@@ -5,7 +5,75 @@ import pandas as pd
 import requests
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
 CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m.csv"
+
+# --- Helper robusto para leer velas de BingX (una sola vez y reutilizable) ---
+
+def _fetch_bingx_candles(symbol: str, limit: int):
+    """
+    Obtiene velas de 5m para un símbolo desde la API de BingX, tolerando distintos formatos
+    de respuesta (lista de listas, lista de dicts o dict con claves internas como 'lines').
+    """
+    url = (
+        "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
+        f"?symbol={symbol}&interval=5m&limit={limit}"
+    )
+    response = requests.get(url, timeout=8)
+    response.raise_for_status()
+
+    payload = response.json()
+    # Algunas respuestas incluyen 'code'/'msg' dentro del JSON
+    if isinstance(payload, dict) and 'code' in payload and str(payload.get('code')) not in ('0', '200'):
+        msg = payload.get('msg') or payload.get('message') or 'Unknown error'
+        raise RuntimeError(f"BingX API error code={payload.get('code')}: {msg}")
+
+    data = payload.get('data', payload)
+    # Si 'data' es un dict, intenta extraer la lista real de velas desde varias claves comunes
+    if isinstance(data, dict):
+        for k in ('lines', 'klines', 'candlesticks', 'list', 'rows', 'records', 'kline'):
+            if k in data:
+                data = data[k]
+                break
+
+    if not isinstance(data, (list, tuple)):
+        raise TypeError(f"Unexpected data format from BingX: type={type(data).__name__}")
+
+    candles = []
+    for item in data:
+        if isinstance(item, (list, tuple)):
+            # Formato típico: [timestamp_ms, open, high, low, close, volume, ...]
+            timestamp_ms, open_p, high_p, low_p, close_p, volume, *_ = item
+        elif isinstance(item, dict):
+            # Formato alterno con claves
+            timestamp_ms = item.get('time') or item.get('timestamp') or item.get('t')
+            open_p = item.get('open') or item.get('o')
+            high_p = item.get('high') or item.get('h')
+            low_p = item.get('low') or item.get('l')
+            close_p = item.get('close') or item.get('c')
+            volume = item.get('volume') or item.get('v')
+        else:
+            # Entrada desconocida: saltar
+            continue
+
+        # Normalización de tipos
+        ts = int(str(timestamp_ms))
+        # Si viniera en segundos, pásalo a ms
+        if ts < 10**12:
+            ts *= 1000
+
+        candle = {
+            'symbol': symbol,
+            'open': float(open_p),
+            'high': float(high_p),
+            'low': float(low_p),
+            'close': float(close_p),
+            'volume': float(volume),
+            'date': datetime.fromtimestamp(ts / 1000, tz=timezone.utc),
+        }
+        candles.append(candle)
+
+    return candles
 
 def currencies_list():
     return ['XRP-USDT', 'AVAX-USDT', 'CFX-USDT', 'DOT-USDT', 'NEAR-USDT', 'APT-USDT', 'HBAR-USDT', 'BNB-USDT', 'DOGE-USDT', 'TRX-USDT']
@@ -17,41 +85,6 @@ def price_bingx_5m() -> None:
     Descarga precios de criptomonedas en intervalos de 5 minutos desde BingX,
     actualiza el archivo CSV con datos nuevos y genera un archivo agregado a 30 minutos.
     """
-    def _bingx_candles(symbol: str, limit: int):
-        """
-        Obtiene velas (candles) de 5 minutos para un símbolo dado desde la API de BingX.
-        """
-        url = (
-            "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
-            f"?symbol={symbol}&interval=5m&limit={limit}"
-        )
-        response = requests.get(url, timeout=8)
-        response.raise_for_status()
-        data = response.json()["data"]
-
-        candles = []
-        for item in data:
-            if isinstance(item, (list, tuple)):
-                timestamp_ms, open_p, high_p, low_p, close_p, volume, *_ = item
-            else:
-                timestamp_ms = item.get("time") or item.get("timestamp")
-                open_p = item["open"]
-                high_p = item["high"]
-                low_p = item["low"]
-                close_p = item["close"]
-                volume = item["volume"]
-
-            candle = {
-                "symbol": symbol,
-                "open": float(open_p),
-                "high": float(high_p),
-                "low": float(low_p),
-                "close": float(close_p),
-                "volume": float(volume),
-                "date": datetime.fromtimestamp(int(timestamp_ms) / 1000, tz=timezone.utc),
-            }
-            candles.append(candle)
-        return candles
 
     # --- Descarga y actualización de datos 5m ---
     symbols = currencies_list()
@@ -67,7 +100,7 @@ def price_bingx_5m() -> None:
 
         try:
             fetch_limit = 2 if last_date is not None else 1000
-            new_candles = _bingx_candles(symbol, fetch_limit)
+            new_candles = _fetch_bingx_candles(symbol, fetch_limit)
             df_new = pd.DataFrame(new_candles)
             if not df_new.empty and last_date is not None:
                 df_new = df_new[df_new['date'] > last_date]
@@ -129,38 +162,6 @@ def completar_huecos_5m() -> None:
 
     min_date_recoverable = now_utc - pd.Timedelta(minutes=5000)
 
-    def _bingx_candles(symbol: str, limit: int):
-        url = (
-            "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
-            f"?symbol={symbol}&interval=5m&limit={limit}"
-        )
-        response = requests.get(url, timeout=8)
-        response.raise_for_status()
-        data = response.json()["data"]
-
-        candles = []
-        for item in data:
-            if isinstance(item, (list, tuple)):
-                timestamp_ms, open_p, high_p, low_p, close_p, volume, *_ = item
-            else:
-                timestamp_ms = item.get("time") or item.get("timestamp")
-                open_p = item["open"]
-                high_p = item["high"]
-                low_p = item["low"]
-                close_p = item["close"]
-                volume = item["volume"]
-
-            candle = {
-                "symbol": symbol,
-                "open": float(open_p),
-                "high": float(high_p),
-                "low": float(low_p),
-                "close": float(close_p),
-                "volume": float(volume),
-                "date": datetime.fromtimestamp(int(timestamp_ms) / 1000, tz=timezone.utc),
-            }
-            candles.append(candle)
-        return candles
 
     for symbol in symbols:
         df_symbol = df[(df["symbol"] == symbol) & (df["date"] >= cutoff_time)].sort_values("date")
@@ -184,7 +185,7 @@ def completar_huecos_5m() -> None:
                 # BingX API fetches most recent candles, so we need to fetch enough candles and filter
                 # We'll fetch missing_intervals + 10 candles to be safe, then filter by date
                 try:
-                    candles = _bingx_candles(symbol, missing_intervals + 10)
+                    candles = _fetch_bingx_candles(symbol, missing_intervals + 10)
                     df_candles = pd.DataFrame(candles)
                     df_candles = df_candles[
                         (df_candles["date"] > gap_start) & (df_candles["date"] < gap_end)
@@ -214,12 +215,12 @@ def completar_huecos_5m() -> None:
 
 
 
-# === NUEVA FUNCIÓN: completar_ultimos_10dias ===
+# === completar_ultimos_3dias ===
 import time
 
 def completar_ultimos_3dias(sleep_seconds: int = 5) -> None:
     """
-    Completa huecos de datos de los 10 días anteriores (sin incluir el actual) para cada símbolo.
+    Completa huecos de datos de los últimos 3 días (sin incluir hoy) para cada símbolo.
     Por cada día, verifica y rellena todos los huecos antes de avanzar al siguiente día.
     """
     if not CSV_PATH.exists():
@@ -238,38 +239,6 @@ def completar_ultimos_3dias(sleep_seconds: int = 5) -> None:
 
     symbols = df["symbol"].unique()
 
-    def _bingx_candles(symbol: str, limit: int):
-        url = (
-            "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
-            f"?symbol={symbol}&interval=5m&limit={limit}"
-        )
-        response = requests.get(url, timeout=8)
-        response.raise_for_status()
-        data = response.json()["data"]
-
-        candles = []
-        for item in data:
-            if isinstance(item, (list, tuple)):
-                timestamp_ms, open_p, high_p, low_p, close_p, volume, *_ = item
-            else:
-                timestamp_ms = item.get("time") or item.get("timestamp")
-                open_p = item["open"]
-                high_p = item["high"]
-                low_p = item["low"]
-                close_p = item["close"]
-                volume = item["volume"]
-
-            candle = {
-                "symbol": symbol,
-                "open": float(open_p),
-                "high": float(high_p),
-                "low": float(low_p),
-                "close": float(close_p),
-                "volume": float(volume),
-                "date": datetime.fromtimestamp(int(timestamp_ms) / 1000, tz=timezone.utc),
-            }
-            candles.append(candle)
-        return candles
 
     max_intentos = 5
 
@@ -280,7 +249,7 @@ def completar_ultimos_3dias(sleep_seconds: int = 5) -> None:
         for symbol in symbols:
             # --- Obtener la fecha mínima disponible por API para este símbolo ---
             try:
-                api_candles = _bingx_candles(symbol, 1000)
+                api_candles = _fetch_bingx_candles(symbol, 1000)
                 if api_candles:
                     fecha_min_api = min(candle["date"] for candle in api_candles)
                 else:
@@ -321,7 +290,7 @@ def completar_ultimos_3dias(sleep_seconds: int = 5) -> None:
 
                         try:
                             # Siempre pedir el máximo disponible (1000) para aumentar la probabilidad de encontrar velas faltantes
-                            candles = _bingx_candles(symbol, 1000)
+                            candles = _fetch_bingx_candles(symbol, 1000)
                             df_candles = pd.DataFrame(candles)
                             df_candles = df_candles[
                                 (df_candles["date"] > gap_start) & (df_candles["date"] < gap_end)
@@ -350,7 +319,7 @@ def completar_ultimos_3dias(sleep_seconds: int = 5) -> None:
                 if intentos >= max_intentos:
                     break
 
-    print("\nProceso de completado de los últimos 10 días finalizado.")
+    print("\nProceso de completado de los últimos 3 días finalizado.")
 
 
 if __name__ == "__main__":
