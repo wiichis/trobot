@@ -8,6 +8,7 @@ import pandas as pd
 import talib
 from pathlib import Path
 import json
+from .cfg_loader import load_best_symbols
 from datetime import datetime, timedelta  # NUEVO: para purgar registros antiguos
 
 # === Parámetros base (alineados al backtest) ===
@@ -57,23 +58,16 @@ except Exception as e:
     print(f"⚠️  No se pudo cargar best_cfg.json: {e}")
 
 # === Whitelist generada por backtesting (opcional) ===
-WHITELIST_PATH = Path(__file__).resolve().parent.parent / "archivos" / "backtesting" / "whitelist.json"
 ALLOWED_SYMBOLS = []
 OBS_SYMBOLS = []
 BLACKLIST_SYMBOLS = []
 try:
-    if WHITELIST_PATH.exists():
-        with open(WHITELIST_PATH, "r", encoding="utf-8") as f:
-            _wl = json.load(f) or {}
-            ALLOWED_SYMBOLS = _wl.get("whitelist", []) or []
-            OBS_SYMBOLS = _wl.get("observation", []) or []
-            BLACKLIST_SYMBOLS = _wl.get("blacklist", []) or []
-            # Prints informativos (no rompen producción)
-            print(f"✅ Whitelist activa ({len(ALLOWED_SYMBOLS)}): {', '.join(ALLOWED_SYMBOLS) if ALLOWED_SYMBOLS else '-'}")
-            print(f"👀 En observación ({len(OBS_SYMBOLS)}): {', '.join(OBS_SYMBOLS) if OBS_SYMBOLS else '-'}")
-            print(f"⛔ Blacklist ({len(BLACKLIST_SYMBOLS)}): {', '.join(BLACKLIST_SYMBOLS) if BLACKLIST_SYMBOLS else '-'}")
+    _base_whitelist = load_best_symbols()
+    if isinstance(_base_whitelist, (list, tuple)) and _base_whitelist:
+        ALLOWED_SYMBOLS = [str(sym).upper() for sym in _base_whitelist if sym]
+        print(f"✅ Whitelist activa ({len(ALLOWED_SYMBOLS)}): {', '.join(ALLOWED_SYMBOLS)}")
 except Exception as _e:
-    # Silencioso en producción; solo informativo en debug
+    # Silencioso en producción; sólo informativo si se requiere debug
     pass
 
 # --- Cargar parámetros por símbolo desde best_prod.json ---
@@ -137,7 +131,6 @@ EMA_S_5M, EMA_L_5M, RSI_5M = 3, 7, 14
 MAX_PER_SYMBOL = 300  # conservar hasta 300 velas recientes por símbolo
 
 # --- Lista blanca/negra de rendimiento ---
-BLOCKED_SYMBOLS = []
 
 # Días a mantener por símbolo en indicadores (para purga inteligente)
 DAYS_KEEP = 10  # Días a mantener por símbolo en indicadores
@@ -153,22 +146,16 @@ def _load_cooldowns():
 # ---------- util ----------
 @lru_cache(maxsize=4)
 def _read(path, mtime=None):
-    dtypes = {
-        "Long_Signal": "boolean",
-        "Short_Signal": "boolean"
-    }
+    """Lee CSV con parseo de fecha y normaliza señales si existen."""
     df = pd.read_csv(
         path,
         parse_dates=["date"],
-        dtype=dtypes,
         na_values=["NA"]
     )
-    # Normaliza señales a bool estrictos evitando ambigüedad de pd.NA
-    for col in ("Long_Signal", "Short_Signal"):
-        if col not in df.columns:
-            df[col] = False
-        else:
-            df[col] = df[col].fillna(False).astype(bool)
+    if 'Long_Signal' in df.columns:
+        df['Long_Signal'] = df['Long_Signal'].fillna(False).astype(bool)
+    if 'Short_Signal' in df.columns:
+        df['Short_Signal'] = df['Short_Signal'].fillna(False).astype(bool)
     return df
 
 
@@ -222,7 +209,8 @@ def _calc_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     # Separación mínima EMAs (evita cruces planos)
     # Nota: EMA_S es la rápida y EMA_L la lenta en este módulo
     with np.errstate(divide='ignore', invalid='ignore'):
-        df["EMA_SPREAD"] = (df["EMA_S"] / df["EMA_L"]) - 1.0
+        denom = df["EMA_L"].replace(0, np.nan).abs()
+        df["EMA_SPREAD"] = (df["EMA_S"] - df["EMA_L"]).abs() / denom
     df["EMA_SPREAD_OK"] = (df["EMA_SPREAD"] >= min_ema_spread) if min_ema_spread > 0 else True
 
     # Pendiente de ADX (fuerza aumentando)

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import os
 
 import pkg.monkey_bx
-import pkg.price_bingx_5m
+from pkg.cfg_loader import load_best_symbols
 
 # =============================
 # SECCIÓN DE VARIABLES
@@ -18,8 +18,9 @@ PESOS_ACTUALIZADOS_PATH = './archivos/pesos_actualizados.csv'  # Ruta para guard
 # FIN DE LA SECCIÓN DE VARIABLES
 # =============================
 
-# Obtener la lista de criptomonedas desde otro archivo
-currencies = pkg.price_bingx_5m.currencies_list()
+def _current_symbols():
+    syms = load_best_symbols()
+    return [str(s).upper() for s in syms] if syms else []
 
 def load_transaction_data(filepath=TRANSACTIONS_FILE_PATH):
     """
@@ -71,7 +72,11 @@ def calculate_weights(df_net_profit, incremento=INCREMENTO_PESO):
         df_pesos_previos = pd.DataFrame(columns=['symbol', 'peso_actualizado'])
 
     # Crear DataFrame con la lista de criptomonedas actuales
-    df_symbols = pd.DataFrame({'symbol': currencies})
+    symbols = _current_symbols()
+    if not symbols:
+        return pd.DataFrame(columns=['symbol','peso_actualizado','cambio'])
+
+    df_symbols = pd.DataFrame({'symbol': symbols})
 
     # Merge con pesos previos
     df_pesos = df_symbols.merge(df_pesos_previos, on='symbol', how='left')
@@ -128,11 +133,23 @@ def pesos_ok():
     if df_transactions is None:
         return
 
+    symbols = _current_symbols()
+    if not symbols:
+        print("No hay símbolos configurados para calcular pesos.")
+        return
+
     # Filtrar las transacciones para incluir solo las criptomonedas de la lista
-    df_transactions = df_transactions[df_transactions['symbol'].isin(currencies)]
+    df_transactions = df_transactions[df_transactions['symbol'].str.upper().isin(symbols)]
 
     # Filtrar los datos de los últimos 30 días
+    if df_transactions.empty:
+        print("Sin transacciones recientes para los símbolos actuales; se mantienen pesos previos.")
+        return
+
     df_last_30_days = filter_last_30_days(df_transactions)
+    if df_last_30_days.empty:
+        print("No hay PnL de los últimos 30 días para los símbolos actuales; se mantienen pesos previos.")
+        return
 
     # Calcular el rendimiento neto por criptomoneda
     df_net_profit = calculate_net_profit(df_last_30_days)

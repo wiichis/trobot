@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import time
+import logging
+from typing import Any, List, Tuple, Optional
 
 import pandas as pd
 import requests
@@ -8,72 +11,95 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m.csv"
 
+
 # --- Helper robusto para leer velas de BingX (una sola vez y reutilizable) ---
 
 def _fetch_bingx_candles(symbol: str, limit: int):
     """
-    Obtiene velas de 5m para un símbolo desde la API de BingX, tolerando distintos formatos
-    de respuesta (lista de listas, lista de dicts o dict con claves internas como 'lines').
+    Obtiene velas de 5m para un símbolo desde la API de BingX.
+    - Maneja respuestas en dict/list con claves variables (data/list/klines/lines/...).
+    - Soporta reintentos con backoff cuando la API devuelve códigos temporales (p. ej., 109500).
+    Devuelve una lista de dicts normalizados con: symbol, open, high, low, close, volume, date (UTC).
     """
     url = (
         "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
         f"?symbol={symbol}&interval=5m&limit={limit}"
     )
-    response = requests.get(url, timeout=8)
-    response.raise_for_status()
 
-    payload = response.json()
-    # Algunas respuestas incluyen 'code'/'msg' dentro del JSON
-    if isinstance(payload, dict) and 'code' in payload and str(payload.get('code')) not in ('0', '200'):
-        msg = payload.get('msg') or payload.get('message') or 'Unknown error'
-        raise RuntimeError(f"BingX API error code={payload.get('code')}: {msg}")
+    retries = 3
+    sleep_base = 1.5
+    last_err = None
 
-    data = payload.get('data', payload)
-    # Si 'data' es un dict, intenta extraer la lista real de velas desde varias claves comunes
-    if isinstance(data, dict):
-        for k in ('lines', 'klines', 'candlesticks', 'list', 'rows', 'records', 'kline'):
-            if k in data:
-                data = data[k]
-                break
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.get(url, timeout=8)
+            response.raise_for_status()
+            payload = response.json()
 
-    if not isinstance(data, (list, tuple)):
-        raise TypeError(f"Unexpected data format from BingX: type={type(data).__name__}")
+            # Validación de código de API
+            if isinstance(payload, dict) and 'code' in payload and str(payload.get('code')) not in ('0', '200'):
+                code = str(payload.get('code'))
+                msg = payload.get('msg') or payload.get('message') or 'Unknown error'
+                # 109500 es típico temporal; reintentar
+                if code == '109500' and attempt < retries:
+                    time.sleep(sleep_base * attempt)
+                    continue
+                raise RuntimeError(f"BingX API error code={code}: {msg}")
 
-    candles = []
-    for item in data:
-        if isinstance(item, (list, tuple)):
-            # Formato típico: [timestamp_ms, open, high, low, close, volume, ...]
-            timestamp_ms, open_p, high_p, low_p, close_p, volume, *_ = item
-        elif isinstance(item, dict):
-            # Formato alterno con claves
-            timestamp_ms = item.get('time') or item.get('timestamp') or item.get('t')
-            open_p = item.get('open') or item.get('o')
-            high_p = item.get('high') or item.get('h')
-            low_p = item.get('low') or item.get('l')
-            close_p = item.get('close') or item.get('c')
-            volume = item.get('volume') or item.get('v')
-        else:
-            # Entrada desconocida: saltar
-            continue
+            data = payload.get('data', payload)
+            # Si 'data' es un dict, intenta extraer la lista real de velas desde varias claves comunes
+            if isinstance(data, dict):
+                for k in ('lines', 'klines', 'candlesticks', 'list', 'rows', 'records', 'kline'):
+                    if k in data:
+                        data = data[k]
+                        break
 
-        # Normalización de tipos
-        ts = int(str(timestamp_ms))
-        # Si viniera en segundos, pásalo a ms
-        if ts < 10**12:
-            ts *= 1000
+            if not isinstance(data, (list, tuple)):
+                raise TypeError(f"Unexpected data format from BingX: type={type(data).__name__}")
 
-        candle = {
-            'symbol': symbol,
-            'open': float(open_p),
-            'high': float(high_p),
-            'low': float(low_p),
-            'close': float(close_p),
-            'volume': float(volume),
-            'date': datetime.fromtimestamp(ts / 1000, tz=timezone.utc),
-        }
-        candles.append(candle)
+            candles = []
+            for item in data:
+                if isinstance(item, (list, tuple)):
+                    # Formato típico: [timestamp_ms, open, high, low, close, volume, ...]
+                    timestamp_ms, open_p, high_p, low_p, close_p, volume, *_ = item
+                elif isinstance(item, dict):
+                    # Formato alterno con claves
+                    timestamp_ms = item.get('time') or item.get('timestamp') or item.get('t')
+                    open_p = item.get('open') or item.get('o')
+                    high_p = item.get('high') or item.get('h')
+                    low_p = item.get('low') or item.get('l')
+                    close_p = item.get('close') or item.get('c')
+                    volume = item.get('volume') or item.get('v')
+                else:
+                    # Entrada desconocida: saltar
+                    continue
 
-    return candles
+                # Normalización de tipos
+                ts = int(str(timestamp_ms))
+                # Si viniera en segundos, pásalo a ms
+                if ts < 10**12:
+                    ts *= 1000
+
+                candle = {
+                    'symbol': symbol,
+                    'open': float(open_p),
+                    'high': float(high_p),
+                    'low': float(low_p),
+                    'close': float(close_p),
+                    'volume': float(volume),
+                    'date': datetime.fromtimestamp(ts / 1000, tz=timezone.utc),
+                }
+                candles.append(candle)
+
+            return candles
+
+        except Exception as e:
+            last_err = str(e)
+            if attempt < retries:
+                time.sleep(sleep_base * attempt)
+                continue
+            # Después de agotar reintentos, propaga error
+            raise RuntimeError(f"Fallo al obtener velas para {symbol}: {last_err}")
 
 def currencies_list():
     return ['XRP-USDT', 'AVAX-USDT', 'CFX-USDT', 'DOT-USDT', 'NEAR-USDT', 'APT-USDT', 'HBAR-USDT', 'BNB-USDT', 'DOGE-USDT', 'TRX-USDT']
@@ -216,7 +242,6 @@ def completar_huecos_5m() -> None:
 
 
 # === completar_ultimos_3dias ===
-import time
 
 def completar_ultimos_3dias(sleep_seconds: int = 5) -> None:
     """

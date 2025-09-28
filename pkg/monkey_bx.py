@@ -443,6 +443,8 @@ def colocando_ordenes():
 
     # Calcular la suma de los pesos de las monedas activas
     suma_pesos_activos = sum(item['peso'] for item in active_currencies)
+    if suma_pesos_activos <= 0:
+        return
 
     # Reajustar los pesos para que la suma de los pesos activos no exceda 200%
     factor_ajuste = min(2.0, suma_pesos_activos) / suma_pesos_activos

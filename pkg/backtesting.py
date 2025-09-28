@@ -44,6 +44,7 @@ import pandas as pd
 DEFAULT_DATA_TEMPLATE = 'archivos/cripto_price_5m_long.csv'  # CSV único con múltiples símbolos
 DEFAULT_OUT_DIR = 'archivos/backtesting'
 
+
 # ==========================
 # Configuración SIMPLE-RUN (ejecuta con un solo comando, sin flags)
 # ==========================
@@ -616,16 +617,19 @@ class Backtester:
         # --- Endurecedores adicionales ---
         # 1) Separación mínima entre EMAs (evitar cruces planos)
         ema_spread_ok = True
-        try:
-            if self.min_ema_spread > 0:
+        if self.min_ema_spread > 0:
+            try:
                 ema_s = float(row.get('ema_s', np.nan))
                 ema_f = float(row.get('ema_f', np.nan))
-                if not (math.isnan(ema_s) or math.isnan(ema_f) or ema_s == 0):
-                    ema_spread_ok = (ema_f / ema_s - 1.0) >= self.min_ema_spread
-                else:
+                if math.isnan(ema_s) or math.isnan(ema_f):
                     ema_spread_ok = False
-        except Exception:
-            ema_spread_ok = False
+                else:
+                    base = abs(ema_s) if abs(ema_s) > 1e-12 else abs(ema_f)
+                    base = base if base > 1e-12 else 1.0
+                    spread = abs(ema_f - ema_s) / base
+                    ema_spread_ok = spread >= self.min_ema_spread
+            except Exception:
+                ema_spread_ok = False
 
         # 2) Precio relativo a EMAs
         price_long_ok = True
@@ -684,11 +688,19 @@ class Backtester:
         return abs(notional) * self.taker_fee
 
     def _apply_slippage(self, price: float, side: str, slippage_rate: float) -> float:
-        # Para market: empeora el precio a favor del mercado
-        if side == 'long':
+        """Devuelve el precio ejecutado considerando slippage en contra.
+
+        Acepta `side` como orientación de la orden (`long`/`short`) o
+        como instrucción operativa (`buy`/`sell`). Para compras/longs el
+        precio se empeora al alza; para ventas/shorts se empeora a la baja.
+        """
+        side_norm = str(side or '').lower()
+        if side_norm in ('long', 'buy'):
             return price * (1 + slippage_rate)
-        else:
+        if side_norm in ('short', 'sell'):
             return price * (1 - slippage_rate)
+        # Fallback defensivo: suponemos compra si el valor es inesperado
+        return price * (1 + slippage_rate)
 
     def _update_trailing_sl(self, row: pd.Series, direction: str, entry_price: float, atr_abs: float, anchor: float) -> float:
         # trailing basado en ATR
@@ -806,7 +818,25 @@ class Backtester:
 
                 exit_reason = None
                 exit_price = None
-                if hit_tp:
+
+                if hit_tp and hit_sl:
+                    # Ambigüedad intrabar: resolver conservadoramente para evitar sesgo.
+                    open_px = float(row.get('open', price))
+                    if t.side == 'long':
+                        if open_px >= tp_price:
+                            exit_reason, exit_price = 'TP', tp_price
+                        elif open_px <= sl_price:
+                            exit_reason, exit_price = 'SL', sl_price
+                        else:
+                            exit_reason, exit_price = 'SL', sl_price
+                    else:  # short
+                        if open_px <= tp_price:
+                            exit_reason, exit_price = 'TP', tp_price
+                        elif open_px >= sl_price:
+                            exit_reason, exit_price = 'SL', sl_price
+                        else:
+                            exit_reason, exit_price = 'SL', sl_price
+                elif hit_tp:
                     exit_reason = 'TP'
                     exit_price = tp_price
                 elif hit_sl:
