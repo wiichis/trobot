@@ -31,31 +31,32 @@ MIN_CONFIRM_5M = 4  # (ya no se usa tras pasar a 5m puro)
 BLOCKED_SYMBOLS = []  # puede ser sobreescrita por config
 
 # --- Cargar mejores parámetros del backtest si existen ---
-try:
-    _cfg_path = Path(__file__).resolve().parent / "best_cfg.json"
-    with open(_cfg_path) as fp:
-        _best = json.load(fp)
-    RSI_P   = _best.get("rsi", RSI_P)
-    EMA_S   = _best.get("ema_s", EMA_S)
-    EMA_L   = _best.get("ema_l", EMA_L)
-    ADX_P   = _best.get("adx", ADX_P)
-    TP_M    = _best.get("tp_mult", TP_M)
-    SL_M    = _best.get("sl_mult", SL_M)
-    RSI_HI  = _best.get("rsi_long", RSI_HI)
-    RSI_LO  = _best.get("rsi_short", RSI_LO)
-    ADX_MIN = _best.get("adx_min", ADX_MIN)
-    VOL_THRESHOLD = _best.get("vol_thr", VOL_THRESHOLD)
-    SIGNAL_MIN = _best.get("signal_min", SIGNAL_MIN)
-    # Parámetros de confirmación 5m
-    MIN_CONFIRM_5M = _best.get("min_confirm_5m", MIN_CONFIRM_5M)
-    REL_V_MULT_5M  = _best.get("rel_v_mult_5m", 2.0)
-    RSI5_LONG      = _best.get("rsi5_long", 55)
-    RSI5_SHORT     = _best.get("rsi5_short", 45)
-    RANK_LIMIT_5M  = _best.get("rank_limit_5m", 4)
-    # Lista negra opcional desde config
-    BLOCKED_SYMBOLS = _best.get("blocklist", BLOCKED_SYMBOLS)
-except Exception as e:
-    print(f"⚠️  No se pudo cargar best_cfg.json: {e}")
+_cfg_path = Path(__file__).resolve().parent / "best_cfg.json"
+if _cfg_path.exists():
+    try:
+        with open(_cfg_path) as fp:
+            _best = json.load(fp)
+        RSI_P   = _best.get("rsi", RSI_P)
+        EMA_S   = _best.get("ema_s", EMA_S)
+        EMA_L   = _best.get("ema_l", EMA_L)
+        ADX_P   = _best.get("adx", ADX_P)
+        TP_M    = _best.get("tp_mult", TP_M)
+        SL_M    = _best.get("sl_mult", SL_M)
+        RSI_HI  = _best.get("rsi_long", RSI_HI)
+        RSI_LO  = _best.get("rsi_short", RSI_LO)
+        ADX_MIN = _best.get("adx_min", ADX_MIN)
+        VOL_THRESHOLD = _best.get("vol_thr", VOL_THRESHOLD)
+        SIGNAL_MIN = _best.get("signal_min", SIGNAL_MIN)
+        # Parámetros de confirmación 5m
+        MIN_CONFIRM_5M = _best.get("min_confirm_5m", MIN_CONFIRM_5M)
+        REL_V_MULT_5M  = _best.get("rel_v_mult_5m", 2.0)
+        RSI5_LONG      = _best.get("rsi5_long", 55)
+        RSI5_SHORT     = _best.get("rsi5_short", 45)
+        RANK_LIMIT_5M  = _best.get("rank_limit_5m", 4)
+        # Lista negra opcional desde config
+        BLOCKED_SYMBOLS = _best.get("blocklist", BLOCKED_SYMBOLS)
+    except Exception as e:
+        print(f"⚠️  Error leyendo best_cfg.json: {e}")
 
 # === Whitelist generada por backtesting (opcional) ===
 ALLOWED_SYMBOLS = []

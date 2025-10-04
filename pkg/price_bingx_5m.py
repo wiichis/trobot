@@ -14,17 +14,20 @@ CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m.csv"
 
 # --- Helper robusto para leer velas de BingX (una sola vez y reutilizable) ---
 
-def _fetch_bingx_candles(symbol: str, limit: int):
+def _fetch_bingx_candles(symbol: str, limit: int, end_time_ms: Optional[int] = None):
     """
     Obtiene velas de 5m para un símbolo desde la API de BingX.
     - Maneja respuestas en dict/list con claves variables (data/list/klines/lines/...).
     - Soporta reintentos con backoff cuando la API devuelve códigos temporales (p. ej., 109500).
+    - Permite fijar un endTime (ms) para retroceder en el histórico.
     Devuelve una lista de dicts normalizados con: symbol, open, high, low, close, volume, date (UTC).
     """
     url = (
         "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
         f"?symbol={symbol}&interval=5m&limit={limit}"
     )
+    if end_time_ms is not None:
+        url = f"{url}&endTime={int(end_time_ms)}"
 
     retries = 3
     sleep_base = 1.5
@@ -352,6 +355,82 @@ if __name__ == "__main__":
 
 
 # === NUEVA FUNCIÓN: actualizar_long_ultimas_12h ===
+LONG_HISTORY_DAYS = 180  # ~6 meses
+LONG_HISTORY_BUFFER_DAYS = 10
+MAX_BACKFILL_BATCHES = 18  # límite de solicitudes retro para no saturar la API
+RETIRED_SYMBOL_GRACE_DAYS = 14
+
+
+def _ensure_long_history(df_long: pd.DataFrame, now_utc: pd.Timestamp) -> pd.DataFrame:
+    """Garantiza que el archivo long conserve al menos 6 meses, realizando backfill incremental."""
+
+    if df_long.empty:
+        return df_long
+
+    now_ts = pd.Timestamp(now_utc)
+    now_ts = now_ts.tz_localize('UTC') if now_ts.tzinfo is None else now_ts.tz_convert('UTC')
+
+    target_start = now_ts - pd.Timedelta(days=LONG_HISTORY_DAYS)
+    target_start_utc = target_start
+
+    # Backfill hacia atrás por símbolo hasta alcanzar el target o agotar presupuesto de peticiones
+    batches = 0
+    symbols = df_long['symbol'].dropna().unique().tolist()
+
+    def _to_utc(ts: pd.Timestamp) -> Optional[pd.Timestamp]:
+        if ts is None or pd.isna(ts):  # type: ignore[arg-type]
+            return None
+        return ts.tz_localize('UTC') if ts.tzinfo is None else ts.tz_convert('UTC')
+
+    for symbol in symbols:
+        if batches >= MAX_BACKFILL_BATCHES:
+            break
+        sdf = df_long[df_long['symbol'] == symbol]
+        earliest = sdf['date'].min()
+
+        earliest_utc = _to_utc(earliest)
+
+        while earliest_utc is not None and earliest_utc > target_start_utc and batches < MAX_BACKFILL_BATCHES:
+            end_time = earliest_utc - pd.Timedelta(minutes=5)
+            try:
+                candles = _fetch_bingx_candles(symbol, limit=1000, end_time_ms=int(end_time.timestamp() * 1000))
+            except Exception as exc:
+                print(f"{symbol}: Error en backfill long → {exc}")
+                break
+
+            if not candles:
+                break
+
+            df_chunk = pd.DataFrame(candles)
+            if df_chunk.empty:
+                break
+
+            df_long = pd.concat([df_long, df_chunk], ignore_index=True)
+            earliest = min(earliest, df_chunk['date'].min())
+            earliest_utc = _to_utc(earliest)
+            batches += 1
+            time.sleep(0.25)
+
+    # Purga suave: mantener target + buffer para evitar crecimiento infinito
+    cutoff = target_start - pd.Timedelta(days=LONG_HISTORY_BUFFER_DAYS)
+    cutoff = cutoff.tz_localize('UTC') if cutoff.tzinfo is None else cutoff
+    df_long = df_long[df_long['date'] >= cutoff]
+
+    # Depurar símbolos retirados dejando un colchón corto para cierres pendientes
+    try:
+        activos = set(currencies_list())
+    except Exception:
+        activos = set()
+    if activos:
+        grace_cut = now_ts - pd.Timedelta(days=RETIRED_SYMBOL_GRACE_DAYS)
+        df_long = df_long[
+            (df_long['symbol'].isin(activos)) |
+            (df_long['date'] >= grace_cut)
+        ]
+
+    return df_long
+
+
 def actualizar_long_ultimas_12h():
     """
     Lee el archivo 'cripto_price_5m.csv', filtra solo las velas de las últimas 12 horas
@@ -386,12 +465,15 @@ def actualizar_long_ultimas_12h():
         df_long = pd.read_csv(long_path)
         df_long["date"] = pd.to_datetime(df_long["date"], utc=True, errors="coerce")
         df_concat = pd.concat([df_long, df_ultimas_12h], ignore_index=True)
+        df_concat["date"] = pd.to_datetime(df_concat["date"], utc=True, errors="coerce")
+        df_concat = _ensure_long_history(df_concat, now_utc)
         # Eliminar duplicados por symbol y date, dejando la última ocurrencia
         df_concat = df_concat.drop_duplicates(subset=['symbol', 'date'], keep='last').sort_values(['symbol', 'date'])
         df_concat.to_csv(long_path, index=False)
         print(f"Archivo {long_path.name} actualizado con velas de las últimas 12 horas.")
     else:
-        # Crear el archivo con las velas recientes
+        # Crear el archivo con las velas recientes y backfill inicial hasta 6 meses
+        print(f"Archivo {long_path.name} creado con velas de las últimas 12 horas.")
+        df_ultimas_12h = _ensure_long_history(df_ultimas_12h.copy(), now_utc)
         df_ultimas_12h = df_ultimas_12h.drop_duplicates(subset=['symbol', 'date'], keep='last').sort_values(['symbol', 'date'])
         df_ultimas_12h.to_csv(long_path, index=False)
-        print(f"Archivo {long_path.name} creado con velas de las últimas 12 horas.")

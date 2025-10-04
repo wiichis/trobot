@@ -63,45 +63,45 @@ SIMPLE_RUN: Dict[str, object] = {
     'DATA_TEMPLATE': DEFAULT_DATA_TEMPLATE,
     'CAPITAL': 300.0,
     'OUT_DIR': DEFAULT_OUT_DIR,
-    'RANK_BY': 'calmar',
+    'RANK_BY': 'pnl_net',
     'SEARCH_MODE': 'random',        # 'grid' o 'random'
-    'N_TRIALS': 150,                 # combos aleatorios por símbolo (si SEARCH_MODE='random')
+    'N_TRIALS': 320,                 # combos aleatorios por símbolo (si SEARCH_MODE='random')
     'RANDOM_SEED': 123,
     'SECOND_PASS': True,
-    'SECOND_TOPK': 2,
-    'FILTERS': {'min_trades': 3, 'min_winrate': 0.0, 'max_cost_ratio': 0.85, 'max_dd': 0.15},
+    'SECOND_TOPK': 3,
+    'FILTERS': {'min_trades': 3, 'min_winrate': 0.0, 'max_cost_ratio': 0.92, 'max_dd': 0.20},
     'EXPORT_BEST': 'best_prod.json',
     'RANGES': {
         'symbols': 'XRP-USDT,AVAX-USDT,CFX-USDT,DOT-USDT,NEAR-USDT,APT-USDT,HBAR-USDT,BNB-USDT,DOGE-USDT,TRX-USDT',
-        'tp': [0.010, 0.012, 0.013, 0.015, 0.017, 0.019, 0.022],
-        'tp_mode': ['fixed'],
-        'tp_atr_mult': [0.0],
-        'ema_fast': [13, 20, 21],
-        'ema_slow': [55],
-        'rsi_buy': [52, 56, 60, 62],
-        'rsi_sell': [48, 44, 40, 38],
-        'adx_min': [15, 18],
-        'min_atr_pct': [0.0012, 0.0015],
-        'max_atr_pct': [0.010, 0.012],
-        'atr_mult': [1.4, 1.6, 1.8],
-        'sl_mode': ['atr_then_trailing'],
-        'sl_pct': [0.0],
-        'be_trigger': [0.0045],
-        'cooldown': [10],
-        'logic': ['any'],
-        'hhll_lookback': [10, 12, 14],
-        'time_exit_bars': [30, 48],
-        'max_dist_emaslow': [0.010], 
-        'fresh_cross_max_bars': [6],
-        'require_rsi_cross': [True],
+        'tp': [0.008, 0.010, 0.012, 0.013, 0.015, 0.017, 0.019, 0.022, 0.025],
+        'tp_mode': ['fixed', 'atrx', 'none'],
+        'tp_atr_mult': [0.0, 0.4, 0.6, 0.8, 1.0],
+        'ema_fast': [10, 13, 20, 21, 34],
+        'ema_slow': [55, 72, 89],
+        'rsi_buy': [54, 56, 58, 60, 62],
+        'rsi_sell': [40, 42, 44, 46, 48],
+        'adx_min': [12, 15, 18, 22],
+        'min_atr_pct': [0.0010, 0.0012, 0.0015, 0.0020],
+        'max_atr_pct': [0.010, 0.012, 0.015, 0.020],
+        'atr_mult': [1.4, 1.6, 1.8, 2.0, 2.2],
+        'sl_mode': ['atr_then_trailing', 'atr_trailing_only', 'percent'],
+        'sl_pct': [0.010, 0.015, 0.020],
+        'be_trigger': [0.0035, 0.0045, 0.0055],
+        'cooldown': [5, 10, 15],
+        'logic': ['any', 'strict'],
+        'hhll_lookback': [8, 10, 12, 14, 18],
+        'time_exit_bars': [24, 30, 36, 48, 60],
+        'max_dist_emaslow': [0.008, 0.010, 0.012],
+        'fresh_cross_max_bars': [4, 6, 8],
+        'require_rsi_cross': [True, False],
         # Nuevos endurecedores:
-        'min_ema_spread': [0.001],   # 0.10% separación EMA_f/EMA_s
-        'require_close_vs_emas': [True],    # close>EMA_f>EMA_s (long) | close<EMA_f<EMA_s (short)
-        'min_vol_ratio': [1.05, 1.10, 1.15],        # volumen >= X * vol_ma
-        'vol_ma_len': [30],                 # lookback MA de volumen
-        'adx_slope_len': [3],               # barras para pendiente ADX
-        'adx_slope_min': [0.3, 0.5],       # pendiente mínima ADX
-        'fresh_breakout_only': [False],      # permitir ruptura no fresca
+        'min_ema_spread': [0.0008, 0.0010, 0.0012],   # separación mínima EMA_f/EMA_s
+        'require_close_vs_emas': [True, False],        # permite escenarios más flexibles
+        'min_vol_ratio': [1.00, 1.05, 1.10, 1.15],     # volumen relativo al MA
+        'vol_ma_len': [20, 30, 40],                   # lookback MA de volumen
+        'adx_slope_len': [3, 4],                       # barras para pendiente ADX
+        'adx_slope_min': [0.2, 0.3, 0.5, 0.7],        # pendiente mínima ADX
+        'fresh_breakout_only': [False, True],          # controla rupturas frescas
     },
     'LOAD_BEST_FILE': None,
     'WINNERS_FROM_BEST': False,
