@@ -7,6 +7,7 @@ import time
 import os
 
 import math
+from decimal import Decimal, ROUND_DOWN
 # --- Cooldown por SL: lectura de estado compartido con indicadores ---
 
 COOLDOWN_CSV = './archivos/cooldown.csv'
@@ -61,19 +62,88 @@ def _round_step(qty: float, step: float = STEP_SIZE_DEFAULT) -> float:
     decs = max(0, -int(round(math.log10(step))))
     return round(raw, decs)
 
+
+def _split_position_qtys(total_qty: float, splits, step: float = STEP_SIZE_DEFAULT):
+    """Divide la posición entre splits, garantizando que la suma use todo el tamaño en múltiplos de step."""
+    if total_qty is None:
+        return [0.0 for _ in splits]
+    try:
+        qty_dec = Decimal(str(abs(float(total_qty))))
+    except Exception:
+        return [0.0 for _ in splits]
+    if qty_dec <= 0:
+        return [0.0 for _ in splits]
+
+    step = STEP_SIZE_DEFAULT if step is None else step
+    if step <= 0:
+        step = STEP_SIZE_DEFAULT
+    step_dec = Decimal(str(step))
+
+    # Ajustar cantidad total al múltiplo válido más cercano hacia abajo
+    qty_dec = (qty_dec / step_dec).to_integral_value(rounding=ROUND_DOWN) * step_dec
+    units_total = int((qty_dec / step_dec))
+    if units_total <= 0:
+        return [0.0 for _ in splits]
+
+    result = []
+    remaining_units = units_total
+    splits = tuple(splits) if splits else (1.0,)
+
+    for idx, split in enumerate(splits):
+        if idx == len(splits) - 1:
+            units = remaining_units
+        else:
+            try:
+                fraction = Decimal(str(split))
+            except Exception:
+                fraction = Decimal('0')
+            if fraction <= 0:
+                units = 0
+            else:
+                units = int((fraction * Decimal(units_total)).to_integral_value(rounding=ROUND_DOWN))
+            if units > remaining_units:
+                units = remaining_units
+        result.append(float(step_dec * units))
+        remaining_units -= units
+    # Si por redondeos quedó remanente, acumularlo al último TP
+    if remaining_units > 0:
+        result[-1] += float(step_dec * remaining_units)
+    return result
+
 # --- Retry helper for robust order posting ---
 def _post_with_retry(symbol, qty, price, stop, position_side, order_type, side, delays=(0.5, 1.0, 2.0)):
-    """Intenta colocar una orden con reintentos escalonados. Devuelve True si logra postear sin excepción."""
+    """Intenta colocar una orden con reintentos escalonados. Valida la respuesta JSON de BingX."""
     last_err = None
     for d in delays:
         try:
-            pkg.bingx.post_order(symbol, qty, price, stop, position_side, order_type, side)
-            return True
+            resp = pkg.bingx.post_order(symbol, qty, price, stop, position_side, order_type, side)
+            ok, err_msg = _validate_order_response(resp)
+            if ok:
+                return True
+            last_err = err_msg
+            print(f"post_order({order_type}) rechazado para {symbol}: {err_msg}")
         except Exception as e:
             last_err = e
-            time.sleep(d)
+        time.sleep(d)
     print(f"Fallo post_order({order_type}) para {symbol}: {last_err}")
     return False
+
+
+def _validate_order_response(resp_text):
+    try:
+        data = json.loads(resp_text) if isinstance(resp_text, str) else resp_text
+    except Exception as e:
+        return False, f"Respuesta no JSON ({e}): {resp_text}"
+
+    if not isinstance(data, dict):
+        return False, f"Formato inesperado: {data}"
+
+    code = data.get('code')
+    if code in (0, '0'):
+        return True, None
+
+    msg = data.get('msg') or data.get('message') or 'sin detalle'
+    return False, f"code={code}, msg={msg}"
 
 import pkg.price_bingx_5m
 
@@ -516,9 +586,12 @@ def colocando_ordenes():
         # -----------------------------------------------------------------------
 
         # Colocando la orden
-        pkg.bingx.post_order(
+        entry_ok = _post_with_retry(
             currency, currency_amount, 0, 0, position_side, "MARKET", order_side
         )
+        if not entry_ok:
+            print(f"No se pudo abrir posición para {currency}; se omite configuración de TP/SL.")
+            continue
 
         # Guardando las posiciones
         nueva_fila = pd.DataFrame({
@@ -779,7 +852,7 @@ def colocando_TK_SL():
                 except Exception:
                     pos_qty = 0.0
                 splits = TP_SPLITS if len(desired_tps) >= 3 else (1.0,)
-                split_qtys = [ _round_step(pos_qty * s, STEP_SIZE_DEFAULT) for s in splits ]
+                split_qtys = _split_position_qtys(pos_qty, splits, STEP_SIZE_DEFAULT)
 
                 # Colocar TPs faltantes (comparando por precio exacto)
                 placed_all_tps = True
@@ -906,7 +979,7 @@ def colocando_TK_SL():
                 except Exception:
                     pos_qty = 0.0
                 splits = TP_SPLITS if len(desired_tps) >= 3 else (1.0,)
-                split_qtys = [ _round_step(pos_qty * s, STEP_SIZE_DEFAULT) for s in splits ]
+                split_qtys = _split_position_qtys(pos_qty, splits, STEP_SIZE_DEFAULT)
 
                 # Colocar TPs faltantes
                 placed_all_tps = True
@@ -1123,7 +1196,7 @@ def unrealized_profit_positions():
                 try:
                     pkg.bingx.cancel_order(symbol, orderId)
                     time.sleep(1)
-                    pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
+                    _post_with_retry(symbol, positionAmt, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
                     # Actualizar watch con el nuevo SL
                     try:
                         _ = obteniendo_ordenes_pendientes()
@@ -1161,7 +1234,7 @@ def unrealized_profit_positions():
                 try:
                     pkg.bingx.cancel_order(symbol, orderId)
                     time.sleep(1)
-                    pkg.bingx.post_order(symbol, positionAmt, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
+                    _post_with_retry(symbol, positionAmt, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
                     # Actualizar watch con el nuevo SL
                     try:
                         _ = obteniendo_ordenes_pendientes()
