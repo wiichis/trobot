@@ -42,10 +42,57 @@ def _cooldown_minutes_for_symbol(params_by_symbol: dict, symbol: str, default: i
         return default
 
 def _write_cooldown(symbol: str, ts, minutes: int = 10) -> None:
-    return None
+    try:
+        if ts is None:
+            ts = datetime.utcnow()
+        expiry = ts + timedelta(minutes=int(minutes))
+        df_exist = pd.read_csv(COOLDOWN_CSV, parse_dates=['expires_at']) if os.path.exists(COOLDOWN_CSV) else pd.DataFrame(columns=['symbol','expires_at'])
+        df_exist['symbol'] = df_exist['symbol'].astype(str).str.upper()
+        symbol = str(symbol).upper()
+        if symbol in df_exist['symbol'].values:
+            df_exist.loc[df_exist['symbol'] == symbol, 'expires_at'] = expiry
+        else:
+            df_exist = pd.concat([df_exist, pd.DataFrame({'symbol':[symbol], 'expires_at':[expiry]})], ignore_index=True)
+        df_exist.to_csv(COOLDOWN_CSV, index=False)
+    except Exception as e:
+        print(f"Error registrando cooldown para {symbol}: {e}")
+
+
+def _load_active_cooldowns(now=None) -> dict:
+    now = now or datetime.utcnow()
+    try:
+        df = pd.read_csv(COOLDOWN_CSV, parse_dates=['expires_at'])
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"Error leyendo cooldowns: {e}")
+        return {}
+    df['symbol'] = df['symbol'].astype(str).str.upper()
+    df = df[df['expires_at'] > now]
+    try:
+        df.to_csv(COOLDOWN_CSV, index=False)
+    except Exception:
+        pass
+    return {row['symbol']: row['expires_at'].to_pydatetime() for _, row in df.iterrows()}
+
 
 def _append_sl_watch(symbol: str, stop_price: float, position_side: str, order_id) -> None:
-    return None
+    try:
+        df = pd.read_csv(SL_WATCH_CSV) if os.path.exists(SL_WATCH_CSV) else pd.DataFrame(columns=['symbol','stop_price','position_side','orderId','ts'])
+        df['symbol'] = df['symbol'].astype(str).str.upper()
+        symbol = str(symbol).upper()
+        row = {
+            'symbol': symbol,
+            'stop_price': float(stop_price) if stop_price is not None else None,
+            'position_side': str(position_side).upper(),
+            'orderId': str(order_id) if order_id not in (None, '', float('nan')) else '',
+            'ts': datetime.utcnow().isoformat()
+        }
+        df = df[~((df['symbol'] == symbol) & (df['position_side'] == row['position_side']))]
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.to_csv(SL_WATCH_CSV, index=False)
+    except Exception as e:
+        print(f"Error registrando SL watch para {symbol}: {e}")
     
  # Paso mínimo global de lote (0.001).  Si en el futuro necesitas pasos específicos,
 # vuelve a añadir un diccionario STEP_SIZES y usa .get().
@@ -450,6 +497,11 @@ def colocando_ordenes():
         df_orders = pd.DataFrame(columns=['symbol','orderId','type','stopPrice','time'])
     df_orders = _normalize_orders_df(df_orders)
 
+    # Actualizar cooldowns a partir de SL ejecutados
+    sync_cooldowns_from_sl_fills()
+    active_cooldowns = _load_active_cooldowns()
+    now = datetime.utcnow()
+
     try:
         df_positions = pd.read_csv('./archivos/position_id_register.csv')
     except FileNotFoundError:
@@ -497,6 +549,10 @@ def colocando_ordenes():
     for currency in currencies:
         # Verificar si la moneda ya está en el DataFrame de órdenes o de posiciones
         if currency in df_orders['symbol'].values or currency in df_positions['symbol'].values:
+            continue
+
+        expiry = active_cooldowns.get(currency.upper())
+        if expiry and now < expiry:
             continue
 
         try:
@@ -719,7 +775,79 @@ def colocando_ordenes():
     df_positions.to_csv('./archivos/position_id_register.csv', index=False)
 
 def sync_cooldowns_from_sl_fills():
-    return None
+    try:
+        if not os.path.exists(SL_WATCH_CSV):
+            return
+        df_watch = pd.read_csv(SL_WATCH_CSV)
+    except Exception as e:
+        print(f"No se pudo leer SL watch: {e}")
+        return
+
+    if df_watch.empty:
+        return
+
+    df_watch['symbol'] = df_watch['symbol'].astype(str).str.upper()
+    df_watch['position_side'] = df_watch['position_side'].astype(str).str.upper()
+
+    try:
+        df_orders = pd.read_csv('./archivos/order_id_register.csv')
+        df_orders = _normalize_orders_df(df_orders)
+    except Exception:
+        df_orders = pd.DataFrame(columns=['symbol','orderId','type','stopPrice'])
+
+    pending = df_orders[df_orders['type'] == 'STOP_MARKET'].copy()
+    pending['symbol'] = pending['symbol'].astype(str).str.upper()
+    pending_ids = set(str(x) for x in pending.get('orderId', []))
+
+    # Pre-cargar parámetros por símbolo para determinar duración del cooldown
+    params_by_symbol = {}
+    try:
+        _best_path = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+        if os.path.exists(_best_path):
+            with open(_best_path, 'r') as _f:
+                _prod = json.load(_f) or []
+            params_by_symbol = {str(x.get('symbol', '')).upper(): (x.get('params') or {}) for x in _prod if isinstance(x, dict)}
+    except Exception:
+        params_by_symbol = {}
+
+    remaining_rows = []
+    now = datetime.utcnow()
+
+    for _, row in df_watch.iterrows():
+        symbol = row.get('symbol')
+        order_id = str(row.get('orderId', '')).strip()
+        stop_price = None
+        try:
+            stop_price = float(row.get('stop_price'))
+        except Exception:
+            stop_price = None
+
+        still_pending = False
+        if order_id:
+            still_pending = order_id in pending_ids
+        else:
+            try:
+                subset = pending[pending['symbol'] == symbol]
+                if not subset.empty and stop_price is not None and 'stopPrice' in subset.columns:
+                    subset['stopPrice'] = pd.to_numeric(subset['stopPrice'], errors='coerce')
+                    still_pending = any(abs((float(sp) - stop_price) / stop_price) < 5e-4 for sp in subset['stopPrice'].dropna())
+            except Exception:
+                still_pending = False
+
+        if still_pending:
+            remaining_rows.append(row)
+            continue
+
+        minutes = _cooldown_minutes_for_symbol(params_by_symbol, symbol, default=10)
+        _write_cooldown(symbol, now, minutes)
+
+    if remaining_rows:
+        pd.DataFrame(remaining_rows).to_csv(SL_WATCH_CSV, index=False)
+    else:
+        try:
+            os.remove(SL_WATCH_CSV)
+        except Exception:
+            pass
 
 
 def colocando_TK_SL():
@@ -876,6 +1004,21 @@ def colocando_TK_SL():
                     exito_sl = _post_with_retry(symbol, positionAmt, 0, sl_px, "LONG", "STOP_MARKET", "SELL")
                     if exito_sl:
                         time.sleep(1)
+                        try:
+                            _ = obteniendo_ordenes_pendientes()
+                            df_tmp = pd.read_csv('./archivos/order_id_register.csv')
+                            df_tmp = _normalize_orders_df(df_tmp)
+                            m = df_tmp[(df_tmp['symbol'] == symbol) & (df_tmp['type'] == 'STOP_MARKET')].copy()
+                            order_id = None
+                            if not m.empty and 'stopPrice' in m.columns:
+                                m['stopPrice'] = pd.to_numeric(m['stopPrice'], errors='coerce')
+                                m['diff'] = (m['stopPrice'] - float(sl_px)).abs() / max(abs(float(sl_px)), 1e-9)
+                                m = m.sort_values('diff')
+                                if not m.empty and m['diff'].iloc[0] < 1e-3:
+                                    order_id = m['orderId'].iloc[0] if 'orderId' in m.columns else None
+                            _append_sl_watch(symbol, float(sl_px), 'LONG', order_id)
+                        except Exception:
+                            _append_sl_watch(symbol, float(sl_px), 'LONG', None)
 
                 # Cantidades parciales para TPs
                 try:
@@ -933,8 +1076,24 @@ def colocando_TK_SL():
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 if existing_sl.empty:
                     sl_px = _round_to_tick(float(sl_level), tick)
-                    _post_with_retry(symbol, positionAmt, 0, sl_px, "LONG", "STOP_MARKET", "SELL")
+                    ok_sl = _post_with_retry(symbol, positionAmt, 0, sl_px, "LONG", "STOP_MARKET", "SELL")
                     time.sleep(0.3)
+                    if ok_sl:
+                        try:
+                            _ = obteniendo_ordenes_pendientes()
+                            df_tmp = pd.read_csv('./archivos/order_id_register.csv')
+                            df_tmp = _normalize_orders_df(df_tmp)
+                            m = df_tmp[(df_tmp['symbol'] == symbol) & (df_tmp['type'] == 'STOP_MARKET')].copy()
+                            order_id = None
+                            if not m.empty and 'stopPrice' in m.columns:
+                                m['stopPrice'] = pd.to_numeric(m['stopPrice'], errors='coerce')
+                                m['diff'] = (m['stopPrice'] - float(sl_px)).abs() / max(abs(float(sl_px)), 1e-9)
+                                m = m.sort_values('diff')
+                                if not m.empty and m['diff'].iloc[0] < 1e-3:
+                                    order_id = m['orderId'].iloc[0] if 'orderId' in m.columns else None
+                            _append_sl_watch(symbol, float(sl_px), 'LONG', order_id)
+                        except Exception:
+                            _append_sl_watch(symbol, float(sl_px), 'LONG', None)
                 if existing_tp.empty and desired_tps:
                     tp1_px = _round_to_tick(float(desired_tps[0]), tick)
                     try:
@@ -1068,8 +1227,24 @@ def colocando_TK_SL():
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 if existing_sl.empty:
                     sl_px = _round_to_tick(float(sl_level), tick)
-                    _post_with_retry(symbol, positionAmt, 0, sl_px, "SHORT", "STOP_MARKET", "BUY")
+                    ok_sl = _post_with_retry(symbol, positionAmt, 0, sl_px, "SHORT", "STOP_MARKET", "BUY")
                     time.sleep(0.3)
+                    if ok_sl:
+                        try:
+                            _ = obteniendo_ordenes_pendientes()
+                            df_tmp = pd.read_csv('./archivos/order_id_register.csv')
+                            df_tmp = _normalize_orders_df(df_tmp)
+                            m = df_tmp[(df_tmp['symbol'] == symbol) & (df_tmp['type'] == 'STOP_MARKET')].copy()
+                            order_id = None
+                            if not m.empty and 'stopPrice' in m.columns:
+                                m['stopPrice'] = pd.to_numeric(m['stopPrice'], errors='coerce')
+                                m['diff'] = (m['stopPrice'] - float(sl_px)).abs() / max(abs(float(sl_px)), 1e-9)
+                                m = m.sort_values('diff')
+                                if not m.empty and m['diff'].iloc[0] < 1e-3:
+                                    order_id = m['orderId'].iloc[0] if 'orderId' in m.columns else None
+                            _append_sl_watch(symbol, float(sl_px), 'SHORT', order_id)
+                        except Exception:
+                            _append_sl_watch(symbol, float(sl_px), 'SHORT', None)
                 if existing_tp.empty and desired_tps:
                     tp1_px = _round_to_tick(float(desired_tps[0]), tick)
                     try:

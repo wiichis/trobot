@@ -140,6 +140,26 @@ PRICE_5  = f"{BASE}/cripto_price_5m.csv"
 IND_CSV  = f"{BASE}/indicadores.csv"
 
 
+def _nearest_funding_minutes(ts: pd.Timestamp) -> int:
+    ts = pd.Timestamp(ts)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize('UTC')
+    else:
+        ts = ts.tz_convert('UTC')
+    base = ts.normalize()
+    anchors = [base + pd.Timedelta(hours=h) for h in (0, 8, 16)]
+    anchors.extend([base - pd.Timedelta(hours=8), base + pd.Timedelta(hours=24)])
+    deltas = [abs((ts - a).total_seconds()) / 60.0 for a in anchors]
+    return int(min(deltas))
+
+
+def _in_funding_window(ts: pd.Timestamp, window_min: int = 30) -> bool:
+    try:
+        return _nearest_funding_minutes(ts) <= int(window_min)
+    except Exception:
+        return False
+
+
 def _load_cooldowns():
     """Cooldown desactivado: siempre retorna vacío."""
     return {}
@@ -175,7 +195,11 @@ def _calc_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     min_atr  = float(p.get('min_atr_pct', 0.002))
     max_atr  = float(p.get('max_atr_pct', 0.03))
     tp_pct   = float(p.get('tp', 0.015))
+    tp_mode  = str(p.get('tp_mode', 'fixed'))
+    tp_atr_mult = float(p.get('tp_atr_mult', 0.0))
     atr_mult = float(p.get('atr_mult', 2.0))
+    sl_mode  = str(p.get('sl_mode', 'atr_then_trailing'))
+    sl_pct   = float(p.get('sl_pct', 0.0))
     logic    = str(p.get('logic', 'strict'))
     hhll_n   = int(p.get('hhll_lookback', 0) or 0)
 
@@ -248,13 +272,21 @@ def _calc_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     adx_ok    = df["ADX"] >= adx_min
     atr_ok    = (df["ATR_pct"] >= min_atr) & (df["ATR_pct"] <= max_atr)
 
+    # Cruces EMA recientes
+    ema_cross_up = (df["EMA_S"] > df["EMA_L"]) & (df["EMA_S"].shift(1) <= df["EMA_L"].shift(1))
+    ema_cross_dn = (df["EMA_S"] < df["EMA_L"]) & (df["EMA_S"].shift(1) >= df["EMA_L"].shift(1))
+
     # Recencia de cruces RSI
     cross_up = (df["RSI"] >= rsi_buy) & (df["RSI"].shift(1) < rsi_buy)
     cross_dn = (df["RSI"] <= rsi_sell) & (df["RSI"].shift(1) > rsi_sell)
     if fresh_cross_max_bars and fresh_cross_max_bars > 0:
+        df["EMA_LONG_RECENT"] = ema_cross_up.rolling(fresh_cross_max_bars, min_periods=1).max().astype(bool)
+        df["EMA_SHORT_RECENT"] = ema_cross_dn.rolling(fresh_cross_max_bars, min_periods=1).max().astype(bool)
         df["RSI_LONG_RECENT"] = cross_up.rolling(fresh_cross_max_bars, min_periods=1).max().astype(bool)
         df["RSI_SHORT_RECENT"] = cross_dn.rolling(fresh_cross_max_bars, min_periods=1).max().astype(bool)
     else:
+        df["EMA_LONG_RECENT"] = trend_long
+        df["EMA_SHORT_RECENT"] = trend_short
         df["RSI_LONG_RECENT"] = rsi_long
         df["RSI_SHORT_RECENT"] = rsi_short
 
@@ -290,25 +322,53 @@ def _calc_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         trigger_long = rsi_trig_long | long_break_use
         trigger_short = rsi_trig_short | short_break_use
 
+    trigger_long = trigger_long & df["EMA_LONG_RECENT"]
+    trigger_short = trigger_short & df["EMA_SHORT_RECENT"]
+
     df["Long_Signal"]  = (base_long & gates_long & trigger_long)
     df["Short_Signal"] = (base_short & gates_short & trigger_short)
 
-    # Niveles de TP/SL (TP fijo %, SL por ATR) + escalonados
+    funding_block = df['date'].apply(_in_funding_window)
+    df["FUNDING_WINDOW"] = funding_block
+    df["Long_Signal"] = df["Long_Signal"] & (~funding_block)
+    df["Short_Signal"] = df["Short_Signal"] & (~funding_block)
+
+    # --- Niveles TP/SL según modos del backtesting ---
     f1, f2, f3 = TP_FACTORS
-    # LONG ladder
-    df["TP1_L"] = c * (1.0 + f1 * tp_pct)
-    df["TP2_L"] = c * (1.0 + f2 * tp_pct)
-    df["TP3_L"] = c * (1.0 + f3 * tp_pct)
-    # SHORT ladder
-    df["TP1_S"] = c * (1.0 - f1 * tp_pct)
-    df["TP2_S"] = c * (1.0 - f2 * tp_pct)
-    df["TP3_S"] = c * (1.0 - f3 * tp_pct)
-    # TP clásico (compatibilidad) = TP2
-    df["TP_L"] = df["TP2_L"]
-    df["TP_S"] = df["TP2_S"]
-    # SL por ATR
-    df["SL_L"] = (c - atr_mult * df["ATR"]).clip(lower=1e-8)
-    df["SL_S"] = (c + atr_mult * df["ATR"]).clip(lower=1e-8)
+
+    if tp_mode == 'fixed':
+        tp1_l = c * (1.0 + f1 * tp_pct)
+        tp2_l = c * (1.0 + f2 * tp_pct)
+        tp3_l = c * (1.0 + f3 * tp_pct)
+        tp1_s = c * (1.0 - f1 * tp_pct)
+        tp2_s = c * (1.0 - f2 * tp_pct)
+        tp3_s = c * (1.0 - f3 * tp_pct)
+        tp_l = tp2_l
+        tp_s = tp2_s
+    elif tp_mode == 'atrx':
+        atr_shift = df["ATR"] * tp_atr_mult
+        tp1_l = tp2_l = tp3_l = c + atr_shift
+        tp1_s = tp2_s = tp3_s = c - atr_shift
+        tp_l = tp2_l
+        tp_s = tp2_s
+    else:  # 'none'
+        tp1_l = tp2_l = tp3_l = np.nan
+        tp1_s = tp2_s = tp3_s = np.nan
+        tp_l = tp_s = np.nan
+
+    df["TP1_L"], df["TP2_L"], df["TP3_L"] = tp1_l, tp2_l, tp3_l
+    df["TP1_S"], df["TP2_S"], df["TP3_S"] = tp1_s, tp2_s, tp3_s
+    df["TP_L"], df["TP_S"] = tp_l, tp_s
+
+    if sl_mode == 'percent' and sl_pct > 0:
+        sl_long = c * (1.0 - sl_pct)
+        sl_short = c * (1.0 + sl_pct)
+    else:
+        sl_long = (c - atr_mult * df["ATR"]).clip(lower=1e-8)
+        sl_short = (c + atr_mult * df["ATR"]).clip(lower=1e-8)
+
+    df["SL_L"] = sl_long
+    df["SL_S"] = sl_short
 
     # Columnas informativas opcionales
     df["Avg_Volume"] = v.rolling(window=20).mean()
