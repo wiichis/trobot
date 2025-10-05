@@ -51,6 +51,12 @@ def _append_sl_watch(symbol: str, stop_price: float, position_side: str, order_i
 # vuelve a añadir un diccionario STEP_SIZES y usa .get().
 
 STEP_SIZE_DEFAULT = 0.001
+# Overrides por símbolo para step/tick conocidos (completar según reglas del exchange).
+SYMBOL_TRADING_RULES = {
+    'BNB-USDT': {'qty_step': 0.01, 'price_tick': 0.1},
+    'DOT-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
+    'BNE-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
+}
 # Splits por defecto para TP escalonado (40%, 40%, 20%)
 TP_SPLITS = (0.40, 0.40, 0.20)
 
@@ -109,6 +115,26 @@ def _split_position_qtys(total_qty: float, splits, step: float = STEP_SIZE_DEFAU
     if remaining_units > 0:
         result[-1] += float(step_dec * remaining_units)
     return result
+
+
+def _step_size_for(symbol: str) -> float:
+    return SYMBOL_TRADING_RULES.get(str(symbol).upper(), {}).get('qty_step', STEP_SIZE_DEFAULT)
+
+
+def _tick_size_for(symbol: str) -> float:
+    return SYMBOL_TRADING_RULES.get(str(symbol).upper(), {}).get('price_tick', 0.01)
+
+
+def _round_to_tick(value: float, tick: float) -> float:
+    if tick is None or tick <= 0:
+        return float(value)
+    try:
+        tick_dec = Decimal(str(tick))
+        val_dec = Decimal(str(value))
+        rounded = (val_dec / tick_dec).to_integral_value(rounding=ROUND_DOWN) * tick_dec
+        return float(rounded)
+    except Exception:
+        return float(value)
 
 # --- Retry helper for robust order posting ---
 def _post_with_retry(symbol, qty, price, stop, position_side, order_type, side, delays=(0.5, 1.0, 2.0)):
@@ -549,7 +575,7 @@ def colocando_ordenes():
         peso = item['peso_ajustado']
 
         # Ajustar cantidad al step‑size permitido por el contrato
-        step_size = STEP_SIZE_DEFAULT  # único paso mínimo
+        step_size = _step_size_for(currency)
         raw_qty = trade / price_last
         currency_amount = math.floor(raw_qty / step_size) * step_size
         # Redondeo para evitar floats interminables
@@ -832,31 +858,37 @@ def colocando_TK_SL():
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
                 existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
+                tick = _tick_size_for(symbol)
+                step_sz = _step_size_for(symbol)
                 existing_tp_prices = set()
                 if 'stopPrice' in existing_tp.columns:
                     try:
-                        existing_tp_prices = set(float(x) for x in existing_tp['stopPrice'].tolist() if pd.notna(x))
+                        existing_tp_prices = set(
+                            _round_to_tick(float(x), tick) for x in existing_tp['stopPrice'].tolist() if pd.notna(x)
+                        )
                     except Exception:
                         existing_tp_prices = set()
 
                 # Colocar SL si falta
                 exito_sl = not existing_sl.empty
                 if not exito_sl:
-                    exito_sl = _post_with_retry(symbol, positionAmt, 0, float(sl_level), "LONG", "STOP_MARKET", "SELL")
+                    sl_px = _round_to_tick(float(sl_level), tick)
+                    exito_sl = _post_with_retry(symbol, positionAmt, 0, sl_px, "LONG", "STOP_MARKET", "SELL")
                     if exito_sl:
                         time.sleep(1)
-                
+
                 # Cantidades parciales para TPs
                 try:
                     pos_qty = abs(float(positionAmt))
                 except Exception:
                     pos_qty = 0.0
                 splits = TP_SPLITS if len(desired_tps) >= 3 else (1.0,)
-                split_qtys = _split_position_qtys(pos_qty, splits, STEP_SIZE_DEFAULT)
+                split_qtys = _split_position_qtys(pos_qty, splits, step_sz)
 
                 # Colocar TPs faltantes (comparando por precio exacto)
                 placed_all_tps = True
                 for idx, tp_px in enumerate(desired_tps[:len(split_qtys)]):
+                    tp_px = _round_to_tick(float(tp_px), tick)
                     # ¿Existe un TP muy parecido ya? (tolerancia relativa ~1e-4)
                     exists = any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
                     if exists:
@@ -864,9 +896,10 @@ def colocando_TK_SL():
                     tp_qty = split_qtys[idx]
                     if tp_qty <= 0:
                         continue
-                    ok = _post_with_retry(symbol, tp_qty, 0, float(tp_px), "LONG", "TAKE_PROFIT_MARKET", "SELL")
+                    ok = _post_with_retry(symbol, tp_qty, 0, tp_px, "LONG", "TAKE_PROFIT_MARKET", "SELL")
                     if ok:
                         time.sleep(0.3)
+                        existing_tp_prices.add(tp_px)
                     else:
                         placed_all_tps = False
 
@@ -877,11 +910,14 @@ def colocando_TK_SL():
                     df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
                     symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
                     existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
-                    existing_tp_prices = set(float(x) for x in existing_tp['stopPrice'].tolist() if pd.notna(x)) if 'stopPrice' in existing_tp.columns else set()
+                    existing_tp_prices = set(
+                        _round_to_tick(float(x), tick) for x in existing_tp['stopPrice'].tolist() if pd.notna(x)
+                    ) if 'stopPrice' in existing_tp.columns else set()
                     target_count = len(split_qtys)
                     have_count = 0
                     for tp_px in desired_tps[:target_count]:
-                        if any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices):
+                        tp_px_round = _round_to_tick(float(tp_px), tick)
+                        if any(abs((tp_px_round - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices):
                             have_count += 1
                     placed_all_tps = (have_count >= target_count)
                 except Exception:
@@ -896,15 +932,16 @@ def colocando_TK_SL():
                 existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 if existing_sl.empty:
-                    _post_with_retry(symbol, positionAmt, 0, float(sl_level), "LONG", "STOP_MARKET", "SELL")
+                    sl_px = _round_to_tick(float(sl_level), tick)
+                    _post_with_retry(symbol, positionAmt, 0, sl_px, "LONG", "STOP_MARKET", "SELL")
                     time.sleep(0.3)
                 if existing_tp.empty and desired_tps:
-                    tp1_px = float(desired_tps[0])
+                    tp1_px = _round_to_tick(float(desired_tps[0]), tick)
                     try:
                         pos_qty = abs(float(positionAmt))
                     except Exception:
                         pos_qty = 0.0
-                    tp_qty = _round_step(pos_qty, STEP_SIZE_DEFAULT)
+                    tp_qty = _round_step(pos_qty, step_sz)
                     if tp_qty > 0:
                         _post_with_retry(symbol, tp_qty, 0, tp1_px, "LONG", "TAKE_PROFIT_MARKET", "SELL")
                         time.sleep(0.3)
@@ -943,17 +980,22 @@ def colocando_TK_SL():
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
                 existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
+                tick = _tick_size_for(symbol)
+                step_sz = _step_size_for(symbol)
                 existing_tp_prices = set()
                 if 'stopPrice' in existing_tp.columns:
                     try:
-                        existing_tp_prices = set(float(x) for x in existing_tp['stopPrice'].tolist() if pd.notna(x))
+                        existing_tp_prices = set(
+                            _round_to_tick(float(x), tick) for x in existing_tp['stopPrice'].tolist() if pd.notna(x)
+                        )
                     except Exception:
                         existing_tp_prices = set()
 
                 # SL si falta
                 exito_sl = not existing_sl.empty
                 if not exito_sl:
-                    exito_sl = _post_with_retry(symbol, positionAmt, 0, float(sl_level), "SHORT", "STOP_MARKET", "BUY")
+                    sl_px = _round_to_tick(float(sl_level), tick)
+                    exito_sl = _post_with_retry(symbol, positionAmt, 0, sl_px, "SHORT", "STOP_MARKET", "BUY")
                     if exito_sl:
                         time.sleep(1)
                 # Registrar SL en watch para detectar fill y disparar cooldown
@@ -979,20 +1021,22 @@ def colocando_TK_SL():
                 except Exception:
                     pos_qty = 0.0
                 splits = TP_SPLITS if len(desired_tps) >= 3 else (1.0,)
-                split_qtys = _split_position_qtys(pos_qty, splits, STEP_SIZE_DEFAULT)
+                split_qtys = _split_position_qtys(pos_qty, splits, step_sz)
 
                 # Colocar TPs faltantes
                 placed_all_tps = True
                 for idx, tp_px in enumerate(desired_tps[:len(split_qtys)]):
+                    tp_px = _round_to_tick(float(tp_px), tick)
                     exists = any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
                     if exists:
                         continue
                     tp_qty = split_qtys[idx]
                     if tp_qty <= 0:
                         continue
-                    ok = _post_with_retry(symbol, tp_qty, 0, float(tp_px), "SHORT", "TAKE_PROFIT_MARKET", "BUY")
+                    ok = _post_with_retry(symbol, tp_qty, 0, tp_px, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
                     if ok:
                         time.sleep(0.3)
+                        existing_tp_prices.add(tp_px)
                     else:
                         placed_all_tps = False
 
@@ -1002,11 +1046,14 @@ def colocando_TK_SL():
                     df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
                     symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
                     existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
-                    existing_tp_prices = set(float(x) for x in existing_tp['stopPrice'].tolist() if pd.notna(x)) if 'stopPrice' in existing_tp.columns else set()
+                    existing_tp_prices = set(
+                        _round_to_tick(float(x), tick) for x in existing_tp['stopPrice'].tolist() if pd.notna(x)
+                    ) if 'stopPrice' in existing_tp.columns else set()
                     target_count = len(split_qtys)
                     have_count = 0
                     for tp_px in desired_tps[:target_count]:
-                        if any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices):
+                        tp_px_round = _round_to_tick(float(tp_px), tick)
+                        if any(abs((tp_px_round - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices):
                             have_count += 1
                     placed_all_tps = (have_count >= target_count)
                 except Exception:
@@ -1020,15 +1067,16 @@ def colocando_TK_SL():
                 existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 if existing_sl.empty:
-                    _post_with_retry(symbol, positionAmt, 0, float(sl_level), "SHORT", "STOP_MARKET", "BUY")
+                    sl_px = _round_to_tick(float(sl_level), tick)
+                    _post_with_retry(symbol, positionAmt, 0, sl_px, "SHORT", "STOP_MARKET", "BUY")
                     time.sleep(0.3)
                 if existing_tp.empty and desired_tps:
-                    tp1_px = float(desired_tps[0])
+                    tp1_px = _round_to_tick(float(desired_tps[0]), tick)
                     try:
                         pos_qty = abs(float(positionAmt))
                     except Exception:
                         pos_qty = 0.0
-                    tp_qty = _round_step(pos_qty, STEP_SIZE_DEFAULT)
+                    tp_qty = _round_step(pos_qty, step_sz)
                     if tp_qty > 0:
                         _post_with_retry(symbol, tp_qty, 0, tp1_px, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
                         time.sleep(0.3)
