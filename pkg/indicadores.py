@@ -167,12 +167,22 @@ def _load_cooldowns():
 # ---------- util ----------
 @lru_cache(maxsize=4)
 def _read(path, mtime=None):
-    """Lee CSV con parseo de fecha y normaliza señales si existen."""
-    df = pd.read_csv(
-        path,
-        parse_dates=["date"],
-        na_values=["NA"]
-    )
+    """Lee CSV con parseo de fecha; tolera filas corruptas avisando una sola vez."""
+    try:
+        df = pd.read_csv(
+            path,
+            parse_dates=["date"],
+            na_values=["NA"]
+        )
+    except pd.errors.ParserError as e:
+        print(f"⚠️  ParserError leyendo {path}: {e}. Reintentando con on_bad_lines='skip'.")
+        df = pd.read_csv(
+            path,
+            parse_dates=["date"],
+            na_values=["NA"],
+            engine='python',
+            on_bad_lines='skip'
+        )
     if 'Long_Signal' in df.columns:
         df['Long_Signal'] = df['Long_Signal'].fillna(False).astype(bool)
     if 'Short_Signal' in df.columns:
