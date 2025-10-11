@@ -11,6 +11,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m.csv"
 
+# Máximo de días que mantiene el archivo corto usado para señales.
+SIGNAL_HISTORY_DAYS = 30
+
 
 # --- Helper robusto para leer velas de BingX (una sola vez y reutilizable) ---
 
@@ -142,6 +145,12 @@ def price_bingx_5m() -> None:
 
     # --- Guardar datos 5m actualizados ---
     df_existing = df_existing.drop_duplicates(subset=['symbol', 'date'], keep='last').sort_values(['symbol', 'date'])
+
+    if not df_existing.empty:
+        now_utc = datetime.now(timezone.utc)
+        cutoff_time = now_utc - pd.Timedelta(days=SIGNAL_HISTORY_DAYS)
+        df_existing = df_existing[df_existing['date'] >= cutoff_time]
+
     df_existing.to_csv(CSV_PATH, index=False)
 
     # --- Agregación a intervalos de 30 minutos ---

@@ -103,6 +103,7 @@ SYMBOL_TRADING_RULES = {
     'BNB-USDT': {'qty_step': 0.01, 'price_tick': 0.1},
     'DOT-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
     'BNE-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
+    'HBAR-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
 }
 # Splits por defecto para TP escalonado (40%, 40%, 20%)
 TP_SPLITS = (0.40, 0.40, 0.20)
