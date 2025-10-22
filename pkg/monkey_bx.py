@@ -36,7 +36,7 @@ def _normalize_orders_df(df: pd.DataFrame) -> pd.DataFrame:
 def _cooldown_minutes_for_symbol(params_by_symbol: dict, symbol: str, default: int = 10) -> int:
     try:
         p = params_by_symbol.get(str(symbol).upper(), {}) if isinstance(params_by_symbol, dict) else {}
-        cd = p.get('cooldown_min', default)
+        cd = p.get('cooldown', p.get('cooldown_min', default))
         return int(cd)
     except Exception:
         return default
@@ -952,6 +952,11 @@ def colocando_TK_SL():
 
             symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
 
+            try:
+                position_qty = abs(float(positionAmt))
+            except Exception:
+                position_qty = 0.0
+
             if positionSide == 'LONG':
                 # Niveles TP (escalonados si existen) y SL desde indicadores
                 desired_tps, sl_level = extract_tp_sl_from_latest(latest_values, symbol, 'LONG')
@@ -1002,7 +1007,7 @@ def colocando_TK_SL():
                 exito_sl = not existing_sl.empty
                 if not exito_sl:
                     sl_px = _round_to_tick(float(sl_level), tick)
-                    exito_sl = _post_with_retry(symbol, positionAmt, 0, sl_px, "LONG", "STOP_MARKET", "SELL")
+                    exito_sl = _post_with_retry(symbol, position_qty, 0, sl_px, "LONG", "STOP_MARKET", "SELL")
                     if exito_sl:
                         time.sleep(1)
                         try:
@@ -1077,7 +1082,7 @@ def colocando_TK_SL():
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 if existing_sl.empty:
                     sl_px = _round_to_tick(float(sl_level), tick)
-                    ok_sl = _post_with_retry(symbol, positionAmt, 0, sl_px, "LONG", "STOP_MARKET", "SELL")
+                    ok_sl = _post_with_retry(symbol, position_qty, 0, sl_px, "LONG", "STOP_MARKET", "SELL")
                     time.sleep(0.3)
                     if ok_sl:
                         try:
@@ -1155,7 +1160,7 @@ def colocando_TK_SL():
                 exito_sl = not existing_sl.empty
                 if not exito_sl:
                     sl_px = _round_to_tick(float(sl_level), tick)
-                    exito_sl = _post_with_retry(symbol, positionAmt, 0, sl_px, "SHORT", "STOP_MARKET", "BUY")
+                    exito_sl = _post_with_retry(symbol, position_qty, 0, sl_px, "SHORT", "STOP_MARKET", "BUY")
                     if exito_sl:
                         time.sleep(1)
                 # Registrar SL en watch para detectar fill y disparar cooldown
@@ -1228,7 +1233,7 @@ def colocando_TK_SL():
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 if existing_sl.empty:
                     sl_px = _round_to_tick(float(sl_level), tick)
-                    ok_sl = _post_with_retry(symbol, positionAmt, 0, sl_px, "SHORT", "STOP_MARKET", "BUY")
+                    ok_sl = _post_with_retry(symbol, position_qty, 0, sl_px, "SHORT", "STOP_MARKET", "BUY")
                     time.sleep(0.3)
                     if ok_sl:
                         try:
@@ -1403,6 +1408,7 @@ def unrealized_profit_positions():
         except ValueError:
             # Silenciado: print(f"Cantidad de posición inválida para {symbol}: {positionAmt}")
             continue
+        position_qty = abs(positionAmt)
 
         if positionSide == 'LONG':
             stop_loss = symbol_data['Stop_Loss_Long'].iloc[0]
@@ -1420,7 +1426,7 @@ def unrealized_profit_positions():
                 try:
                     pkg.bingx.cancel_order(symbol, orderId)
                     time.sleep(1)
-                    _post_with_retry(symbol, positionAmt, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
+                    _post_with_retry(symbol, position_qty, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
                     # Actualizar watch con el nuevo SL
                     try:
                         _ = obteniendo_ordenes_pendientes()
@@ -1458,7 +1464,7 @@ def unrealized_profit_positions():
                 try:
                     pkg.bingx.cancel_order(symbol, orderId)
                     time.sleep(1)
-                    _post_with_retry(symbol, positionAmt, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
+                    _post_with_retry(symbol, position_qty, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
                     # Actualizar watch con el nuevo SL
                     try:
                         _ = obteniendo_ordenes_pendientes()
