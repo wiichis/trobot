@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
+
 import os
 import pkg.price_bingx_5m
 import schedule
