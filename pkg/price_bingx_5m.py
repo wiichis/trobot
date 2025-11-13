@@ -7,12 +7,17 @@ from typing import Any, List, Tuple, Optional
 import pandas as pd
 import requests
 
+from .cfg_loader import load_best_symbols
+from .settings import DEFAULT_SYMBOLS
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m.csv"
 
 # Máximo de días que mantiene el archivo corto usado para señales.
 SIGNAL_HISTORY_DAYS = 30
+
+log = logging.getLogger("trobot")
 
 
 # --- Helper robusto para leer velas de BingX (una sola vez y reutilizable) ---
@@ -108,7 +113,14 @@ def _fetch_bingx_candles(symbol: str, limit: int, end_time_ms: Optional[int] = N
             raise RuntimeError(f"Fallo al obtener velas para {symbol}: {last_err}")
 
 def currencies_list():
-    return ['XRP-USDT', 'AVAX-USDT', 'CFX-USDT', 'DOT-USDT', 'NEAR-USDT', 'APT-USDT', 'HBAR-USDT', 'BNB-USDT', 'DOGE-USDT', 'TRX-USDT']
+    try:
+        symbols = load_best_symbols()
+        cleaned = [str(sym).upper() for sym in symbols if sym]
+        if cleaned:
+            return cleaned
+    except Exception as exc:
+        log.warning("No se pudo derivar currencies_list desde best_prod.json: %s", exc)
+    return [str(sym).upper() for sym in DEFAULT_SYMBOLS]
     # No usar: MATIC, ADA, BTC, LTC, SOL
 
 
