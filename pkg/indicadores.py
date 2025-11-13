@@ -139,6 +139,9 @@ DAYS_KEEP = 10  # Días a mantener por símbolo en indicadores
 PRICE_5  = f"{BASE}/cripto_price_5m.csv"
 IND_CSV  = f"{BASE}/indicadores.csv"
 
+_BOOL_SIGNAL_COLS = ("Long_Signal", "Short_Signal")
+_READ_DTYPES = {col: "float64" for col in _BOOL_SIGNAL_COLS}
+
 
 def _nearest_funding_minutes(ts: pd.Timestamp) -> int:
     ts = pd.Timestamp(ts)
@@ -172,7 +175,9 @@ def _read(path, mtime=None):
         df = pd.read_csv(
             path,
             parse_dates=["date"],
-            na_values=["NA"]
+            na_values=["NA"],
+            low_memory=False,
+            dtype=_READ_DTYPES
         )
     except pd.errors.ParserError as e:
         print(f"⚠️  ParserError leyendo {path}: {e}. Reintentando con on_bad_lines='skip'.")
@@ -180,13 +185,14 @@ def _read(path, mtime=None):
             path,
             parse_dates=["date"],
             na_values=["NA"],
+            low_memory=False,
+            dtype=_READ_DTYPES,
             engine='python',
             on_bad_lines='skip'
         )
-    if 'Long_Signal' in df.columns:
-        df['Long_Signal'] = df['Long_Signal'].fillna(False).astype(bool)
-    if 'Short_Signal' in df.columns:
-        df['Short_Signal'] = df['Short_Signal'].fillna(False).astype(bool)
+    for col in _BOOL_SIGNAL_COLS:
+        if col in df.columns:
+            df[col] = df[col].fillna(False).astype(bool)
     return df
 
 

@@ -228,7 +228,7 @@ import pkg.price_bingx_5m
 
 def get_last_take_profit_stop_loss(symbol):
     # Leer el archivo CSV con los indicadores
-    df = pd.read_csv('./archivos/indicadores.csv')
+    df = pd.read_csv('./archivos/indicadores.csv', low_memory=False)
     df['symbol'] = df['symbol'].str.upper()
 
     filtered_df = df[df['symbol'] == symbol.upper()]
@@ -472,7 +472,7 @@ def colocando_ordenes():
     try:
         _ind_path = './archivos/indicadores.csv'
         if os.path.exists(_ind_path):
-            _dfi = pd.read_csv(_ind_path)
+            _dfi = pd.read_csv(_ind_path, low_memory=False)
             if 'date' in _dfi.columns:
                 _dfi['date'] = pd.to_datetime(_dfi['date'])
             latest_values = _dfi.sort_values(['symbol','date']).groupby('symbol').last().reset_index()
@@ -872,7 +872,7 @@ def colocando_TK_SL():
     df_ordenes = _normalize_orders_df(df_ordenes)
 
     # Leer los últimos valores de indicadores
-    df_indicadores = pd.read_csv('./archivos/indicadores.csv')
+    df_indicadores = pd.read_csv('./archivos/indicadores.csv', low_memory=False)
     # Limpiar espacios en los nombres de columnas y en los símbolos
     df_indicadores.columns = df_indicadores.columns.str.strip()
     if 'symbol' in df_indicadores.columns:
@@ -1316,7 +1316,7 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
 
 def unrealized_profit_positions():
     # Cargar los indicadores
-    df_indicadores = pd.read_csv('./archivos/indicadores.csv')
+    df_indicadores = pd.read_csv('./archivos/indicadores.csv', low_memory=False)
     # Limpiar nombres de columnas y símbolo
     df_indicadores.columns = df_indicadores.columns.str.strip()
     df_indicadores['symbol'] = df_indicadores['symbol'].str.strip().str.upper()
