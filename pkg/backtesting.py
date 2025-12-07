@@ -32,7 +32,7 @@ import sys
 import atexit
 from multiprocessing import Pool, cpu_count
 from dataclasses import dataclass
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -43,6 +43,10 @@ import pandas as pd
 # ==========================
 DEFAULT_DATA_TEMPLATE = 'archivos/cripto_price_5m_long.csv'  # CSV único con múltiples símbolos
 DEFAULT_OUT_DIR = 'archivos/backtesting'
+TP_LADDER_FACTORS = (0.6, 1.0, 1.6)
+TP_SPLITS_DEFAULT = (0.40, 0.40, 0.20)
+TP1_DEFAULT_FACTOR = 0.70
+FUNDING_EVENTS_CACHE: Dict[str, Dict[str, List[Tuple[int, float]]]] = {}
 
 # ==========================
 # Configuración SIMPLE-RUN (ejecuta con un solo comando, sin flags)
@@ -105,7 +109,8 @@ SIMPLE_RUN: Dict[str, object] = {
     },
     'LOAD_BEST_FILE': None,
     'WINNERS_FROM_BEST': False,
-    'BEST_THRESHOLD': 0.0
+    'BEST_THRESHOLD': 0.0,
+    'PORTFOLIO_EVAL': True,
 }
 
 def _build_simple_argv(cfg: Dict[str, object]) -> list:
@@ -148,6 +153,8 @@ def _build_simple_argv(cfg: Dict[str, object]) -> list:
         argv.append('--second_pass')
     if cfg.get('SECOND_TOPK') is not None:
         add('--second_topk', cfg.get('SECOND_TOPK'))
+    if cfg.get('PORTFOLIO_EVAL'):
+        argv.append('--portfolio_eval_best')
 
     mode = cfg.get('MODE', 'SWEEP_RANGES')
     if mode == 'SWEEP_RANGES':
@@ -247,6 +254,238 @@ def _post_run_normalize_best():
             continue
 
 atexit.register(_post_run_normalize_best)
+
+# ==========================
+# Funding dinámico (opcional)
+# ==========================
+
+def _load_funding_events_csv(path: Optional[str]) -> Dict[str, List[Tuple[int, float]]]:
+    """Carga un CSV con columnas [symbol, time/date, rate] y retorna eventos por símbolo.
+
+    El CSV debe contener al menos:
+        - symbol (o pair)
+        - time|timestamp|date (UTC). Si es numérico, se asume ms.
+        - rate|funding_rate|funding
+
+    Devuelve dict {SYMBOL: [(ts_ms, rate), ...]} ordenado temporalmente.
+    """
+    if not path:
+        return {}
+    abspath = os.path.abspath(path)
+    cached = FUNDING_EVENTS_CACHE.get(abspath)
+    if cached is not None:
+        return cached
+
+    result: Dict[str, List[Tuple[int, float]]] = {}
+    if not os.path.exists(abspath):
+        print(f"[FUNDING] Archivo {abspath} no encontrado; se usará tasa fija.")
+        FUNDING_EVENTS_CACHE[abspath] = result
+        return result
+
+    try:
+        df = pd.read_csv(abspath)
+    except Exception as exc:
+        print(f"[FUNDING][WARN] No se pudo leer {abspath}: {exc}")
+        FUNDING_EVENTS_CACHE[abspath] = result
+        return result
+
+    if df.empty:
+        FUNDING_EVENTS_CACHE[abspath] = result
+        return result
+
+    cols = {c.lower(): c for c in df.columns}
+    sym_col = cols.get('symbol') or cols.get('pair')
+    time_col = cols.get('time') or cols.get('timestamp') or cols.get('date')
+    rate_col = cols.get('rate') or cols.get('funding_rate') or cols.get('funding')
+
+    if not sym_col or not time_col or not rate_col:
+        print(f"[FUNDING][WARN] CSV {abspath} no tiene columnas estándar (symbol,time,rate). Campos={list(df.columns)}")
+        FUNDING_EVENTS_CACHE[abspath] = result
+        return result
+
+    work = df[[sym_col, time_col, rate_col]].copy()
+    work[sym_col] = work[sym_col].astype(str).str.upper().str.strip()
+    if np.issubdtype(work[time_col].dtype, np.number):
+        ts = pd.to_datetime(work[time_col], unit='ms', utc=True, errors='coerce')
+    else:
+        ts = pd.to_datetime(work[time_col], utc=True, errors='coerce')
+    work['_ts'] = ts
+    work['_rate'] = pd.to_numeric(work[rate_col], errors='coerce')
+    work = work.dropna(subset=[sym_col, '_ts', '_rate'])
+    if work.empty:
+        FUNDING_EVENTS_CACHE[abspath] = result
+        return result
+    work['_ts_ms'] = (work['_ts'].astype('int64') // 10**6)
+
+    for sym, sdf in work.groupby(sym_col):
+        tuples = []
+        for _, row in sdf.sort_values('_ts')[[ '_ts_ms', '_rate']].iterrows():
+            try:
+                ts_ms = int(row['_ts_ms'])
+                rate = float(row['_rate'])
+            except Exception:
+                continue
+            tuples.append((ts_ms, rate))
+        if tuples:
+            result[sym] = tuples
+
+    FUNDING_EVENTS_CACHE[abspath] = result
+    if result:
+        print(f"[FUNDING] Eventos cargados para {len(result)} símbolos desde {abspath}")
+    return result
+
+def _normalize_funding_events_for(symbol: str, funding_map: Dict[str, List[Tuple[int, float]]]) -> List[Tuple[pd.Timestamp, float]]:
+    events: List[Tuple[pd.Timestamp, float]] = []
+    if not funding_map:
+        return events
+    raw = funding_map.get(symbol.upper()) or funding_map.get(symbol)
+    if not raw:
+        return events
+    for ts_raw, rate in raw:
+        try:
+            if isinstance(ts_raw, (int, float)) and not isinstance(ts_raw, bool):
+                ts = pd.to_datetime(int(ts_raw), unit='ms', utc=True)
+            else:
+                ts = pd.to_datetime(ts_raw, utc=True, errors='coerce')
+            if ts is None or pd.isna(ts):
+                continue
+            if ts.tzinfo is None:
+                ts = ts.tz_localize('UTC')
+            else:
+                ts = ts.tz_convert('UTC')
+            events.append((ts, float(rate)))
+        except Exception:
+            continue
+    return events
+
+
+def _as_bool(value, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+    try:
+        return bool(value)
+    except Exception:
+        return default
+
+
+def _as_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _as_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _load_best_params(path: str) -> List[Dict[str, object]]:
+    try:
+        with open(path, 'r') as f:
+            data = json.load(f)
+    except Exception as exc:
+        print(f"[PORTFOLIO][WARN] No se pudo leer {path}: {exc}")
+        return []
+    best = []
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                sym = str(item.get('symbol', '')).upper()
+                if sym:
+                    params = item.get('params') or {}
+                    best.append({'symbol': sym, 'params': params})
+    elif isinstance(data, dict):
+        for sym, params in data.items():
+            best.append({'symbol': str(sym).upper(), 'params': params if isinstance(params, dict) else {}})
+    return best
+
+
+def _run_portfolio_from_best(best_path: str, args, funding_map: Dict[str, List[Tuple[int, float]]]):
+    entries = _load_best_params(best_path)
+    if not entries:
+        print(f"[PORTFOLIO][WARN] No hay parámetros válidos en {best_path}")
+        return
+
+    trades_map: Dict[str, List[Trade]] = {}
+    print(f"[PORTFOLIO] Evaluando set de {len(entries)} símbolos desde {best_path}")
+    for entry in entries:
+        sym = entry['symbol']
+        params = entry.get('params') or {}
+        try:
+            df_sym = load_candles(args.data_template, sym)
+        except Exception as exc:
+            print(f"[PORTFOLIO][WARN] No se pudo cargar {sym}: {exc}")
+            continue
+        time_exit_param = params.get('time_exit_bars', args.time_exit_bars)
+        if time_exit_param in ('', None):
+            time_exit_param = None
+        else:
+            time_exit_param = _as_int(time_exit_param, time_exit_param)
+
+        bt = Backtester(
+            symbol=sym,
+            df5m=df_sym,
+            initial_equity=args.capital,
+            tp_pct=_as_float(params.get('tp', args.tp), args.tp),
+            tp_mode=params.get('tp_mode', args.tp_mode),
+            tp_atr_mult=_as_float(params.get('tp_atr_mult', args.tp_atr_mult), args.tp_atr_mult),
+            atr_mult_sl=_as_float(params.get('atr_mult', args.atr_mult), args.atr_mult),
+            sl_mode=params.get('sl_mode', args.sl_mode),
+            sl_pct=_as_float(params.get('sl_pct', args.sl_pct), args.sl_pct),
+            ema_fast=_as_int(params.get('ema_fast', args.ema_fast), args.ema_fast),
+            ema_slow=_as_int(params.get('ema_slow', args.ema_slow), args.ema_slow),
+            rsi_buy=_as_int(params.get('rsi_buy', args.rsi_buy), args.rsi_buy),
+            rsi_sell=_as_int(params.get('rsi_sell', args.rsi_sell), args.rsi_sell),
+            adx_min=_as_int(params.get('adx_min', args.adx_min), args.adx_min),
+            min_atr_pct=_as_float(params.get('min_atr_pct', args.min_atr_pct), args.min_atr_pct),
+            max_atr_pct=_as_float(params.get('max_atr_pct', args.max_atr_pct), args.max_atr_pct),
+            be_trigger=_as_float(params.get('be_trigger', args.be_trigger), args.be_trigger),
+            cooldown_bars=_as_int(params.get('cooldown', args.cooldown), args.cooldown),
+            logic=str(params.get('logic', args.logic)),
+            hhll_lookback=_as_int(params.get('hhll_lookback', args.hhll_lookback), args.hhll_lookback),
+            time_exit_bars=time_exit_param,
+            max_dist_emaslow=_as_float(params.get('max_dist_emaslow', args.max_dist_emaslow), args.max_dist_emaslow),
+            fresh_cross_max_bars=_as_int(params.get('fresh_cross_max_bars', args.fresh_cross_max_bars), args.fresh_cross_max_bars),
+            require_rsi_cross=_as_bool(params.get('require_rsi_cross', args.require_rsi_cross), args.require_rsi_cross),
+            min_ema_spread=float(params.get('min_ema_spread', args.min_ema_spread)),
+            require_close_vs_emas=_as_bool(params.get('require_close_vs_emas', args.require_close_vs_emas), args.require_close_vs_emas),
+            min_vol_ratio=_as_float(params.get('min_vol_ratio', args.min_vol_ratio), args.min_vol_ratio),
+            vol_ma_len=_as_int(params.get('vol_ma_len', args.vol_ma_len), args.vol_ma_len),
+            adx_slope_len=_as_int(params.get('adx_slope_len', args.adx_slope_len), args.adx_slope_len),
+            adx_slope_min=_as_float(params.get('adx_slope_min', args.adx_slope_min), args.adx_slope_min),
+            fresh_breakout_only=_as_bool(params.get('fresh_breakout_only', args.fresh_breakout_only), args.fresh_breakout_only),
+            tp_splits=params.get('tp_splits'),
+            tp_ladder_factors=params.get('tp_factors') or params.get('tp_ladder_factors'),
+            tp1_factor=params.get('tp1_factor'),
+            tp1_pct_override=params.get('tp1_pct_override'),
+            funding_events=_normalize_funding_events_for(sym, funding_map),
+        )
+        res = bt.run(train_ratio=0.7)
+        trades_map[sym] = bt.trades
+        print(f"  {sym}: trades={res['trades']} pnl={res['pnl_net']} winrate={res['winrate_pct']}%")
+
+    if not trades_map:
+        print("[PORTFOLIO][WARN] No se generaron trades para evaluar el portafolio.")
+        return
+
+    portfolio = simulate_portfolio(
+        trades_map,
+        initial_equity=args.capital,
+        max_positions=args.portfolio_max_positions,
+        max_alloc_pct=args.portfolio_alloc_pct,
+    )
+    print("\n[PORTFOLIO] Resultado agregado desde best:")
+    print(f"  Trades ejecutados: {portfolio['trades']} (omitidos: {portfolio['skipped_trades']})")
+    print(f"  PnL neto: {portfolio['pnl_net']} | Winrate: {portfolio['winrate_pct']}%")
+    print(f"  Max DD: {portfolio['max_dd_pct']} | Sharpe anualizado: {portfolio['sharpe_annual']}")
+    print(f"  Cost ratio: {portfolio['cost_ratio']} (comisiones={portfolio['commissions']}, slip={portfolio['slippage_cost']}, funding={portfolio['funding_cost']})\n")
 
 # ==========================
 # Detección de símbolos disponibles en CSV único
@@ -447,7 +686,12 @@ class Backtester:
                  vol_ma_len: int = 50,
                  adx_slope_len: int = 3,
                  adx_slope_min: float = 0.0,
-                 fresh_breakout_only: bool = False
+                 fresh_breakout_only: bool = False,
+                 tp_splits: Optional[List[float]] = None,
+                 tp_ladder_factors: Optional[List[float]] = None,
+                 tp1_factor: Optional[float] = None,
+                 tp1_pct_override: Optional[float] = None,
+                 funding_events: Optional[List[Tuple[pd.Timestamp, float]]] = None
                  ):
         self.symbol = symbol
         self.df5m = df5m.copy()
@@ -492,8 +736,21 @@ class Backtester:
         self.adx_slope_len = int(adx_slope_len)
         self.adx_slope_min = float(adx_slope_min)
         self.fresh_breakout_only = bool(fresh_breakout_only)
+        self.tp_splits = tuple(tp_splits) if tp_splits else TP_SPLITS_DEFAULT
+        self.tp_ladder_factors = tuple(tp_ladder_factors) if tp_ladder_factors else TP_LADDER_FACTORS
+        self.tp1_factor = tp1_factor if tp1_factor is not None else TP1_DEFAULT_FACTOR
+        self.tp1_pct_override = tp1_pct_override
+        self.funding_events = sorted(funding_events, key=lambda x: x[0]) if funding_events else []
+        self.funding_idx = 0
 
         self._prepare_features()
+
+        # Estado interno para gestionar posiciones con parciales
+        self.position_open_qty = 0.0
+        self.position_entry_fee_remaining = 0.0
+        self.position_slippage_in_remaining = 0.0
+        self.position_funding_remaining = 0.0
+        self.tp_plan: List[Dict[str, float]] = []
 
     def _prepare_features(self):
         df = self.df5m
@@ -543,6 +800,150 @@ class Backtester:
         df['rsi_cross_dn_recent'] = df['rsi_dn_bars'].le(look)
 
         self.df5m = df
+
+    def _process_funding_events(self, ts: pd.Timestamp, price: float) -> float:
+        if not self.funding_events:
+            return 0.0
+        applied = 0.0
+        while self.funding_idx < len(self.funding_events):
+            evt_ts, rate = self.funding_events[self.funding_idx]
+            if ts < evt_ts:
+                break
+            try:
+                rate_f = float(rate)
+            except Exception:
+                rate_f = 0.0
+            if self.open_trade is not None and self.position_open_qty > 0 and rate_f != 0.0:
+                direction = 1.0 if self.open_trade.side == 'long' else -1.0
+                charge = self.position_open_qty * price * rate_f * direction
+                self.position_funding_remaining += charge
+                applied += charge
+            self.funding_idx += 1
+        return applied
+
+    def _compute_tp_prices(self, entry_price: float, atr_abs: float, side: str) -> List[float]:
+        prices: List[float] = []
+        direction = 1.0 if side == 'long' else -1.0
+        if self.tp_mode == 'fixed' and self.tp_pct > 0:
+            for mult in self.tp_ladder_factors:
+                prices.append(entry_price * (1 + direction * self.tp_pct * float(mult)))
+        elif self.tp_mode == 'atrx' and atr_abs > 0 and self.tp_atr_mult > 0:
+            target = entry_price + direction * (self.tp_atr_mult * atr_abs)
+            prices = [target for _ in self.tp_ladder_factors]
+        return [float(px) for px in prices if px and px > 0]
+
+    def _apply_tp1_adjustment(self, prices: List[float], entry_price: float, side: str) -> List[float]:
+        if not prices:
+            return prices
+        direction = 1.0 if side == 'long' else -1.0
+        if self.tp1_pct_override is not None and self.tp1_pct_override > 0:
+            prices[0] = entry_price * (1 + direction * float(self.tp1_pct_override))
+            return prices
+        factor = self.tp1_factor if (self.tp1_factor is not None and 0 < self.tp1_factor < 1) else TP1_DEFAULT_FACTOR
+        base = prices[0]
+        prices[0] = entry_price + (base - entry_price) * float(factor)
+        return prices
+
+    def _prepare_tp_plan(self, qty: float, entry_price: float, atr_abs: float, side: str) -> List[Dict[str, float]]:
+        if qty <= 0:
+            return []
+        prices = self._compute_tp_prices(entry_price, atr_abs, side)
+        if not prices:
+            return []
+        prices = self._apply_tp1_adjustment(prices, entry_price, side)
+        count = len(prices)
+        splits = self.tp_splits[:count]
+        if not splits or sum(splits) <= 0:
+            splits = tuple(1.0 for _ in range(count))
+        total = float(sum(splits))
+        fractions = [float(s) / total for s in splits]
+        plan: List[Dict[str, float]] = []
+        remaining = qty
+        for idx in range(count):
+            split_qty = round_qty(qty * fractions[idx], self.lot_step)
+            if idx == count - 1:
+                split_qty = max(0.0, remaining)
+            remaining -= split_qty
+            filled = split_qty <= 0
+            plan.append({
+                'price': prices[idx],
+                'qty': max(split_qty, 0.0),
+                'label': f"TP{idx + 1}",
+                'filled': filled,
+            })
+        if plan and remaining > 1e-9:
+            plan[-1]['qty'] = max(0.0, plan[-1]['qty'] + remaining)
+        return plan
+
+    def _tp_targets_hit(self, row: pd.Series) -> List[Dict[str, float]]:
+        hits: List[Dict[str, float]] = []
+        if not self.tp_plan or self.open_trade is None:
+            return hits
+        for target in self.tp_plan:
+            if target.get('filled') or target.get('qty', 0.0) <= 0:
+                continue
+            price = float(target['price'])
+            if self.open_trade.side == 'long':
+                if row['high'] >= price:
+                    hits.append(target)
+            else:
+                if row['low'] <= price:
+                    hits.append(target)
+        return hits
+
+    def _allocate_entry_cost(self, qty_close: float) -> Tuple[float, float, float]:
+        if qty_close <= 0 or self.position_open_qty <= 0:
+            return 0.0, 0.0, 0.0
+        ratio = qty_close / self.position_open_qty
+        fee_share = self.position_entry_fee_remaining * ratio
+        slip_in_share = self.position_slippage_in_remaining * ratio
+        funding_share = self.position_funding_remaining * ratio
+        self.position_entry_fee_remaining -= fee_share
+        self.position_slippage_in_remaining -= slip_in_share
+        self.position_funding_remaining -= funding_share
+        return fee_share, slip_in_share, funding_share
+
+    def _close_position_portion(self, qty_close: float, exit_price: float, ts: pd.Timestamp, atr_pct: float) -> Tuple[float, float, float]:
+        if self.open_trade is None or qty_close <= 0:
+            return 0.0, 0.0, 0.0
+        qty_close = min(qty_close, self.position_open_qty)
+        if qty_close <= 0:
+            return 0.0, 0.0, 0.0
+        entry_fee_share, slip_in_share, funding_share = self._allocate_entry_cost(qty_close)
+        slip_rate = calc_slippage_rate(atr_pct)
+        if self.open_trade.side == 'long':
+            actual_exit_notional = exit_price * (1 - slip_rate) * qty_close
+        else:
+            actual_exit_notional = exit_price * (1 + slip_rate) * qty_close
+        exit_fee = self._apply_commission(actual_exit_notional)
+        sl_out = exit_price * slip_rate * qty_close
+        trade = Trade(
+            symbol=self.symbol,
+            side=self.open_trade.side,
+            entry_time=self.open_trade.entry_time,
+            entry_price=self.open_trade.entry_price,
+            exit_time=ts,
+            exit_price=exit_price,
+            qty=qty_close,
+            commission_in=entry_fee_share,
+            commission_out=exit_fee,
+            slippage_in=slip_in_share,
+            slippage_out=sl_out,
+            funding_cost=funding_share,
+        )
+        pnl = trade.pnl()
+        self.trades.append(trade)
+        self.position_open_qty -= qty_close
+        return pnl, entry_fee_share + exit_fee, slip_in_share + sl_out
+
+    def _flatten_position(self):
+        self.open_trade = None
+        self.position_open_qty = 0.0
+        self.position_entry_fee_remaining = 0.0
+        self.position_slippage_in_remaining = 0.0
+        self.position_funding_remaining = 0.0
+        self.tp_plan = []
+        self.be_active = False
 
     # --------------------------
     # Reglas
@@ -683,13 +1084,6 @@ class Backtester:
     def _apply_commission(self, notional: float) -> float:
         return abs(notional) * self.taker_fee
 
-    def _apply_slippage(self, price: float, side: str, slippage_rate: float) -> float:
-        # Para market: empeora el precio a favor del mercado
-        if side == 'long':
-            return price * (1 + slippage_rate)
-        else:
-            return price * (1 - slippage_rate)
-
     def _update_trailing_sl(self, row: pd.Series, direction: str, entry_price: float, atr_abs: float, anchor: float) -> float:
         # trailing basado en ATR
         if direction == 'long':
@@ -727,12 +1121,14 @@ class Backtester:
             atr_abs = float(row['atr']) if not math.isnan(row['atr']) else 0.0
             atr_pct = float(row['atr_pct']) if not math.isnan(row['atr_pct']) else 0.0
 
-            # funding prorrateado por barra si hay posición abierta
-            if self.open_trade is not None:
-                notional = self.open_trade.qty * price
-                per_bar_rate = self.funding_8h * (5.0 / 480.0)  # 5 minutos sobre 8 horas
+            if self.funding_events:
+                funding_costs += self._process_funding_events(ts, price)
+            elif self.open_trade is not None:
+                # funding prorrateado constante (legacy)
+                notional = self.position_open_qty * price
+                per_bar_rate = self.funding_8h * (5.0 / 480.0)
                 fcost = abs(notional) * per_bar_rate
-                self.open_trade.funding_cost += fcost
+                self.position_funding_remaining += fcost
                 funding_costs += fcost
 
             # Cierre (TP / SL)
@@ -777,26 +1173,31 @@ class Backtester:
                         else:
                             sl_price = t.entry_price + self.atr_mult_sl * atr_abs
 
-                # TP: según modo
-                hit_tp = False
-                if self.tp_mode == 'fixed':
-                    if t.side == 'long':
-                        tp_price = t.entry_price * (1 + self.tp_pct)
-                        hit_tp = row['high'] >= tp_price
-                    else:
-                        tp_price = t.entry_price * (1 - self.tp_pct)
-                        hit_tp = row['low'] <= tp_price
-                elif self.tp_mode == 'atrx' and atr_abs > 0:
-                    if t.side == 'long':
-                        tp_price = t.entry_price + (self.tp_atr_mult * atr_abs)
-                        hit_tp = row['high'] >= tp_price
-                    else:
-                        tp_price = t.entry_price - (self.tp_atr_mult * atr_abs)
-                        hit_tp = row['low'] <= tp_price
-                else:
-                    # 'none' o ATR inválido: sin TP
-                    tp_price = None
-                    hit_tp = False
+                # Procesar TP escalonados (puede vaciar toda la posición)
+                tp_hits = self._tp_targets_hit(row)
+                if tp_hits:
+                    for target in tp_hits:
+                        if self.open_trade is None or self.position_open_qty <= 0:
+                            break
+                        qty_tp = min(float(target.get('qty', 0.0)), self.position_open_qty)
+                        if qty_tp <= 0:
+                            target['filled'] = True
+                            continue
+                        pnl_tp, comm_tp, slip_tp = self._close_position_portion(qty_tp, float(target['price']), ts, atr_pct)
+                        realized_pnl += pnl_tp
+                        commissions += comm_tp
+                        slippages += slip_tp
+                        self.equity += pnl_tp
+                        target['filled'] = True
+                        target['qty'] = 0.0
+                        if self.position_open_qty <= 0:
+                            self.last_exec_bar = ts
+                            anchor_price = None
+                            open_bar_idx = None
+                            self._flatten_position()
+                            break
+                    if self.open_trade is None:
+                        continue
 
                 # ¿Se golpea SL?
                 if t.side == 'long':
@@ -806,10 +1207,7 @@ class Backtester:
 
                 exit_reason = None
                 exit_price = None
-                if hit_tp:
-                    exit_reason = 'TP'
-                    exit_price = tp_price
-                elif hit_sl:
+                if hit_sl:
                     exit_reason = 'SL'
                     exit_price = sl_price
 
@@ -820,33 +1218,18 @@ class Backtester:
                         exit_price = price  # cierra a precio de cierre de la barra
 
                 if exit_reason is not None:
-                    # aplicar slippage y comisión de salida
-                    slip_rate = calc_slippage_rate(atr_pct)
-                    px = self._apply_slippage(exit_price, 'sell' if t.side == 'long' else 'buy', slip_rate)
-                    notional = px * t.qty
-                    fee = self._apply_commission(notional)
-                    sl_out = abs(px - exit_price) * t.qty
-
-                    t.exit_time = ts
-                    t.exit_price = px
-                    t.commission_out = fee
-                    t.slippage_out = sl_out
-
-                    pnl = t.pnl()
-                    realized_pnl += pnl
-                    commissions += fee + t.commission_in
-                    slippages += sl_out + t.slippage_in
-
-                    self.equity += pnl
-                    self.trades.append(t)
-                    self.open_trade = None
+                    qty_to_close = self.position_open_qty
+                    pnl_exit, comm_exit, slip_exit = self._close_position_portion(qty_to_close, float(exit_price), ts, atr_pct)
+                    realized_pnl += pnl_exit
+                    commissions += comm_exit
+                    slippages += slip_exit
+                    self.equity += pnl_exit
                     self.last_exec_bar = ts  # una ejecución por vela
                     anchor_price = None
                     open_bar_idx = None
-                    # Cooldown tras SL y reset de BE
                     if exit_reason == 'SL':
                         self.cooldown = self.cooldown_bars
-                    self.be_active = False
+                    self._flatten_position()
                     # Track equity stepwise per barra
                     equity_curve.append(self.equity)
                     equity_time.append(ts)
@@ -880,10 +1263,13 @@ class Backtester:
                     continue
 
                 slip_rate = calc_slippage_rate(atr_pct)
-                entry_price = self._apply_slippage(price, 'buy' if signal == 'long' else 'sell', slip_rate)
-                notional = entry_price * qty
-                fee = self._apply_commission(notional)
-                sl_in = abs(entry_price - price) * qty
+                entry_price = price
+                sl_in = price * slip_rate * qty
+                if signal == 'long':
+                    actual_entry_notional = price * (1 + slip_rate) * qty
+                else:
+                    actual_entry_notional = price * (1 - slip_rate) * qty
+                fee = self._apply_commission(actual_entry_notional)
 
                 self.open_trade = Trade(
                     symbol=self.symbol,
@@ -894,6 +1280,11 @@ class Backtester:
                     commission_in=fee,
                     slippage_in=sl_in,
                 )
+                self.position_open_qty = qty
+                self.position_entry_fee_remaining = fee
+                self.position_slippage_in_remaining = sl_in
+                self.position_funding_remaining = 0.0
+                self.tp_plan = self._prepare_tp_plan(qty, entry_price, atr_abs, signal)
                 self.last_exec_bar = ts
                 open_bar_idx = i
                 # Si el SL es 'atr_trailing_only', activar trailing desde el inicio
@@ -905,28 +1296,17 @@ class Backtester:
             equity_time.append(ts)
 
         # Si quedó abierta la posición, la cerramos al último precio
-        if self.open_trade is not None:
+        if self.open_trade is not None and self.position_open_qty > 0:
             row = df.iloc[-1]
             ts = row['date']
             price = float(row['close'])
             atr_pct = float(row['atr_pct'])
-            slip_rate = calc_slippage_rate(atr_pct)
-            px = self._apply_slippage(price, 'sell' if self.open_trade.side == 'long' else 'buy', slip_rate)
-            notional = px * self.open_trade.qty
-            fee = self._apply_commission(notional)
-            sl_out = abs(px - price) * self.open_trade.qty
-            self.open_trade.exit_time = ts
-            self.open_trade.exit_price = px
-            self.open_trade.commission_out = fee
-            self.open_trade.slippage_out = sl_out
-            realized_pnl += self.open_trade.pnl()
-            commissions += fee + self.open_trade.commission_in
-            slippages += sl_out + self.open_trade.slippage_in
-            self.equity += self.open_trade.pnl()
-            self.trades.append(self.open_trade)
-            self.open_trade = None
-            self.be_active = False
-            # Track final equity point
+            pnl_exit, comm_exit, slip_exit = self._close_position_portion(self.position_open_qty, price, ts, atr_pct)
+            realized_pnl += pnl_exit
+            commissions += comm_exit
+            slippages += slip_exit
+            self.equity += pnl_exit
+            self._flatten_position()
             equity_curve.append(self.equity)
             equity_time.append(ts)
 
@@ -996,6 +1376,139 @@ class Backtester:
                 'funding_cost': t.funding_cost,
             })
         pd.DataFrame(rows).to_csv(out_path, index=False)
+
+
+def simulate_portfolio(trades_by_symbol: Dict[str, List[Trade]],
+                       initial_equity: float,
+                       max_positions: int = 3,
+                       max_alloc_pct: float = 0.30) -> Dict[str, object]:
+    events: List[Tuple[str, pd.Timestamp, str, int, Trade]] = []
+    for sym, trades in trades_by_symbol.items():
+        if not trades:
+            continue
+        upper_sym = str(sym).upper()
+        for idx, trade in enumerate(trades):
+            if trade.entry_time is None or trade.exit_time is None:
+                continue
+            entry_ts = pd.Timestamp(trade.entry_time)
+            exit_ts = pd.Timestamp(trade.exit_time)
+            if entry_ts.tzinfo is None:
+                entry_ts = entry_ts.tz_localize('UTC')
+            else:
+                entry_ts = entry_ts.tz_convert('UTC')
+            if exit_ts.tzinfo is None:
+                exit_ts = exit_ts.tz_localize('UTC')
+            else:
+                exit_ts = exit_ts.tz_convert('UTC')
+            events.append(('exit', exit_ts, upper_sym, idx, trade))
+            events.append(('entry', entry_ts, upper_sym, idx, trade))
+
+    events.sort(key=lambda e: (e[1], 0 if e[0] == 'exit' else 1, e[2]))
+
+    active: Dict[Tuple[str, int], Dict[str, float]] = {}
+    cash = float(initial_equity)
+    equity = float(initial_equity)
+    portfolio_trades: List[Trade] = []
+    equity_curve: List[float] = [equity]
+    equity_time: List[pd.Timestamp] = []
+    skipped = 0
+
+    for etype, ts, sym, idx, trade in events:
+        key = (sym, idx)
+        if etype == 'exit':
+            pos = active.pop(key, None)
+            if not pos:
+                continue
+            scale = pos['scale']
+            notional = pos['notional']
+            cash += notional
+            pnl = trade.pnl() * scale
+            cash += pnl
+            equity += pnl
+            scaled_trade = Trade(
+                symbol=trade.symbol,
+                side=trade.side,
+                entry_time=trade.entry_time,
+                entry_price=trade.entry_price,
+                exit_time=trade.exit_time,
+                exit_price=trade.exit_price,
+                qty=trade.qty * scale,
+                commission_in=trade.commission_in * scale,
+                commission_out=trade.commission_out * scale,
+                slippage_in=trade.slippage_in * scale,
+                slippage_out=trade.slippage_out * scale,
+                funding_cost=trade.funding_cost * scale,
+            )
+            portfolio_trades.append(scaled_trade)
+            equity_curve.append(equity)
+            equity_time.append(ts)
+        else:
+            if max_positions and max_positions > 0 and len(active) >= max_positions:
+                skipped += 1
+                continue
+            notional_full = abs(trade.entry_price * trade.qty)
+            if notional_full <= 0:
+                continue
+            cap_limit = notional_full
+            if max_alloc_pct and max_alloc_pct > 0:
+                cap_limit = min(cap_limit, equity * max_alloc_pct)
+            alloc = min(cap_limit, cash)
+            if alloc <= 0:
+                skipped += 1
+                continue
+            scale = alloc / notional_full
+            if scale <= 1e-9:
+                skipped += 1
+                continue
+            cash -= alloc
+            active[key] = {'scale': scale, 'notional': alloc}
+
+    gross_pnl = sum([(1 if t.side == 'long' else -1) * (t.exit_price - t.entry_price) * t.qty for t in portfolio_trades if t.exit_price is not None])
+    commissions = sum([(t.commission_in + t.commission_out) for t in portfolio_trades])
+    slippages = sum([(t.slippage_in + t.slippage_out) for t in portfolio_trades])
+    funding_costs = sum([t.funding_cost for t in portfolio_trades])
+    costs_total = commissions + slippages + funding_costs
+    cost_ratio = (costs_total / abs(gross_pnl)) if gross_pnl else None
+
+    wins = [t for t in portfolio_trades if t.pnl() > 0]
+    winrate = (len(wins) / len(portfolio_trades)) * 100 if portfolio_trades else 0.0
+
+    pos = sum([t.pnl() for t in portfolio_trades if t.pnl() > 0])
+    neg = -sum([t.pnl() for t in portfolio_trades if t.pnl() < 0])
+    profit_factor = (pos / neg) if neg > 0 else None
+
+    max_dd_pct = None
+    if len(equity_curve) >= 2:
+        eq = np.array(equity_curve, dtype=float)
+        peak = np.maximum.accumulate(eq)
+        dd = (eq - peak) / peak
+        max_dd_pct = float(dd.min()) if len(dd) else None
+
+    sharpe_annual = None
+    if len(equity_curve) >= 3:
+        eq = np.array(equity_curve, dtype=float)
+        rets = np.diff(eq) / eq[:-1]
+        if rets.std() > 1e-12:
+            bars_per_year = 288 * 365
+            sharpe_annual = float((rets.mean() / rets.std()) * np.sqrt(bars_per_year))
+
+    return {
+        'trades': len(portfolio_trades),
+        'pnl_net': round(equity - initial_equity, 2),
+        'winrate_pct': round(winrate, 2),
+        'profit_factor': round(float(profit_factor), 3) if profit_factor is not None else None,
+        'commissions': round(commissions, 4),
+        'slippage_cost': round(slippages, 4),
+        'funding_cost': round(funding_costs, 4),
+        'cost_ratio': round(float(cost_ratio), 4) if cost_ratio is not None else None,
+        'max_dd_pct': round(float(max_dd_pct), 4) if max_dd_pct is not None else None,
+        'sharpe_annual': round(float(sharpe_annual), 3) if sharpe_annual is not None else None,
+        'equity_final': round(equity, 2),
+        'equity_curve': equity_curve,
+        'equity_time': equity_time,
+        'skipped_trades': skipped,
+        'executed_trades': portfolio_trades,
+    }
 
 
 # ==========================
@@ -1073,9 +1586,11 @@ def load_candles(template_or_path: str, symbol: str) -> pd.DataFrame:
 # ==========================
 
 def run_job(job):
-    sym, p, data_template, capital, out_dir = job
+    sym, p, data_template, capital, out_dir = job[:5]
+    funding_map = job[5] if len(job) >= 6 else {}
     try:
         dfj = load_candles(data_template, sym)
+        funding_events = _normalize_funding_events_for(sym, funding_map) if isinstance(funding_map, dict) else []
         bt = Backtester(
             symbol=sym,
             df5m=dfj,
@@ -1108,6 +1623,11 @@ def run_job(job):
             adx_slope_len=p.get('adx_slope_len', 3),
             adx_slope_min=p.get('adx_slope_min', 0.0),
             fresh_breakout_only=p.get('fresh_breakout_only', False),
+            tp_splits=p.get('tp_splits'),
+            tp_ladder_factors=p.get('tp_factors') or p.get('tp_ladder_factors'),
+            tp1_factor=p.get('tp1_factor'),
+            tp1_pct_override=p.get('tp1_pct_override'),
+            funding_events=funding_events,
         )
         res = bt.run(train_ratio=0.7)
         res['params'] = p
@@ -1159,6 +1679,11 @@ def main():
     parser.add_argument('--fresh_breakout_only', dest='fresh_breakout_only', action='store_true', help='Exigir que el breakout HH/LL sea el primero (fresco)')
     parser.add_argument('--no_fresh_breakout_only', dest='fresh_breakout_only', action='store_false', help='Permitir rupturas no frescas')
     parser.set_defaults(fresh_breakout_only=False)
+    parser.add_argument('--portfolio_mode', action='store_true', help='Simular todos los símbolos compartiendo el mismo capital')
+    parser.add_argument('--portfolio_max_positions', type=int, default=3, help='Máximo de posiciones abiertas simultáneas (0 = sin límite)')
+    parser.add_argument('--portfolio_alloc_pct', type=float, default=0.30, help='Fracción máxima del equity que puede asignar cada trade (0.30 = 30%)')
+    parser.add_argument('--portfolio_eval_best', action='store_true', help='Después de un sweep, evalúa el portafolio usando el archivo exportado en --export_best')
+    parser.add_argument('--funding_csv', type=str, default=None, help='CSV opcional con historial de funding (symbol,time,rate)')
     parser.add_argument('--sweep', type=str, default=None, help='Ruta a JSON con listas de parámetros para barrido (grid)')
     parser.add_argument('--tp_mode', type=str, default='fixed', choices=['fixed','atrx','none'], help="Modo de TP: 'fixed'=% , 'atrx'=k*ATR, 'none'=sin TP")
     parser.add_argument('--tp_atr_mult', type=float, default=0.0, help='Multiplicador de ATR para TP cuando tp_mode=atrx')
@@ -1180,6 +1705,70 @@ def main():
     args = parser.parse_args()
 
     symbols = [s.strip() for s in args.symbols.split(',') if s.strip()]
+    funding_map = _load_funding_events_csv(args.funding_csv)
+
+    if args.portfolio_mode:
+        if args.sweep:
+            raise SystemExit("--portfolio_mode no es compatible con --sweep en esta versión.")
+        trades_map: Dict[str, List[Trade]] = {}
+        symbol_results = []
+        for sym in symbols:
+            df_sym = load_candles(args.data_template, sym)
+            bt = Backtester(
+                symbol=sym,
+                df5m=df_sym,
+                initial_equity=args.capital,
+                tp_pct=args.tp,
+                tp_mode=args.tp_mode,
+                tp_atr_mult=args.tp_atr_mult,
+                atr_mult_sl=args.atr_mult,
+                sl_mode=args.sl_mode,
+                sl_pct=args.sl_pct,
+                ema_fast=args.ema_fast,
+                ema_slow=args.ema_slow,
+                rsi_buy=args.rsi_buy,
+                rsi_sell=args.rsi_sell,
+                adx_min=args.adx_min,
+                min_atr_pct=args.min_atr_pct,
+                max_atr_pct=args.max_atr_pct,
+                be_trigger=args.be_trigger,
+                cooldown_bars=args.cooldown,
+                logic=args.logic,
+                hhll_lookback=args.hhll_lookback,
+                time_exit_bars=args.time_exit_bars,
+                max_dist_emaslow=args.max_dist_emaslow,
+                fresh_cross_max_bars=args.fresh_cross_max_bars,
+                require_rsi_cross=args.require_rsi_cross,
+                min_ema_spread=args.min_ema_spread,
+                require_close_vs_emas=args.require_close_vs_emas,
+                min_vol_ratio=args.min_vol_ratio,
+                vol_ma_len=args.vol_ma_len,
+                adx_slope_len=args.adx_slope_len,
+                adx_slope_min=args.adx_slope_min,
+                fresh_breakout_only=args.fresh_breakout_only,
+                funding_events=_normalize_funding_events_for(sym, funding_map),
+            )
+            res_sym = bt.run(train_ratio=0.7)
+            symbol_results.append(res_sym)
+            trades_map[sym.upper()] = bt.trades
+
+        portfolio = simulate_portfolio(
+            trades_map,
+            initial_equity=args.capital,
+            max_positions=args.portfolio_max_positions,
+            max_alloc_pct=args.portfolio_alloc_pct,
+        )
+
+        print("[PORTFOLIO] Resumen por símbolo:")
+        for res in symbol_results:
+            print(f"  {res['symbol']}: trades={res['trades']} pnl={res['pnl_net']} winrate={res['winrate_pct']}%")
+
+        print("\n[PORTFOLIO] Resultado agregado:")
+        print(f"  Trades ejecutados: {portfolio['trades']} (omitidos: {portfolio['skipped_trades']})")
+        print(f"  PnL neto: {portfolio['pnl_net']} | Winrate: {portfolio['winrate_pct']}%")
+        print(f"  Max DD: {portfolio['max_dd_pct']} | Sharpe anualizado: {portfolio['sharpe_annual']}")
+        print(f"  Cost ratio: {portfolio['cost_ratio']} (comisiones={portfolio['commissions']}, slip={portfolio['slippage_cost']}, funding={portfolio['funding_cost']})")
+        return
     # Si es CSV único (sin {symbol}), ajusta lista de símbolos a los realmente disponibles
     csv_unique_mode = ('{symbol}' not in args.data_template)
     sym_map = {}
@@ -1290,7 +1879,7 @@ def main():
         for sym in sweep_symbols:
             for values in combos:
                 params = dict(zip([k for k, _ in keys], values))
-                jobs.append((sym, params, args.data_template, args.capital, args.out_dir))
+                jobs.append((sym, params, args.data_template, args.capital, args.out_dir, funding_map))
 
         os.makedirs(args.out_dir, exist_ok=True)
         print(f"[SWEEP] Total jobs: {len(jobs)} (symbols={len(sweep_symbols)}, base={len(combos)})")
@@ -1390,6 +1979,9 @@ def main():
                     print(f"[RESUMEN] Portafolio (best por símbolo) → N={len(symbol_best)} | PnL Neto Total={tot_pnl:.2f} | Trades={tot_trades} | Winrate Prom={avg_win:.1f}% | MaxDD peor={worst_dd_str}")
                 except Exception as _e:
                     print(f"[RESUMEN][WARN] No se pudo calcular el resumen de portafolio: {_e}")
+
+                if args.portfolio_eval_best:
+                    _run_portfolio_from_best(outp, args, funding_map)
 
                 # ---- Segunda pasada local (vecindad) opcional ----
                 if args.second_pass and len(symbol_best):
@@ -1500,7 +2092,7 @@ def main():
                                 'be_trigger': float(be),
                                 'logic': str(lg),
                             })
-                            neigh_jobs.append((sym, p, args.data_template, args.capital, args.out_dir))
+                            neigh_jobs.append((sym, p, args.data_template, args.capital, args.out_dir, funding_map))
 
                     if len(neigh_jobs):
                         print(f"[SECOND] Vecindad jobs: {len(neigh_jobs)}")
@@ -1587,6 +2179,8 @@ def main():
                                 print(f"[SECOND][WARN] No se pudo calcular resumen: {_e}")
                     else:
                         print('[SECOND] No se generaron jobs de vecindad')
+            elif args.portfolio_eval_best:
+                print('[PORTFOLIO][WARN] --portfolio_eval_best requiere --export_best para poder leer los parámetros.')
         else:
             print('[SWEEP] No hubo resultados válidos')
             # Top-5 por pnl_net ignorando filtros para diagnóstico

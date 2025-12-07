@@ -454,9 +454,10 @@ def _ensure_long_history(df_long: pd.DataFrame, now_utc: pd.Timestamp) -> pd.Dat
 
 def actualizar_long_ultimas_12h():
     """
-    Lee el archivo 'cripto_price_5m.csv', filtra solo las velas de las últimas 12 horas
-    y agrega esas velas (sin duplicados) al archivo 'archivos/cripto_price_5m_long.csv'.
-    Si el archivo long no existe, lo crea con esas velas recientes.
+    Sincroniza todo 'cripto_price_5m.csv' hacia 'cripto_price_5m_long.csv'.
+    Antes solo se copiaban las últimas 12h, lo que perdía velas si el job se detenía
+    por más de ese lapso. Ahora detecta cualquier vela nueva en el CSV corto y la
+    agrega (sin duplicados) al CSV largo, garantizando que el histórico quede al día.
     """
     import pandas as pd
     from datetime import datetime, timezone
@@ -470,31 +471,52 @@ def actualizar_long_ultimas_12h():
         print("Archivo cripto_price_5m.csv no encontrado.")
         return
 
-    # Leer las velas de los últimos 12 horas
+    # Leer todo el CSV corto. Mantiene ~30 días pero es suficiente para cualquier
+    # catch-up tras reinicios largos.
     df = pd.read_csv(csv_path)
     df["date"] = pd.to_datetime(df["date"], utc=True, errors="coerce")
-    now_utc = datetime.now(timezone.utc)
-    cutoff_time = now_utc - pd.Timedelta(hours=12)
-    df_ultimas_12h = df[df["date"] >= cutoff_time].copy()
+    df = df.dropna(subset=["symbol", "date"])
+    df = df.drop_duplicates(subset=["symbol", "date"], keep="last")
 
-    if df_ultimas_12h.empty:
-        print("No hay velas de las últimas 12 horas para agregar.")
+    if df.empty:
+        print("No hay velas en cripto_price_5m.csv para sincronizar.")
         return
 
-    # Si el archivo long existe, leerlo y agregar solo velas nuevas (sin duplicados)
+    now_utc = datetime.now(timezone.utc)
+
+    added_rows = 0
+
     if long_path.exists():
         df_long = pd.read_csv(long_path)
-        df_long["date"] = pd.to_datetime(df_long["date"], utc=True, errors="coerce")
-        df_concat = pd.concat([df_long, df_ultimas_12h], ignore_index=True)
-        df_concat["date"] = pd.to_datetime(df_concat["date"], utc=True, errors="coerce")
-        df_concat = _ensure_long_history(df_concat, now_utc)
-        # Eliminar duplicados por symbol y date, dejando la última ocurrencia
-        df_concat = df_concat.drop_duplicates(subset=['symbol', 'date'], keep='last').sort_values(['symbol', 'date'])
-        df_concat.to_csv(long_path, index=False)
-        print(f"Archivo {long_path.name} actualizado con velas de las últimas 12 horas.")
+        if df_long.empty:
+            df_concat = df.copy()
+            added_rows = len(df_concat)
+        else:
+            df_long["date"] = pd.to_datetime(df_long["date"], utc=True, errors="coerce")
+            df_long = df_long.dropna(subset=["symbol", "date"])
+            df_long = df_long.drop_duplicates(subset=["symbol", "date"], keep="last")
+
+            short_index = pd.MultiIndex.from_frame(df[["symbol", "date"]])
+            long_index = pd.MultiIndex.from_frame(df_long[["symbol", "date"]])
+            new_mask = ~short_index.isin(long_index)
+            df_nuevas = df.loc[new_mask].copy()
+            added_rows = len(df_nuevas)
+
+            if added_rows == 0:
+                print(f"{long_path.name} ya está sincronizado con cripto_price_5m.csv.")
+                return
+
+            df_concat = pd.concat([df_long, df_nuevas], ignore_index=True)
     else:
-        # Crear el archivo con las velas recientes y backfill inicial hasta 6 meses
-        print(f"Archivo {long_path.name} creado con velas de las últimas 12 horas.")
-        df_ultimas_12h = _ensure_long_history(df_ultimas_12h.copy(), now_utc)
-        df_ultimas_12h = df_ultimas_12h.drop_duplicates(subset=['symbol', 'date'], keep='last').sort_values(['symbol', 'date'])
-        df_ultimas_12h.to_csv(long_path, index=False)
+        # Primera vez: tomar todo el CSV corto como base
+        df_concat = df.copy()
+        added_rows = len(df_concat)
+        print(f"Archivo {long_path.name} no existía. Se crea desde cripto_price_5m.csv.")
+
+    df_concat["date"] = pd.to_datetime(df_concat["date"], utc=True, errors="coerce")
+    df_concat = _ensure_long_history(df_concat, now_utc)
+    df_concat = df_concat.dropna(subset=['symbol', 'date'])
+    df_concat = df_concat.drop_duplicates(subset=['symbol', 'date'], keep='last').sort_values(['symbol', 'date'])
+    df_concat.to_csv(long_path, index=False)
+
+    print(f"Archivo {long_path.name} actualizado con {added_rows} velas nuevas.")
