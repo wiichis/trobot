@@ -43,6 +43,7 @@ import pandas as pd
 # ==========================
 DEFAULT_DATA_TEMPLATE = 'archivos/cripto_price_5m_long.csv'  # CSV único con múltiples símbolos
 DEFAULT_OUT_DIR = 'archivos/backtesting'
+SYMBOLS_FILE = os.path.join(os.path.dirname(__file__), 'symbols.json')
 TP_LADDER_FACTORS = (0.6, 1.0, 1.6)
 TP_SPLITS_DEFAULT = (0.40, 0.40, 0.20)
 TP1_DEFAULT_FACTOR = 0.70
@@ -63,7 +64,7 @@ FUNDING_EVENTS_CACHE: Dict[str, Dict[str, List[Tuple[int, float]]]] = {}
 SIMPLE_RUN: Dict[str, object] = {
     'ENABLE': True,
     'MODE': 'SWEEP_RANGES',
-    'SYMBOLS': 'XRP-USDT,AVAX-USDT,CFX-USDT,DOT-USDT,NEAR-USDT,APT-USDT,HBAR-USDT,BNB-USDT,DOGE-USDT,TRX-USDT',
+    'SYMBOLS': 'auto',
     'DATA_TEMPLATE': DEFAULT_DATA_TEMPLATE,
     'CAPITAL': 300.0,
     'OUT_DIR': DEFAULT_OUT_DIR,
@@ -76,7 +77,6 @@ SIMPLE_RUN: Dict[str, object] = {
     'FILTERS': {'min_trades': 3, 'min_winrate': 0.0, 'max_cost_ratio': 0.92, 'max_dd': 0.20},
     'EXPORT_BEST': 'best_prod.json',
     'RANGES': {
-        'symbols': 'XRP-USDT,AVAX-USDT,CFX-USDT,DOT-USDT,NEAR-USDT,APT-USDT,HBAR-USDT,BNB-USDT,DOGE-USDT,TRX-USDT',
         'tp': [0.008, 0.010, 0.012, 0.013, 0.015, 0.017, 0.019, 0.022, 0.025],
         'tp_mode': ['fixed', 'atrx', 'none'],
         'tp_atr_mult': [0.0, 0.4, 0.6, 0.8, 1.0],
@@ -505,6 +505,47 @@ def _list_symbols_from_csv(path: str) -> List[str]:
 def _norm_symbol(s: str) -> str:
     return re.sub(r'[^A-Z0-9]', '', str(s).upper())
 
+
+def _extract_symbols_from_obj(obj: object) -> List[str]:
+    if isinstance(obj, list):
+        out = []
+        for item in obj:
+            if isinstance(item, str):
+                out.append(item)
+            elif isinstance(item, dict):
+                sym = item.get('symbol')
+                if isinstance(sym, str):
+                    out.append(sym)
+        return out
+    if isinstance(obj, dict):
+        for key in ('symbols', 'whitelist', 'winners'):
+            val = obj.get(key)
+            if isinstance(val, list):
+                out = []
+                for item in val:
+                    if isinstance(item, str):
+                        out.append(item)
+                    elif isinstance(item, dict):
+                        sym = item.get('symbol')
+                        if isinstance(sym, str):
+                            out.append(sym)
+                return out
+            if isinstance(val, dict):
+                return [str(k) for k in val.keys()]
+    return []
+
+
+def _load_symbols_file(path: str) -> List[str]:
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    syms = _extract_symbols_from_obj(data)
+    return [str(s).upper().strip() for s in syms if str(s).strip()]
+
 # ==========================
 # Progreso
 # ==========================
@@ -774,30 +815,41 @@ class Backtester:
             alen = 3
         df['adx_slope'] = df['adx'] - df['adx'].shift(alen)
         # High/Low recientes (price action) con lookback configurable
-        lookback = self.hhll_lookback
-        df['hh'] = df['high'].rolling(lookback, min_periods=lookback).max()
-        df['ll'] = df['low'].rolling(lookback, min_periods=lookback).min()
+        lookback = int(self.hhll_lookback) if self.hhll_lookback is not None else 0
+        if lookback > 0:
+            df['hh'] = df['high'].rolling(lookback, min_periods=lookback).max().shift(1)
+            df['ll'] = df['low'].rolling(lookback, min_periods=lookback).min().shift(1)
+            # Breakouts frescos (primera ruptura del rango hh/ll)
+            df['fresh_long_break'] = (df['close'] > df['hh']) & (df['close'].shift(1) <= df['hh'].shift(1))
+            df['fresh_short_break'] = (df['close'] < df['ll']) & (df['close'].shift(1) >= df['ll'].shift(1))
+        else:
+            df['hh'] = np.nan
+            df['ll'] = np.nan
+            df['fresh_long_break'] = False
+            df['fresh_short_break'] = False
 
-        # Breakouts frescos (primera ruptura del rango hh/ll)
-        df['fresh_long_break'] = (df['close'] > df['hh']) & (df['close'].shift(1) <= df['hh'].shift(1))
-        df['fresh_short_break'] = (df['close'] < df['ll']) & (df['close'].shift(1) >= df['ll'].shift(1))
-
-        # Cruces EMA recientes
+        # Cruces EMA/RSI recientes (alineado a indicadores.py)
         ema_up_evt = (df['ema_f'] > df['ema_s']) & (df['ema_f'].shift(1) <= df['ema_s'].shift(1))
         ema_dn_evt = (df['ema_f'] < df['ema_s']) & (df['ema_f'].shift(1) >= df['ema_s'].shift(1))
         df['ema_up_bars'] = bars_since(ema_up_evt)
         df['ema_dn_bars'] = bars_since(ema_dn_evt)
-        look = int(self.fresh_cross_max_bars)
-        df['ema_cross_up_recent'] = df['ema_up_bars'].le(look)
-        df['ema_cross_dn_recent'] = df['ema_dn_bars'].le(look)
 
-        # Cruces RSI recientes respecto a rsi_buy / rsi_sell
         rsi_up_evt = (df['rsi'] >= self.rsi_buy) & (df['rsi'].shift(1) < self.rsi_buy)
         rsi_dn_evt = (df['rsi'] <= self.rsi_sell) & (df['rsi'].shift(1) > self.rsi_sell)
         df['rsi_up_bars'] = bars_since(rsi_up_evt)
         df['rsi_dn_bars'] = bars_since(rsi_dn_evt)
-        df['rsi_cross_up_recent'] = df['rsi_up_bars'].le(look)
-        df['rsi_cross_dn_recent'] = df['rsi_dn_bars'].le(look)
+
+        look = int(self.fresh_cross_max_bars) if self.fresh_cross_max_bars is not None else 0
+        if look > 0:
+            df['ema_cross_up_recent'] = ema_up_evt.rolling(look, min_periods=1).max().astype(bool)
+            df['ema_cross_dn_recent'] = ema_dn_evt.rolling(look, min_periods=1).max().astype(bool)
+            df['rsi_cross_up_recent'] = rsi_up_evt.rolling(look, min_periods=1).max().astype(bool)
+            df['rsi_cross_dn_recent'] = rsi_dn_evt.rolling(look, min_periods=1).max().astype(bool)
+        else:
+            df['ema_cross_up_recent'] = df['ema_f'] > df['ema_s']
+            df['ema_cross_dn_recent'] = df['ema_f'] < df['ema_s']
+            df['rsi_cross_up_recent'] = df['rsi'] >= self.rsi_buy
+            df['rsi_cross_dn_recent'] = df['rsi'] <= self.rsi_sell
 
         self.df5m = df
 
@@ -977,9 +1029,6 @@ class Backtester:
         # Tendencia 5m
         trend_up = row['ema_f'] > row['ema_s']
         trend_dn = row['ema_f'] < row['ema_s']
-        # Momento
-        mom_up = row['rsi'] >= self.rsi_buy
-        mom_dn = row['rsi'] <= self.rsi_sell
         # Fuerza
         strong = row['adx'] >= self.adx_min
         # Price action: cierre fuera de hh/ll
@@ -991,12 +1040,20 @@ class Backtester:
             long_break = bool(row.get('fresh_long_break', False))
             short_break = bool(row.get('fresh_short_break', False))
 
-        if self.logic == 'strict':
-            long_ok = trend_up and mom_up and strong and long_break
-            short_ok = trend_dn and mom_dn and strong and short_break
+        # Disparadores de RSI (reciente vs. nivel)
+        if self.require_rsi_cross:
+            rsi_trig_long = bool(row.get('rsi_cross_up_recent', False))
+            rsi_trig_short = bool(row.get('rsi_cross_dn_recent', False))
         else:
-            long_ok = trend_up and strong and (mom_up or long_break)
-            short_ok = trend_dn and strong and (mom_dn or short_break)
+            rsi_trig_long = row['rsi'] >= self.rsi_buy
+            rsi_trig_short = row['rsi'] <= self.rsi_sell
+
+        if self.logic == 'strict':
+            long_ok = trend_up and strong and rsi_trig_long and long_break
+            short_ok = trend_dn and strong and rsi_trig_short and short_break
+        else:
+            long_ok = trend_up and strong and (rsi_trig_long or long_break)
+            short_ok = trend_dn and strong and (rsi_trig_short or short_break)
 
         # --- Gate por recencia de cruces ---
         ema_long_recent = bool(row.get('ema_cross_up_recent', False))
@@ -1006,14 +1063,6 @@ class Backtester:
         if short_ok and not ema_short_recent:
             short_ok = False
 
-        if self.require_rsi_cross:
-            rsi_long_recent = bool(row.get('rsi_cross_up_recent', False))
-            rsi_short_recent = bool(row.get('rsi_cross_dn_recent', False))
-            if long_ok and not rsi_long_recent:
-                long_ok = False
-            if short_ok and not rsi_short_recent:
-                short_ok = False
-
         # --- Endurecedores adicionales ---
         # 1) Separación mínima entre EMAs (evitar cruces planos)
         ema_spread_ok = True
@@ -1022,7 +1071,7 @@ class Backtester:
                 ema_s = float(row.get('ema_s', np.nan))
                 ema_f = float(row.get('ema_f', np.nan))
                 if not (math.isnan(ema_s) or math.isnan(ema_f) or ema_s == 0):
-                    ema_spread_ok = (ema_f / ema_s - 1.0) >= self.min_ema_spread
+                    ema_spread_ok = (abs(ema_f - ema_s) / abs(ema_s)) >= self.min_ema_spread
                 else:
                     ema_spread_ok = False
         except Exception:
@@ -1704,7 +1753,13 @@ def main():
 
     args = parser.parse_args()
 
-    symbols = [s.strip() for s in args.symbols.split(',') if s.strip()]
+    symbols_raw = [s.strip() for s in args.symbols.split(',') if s.strip()]
+    auto_symbols = (len(symbols_raw) == 1 and symbols_raw[0].lower() in ('auto', 'all'))
+    file_symbols = _load_symbols_file(SYMBOLS_FILE) if auto_symbols else []
+    if auto_symbols and file_symbols:
+        symbols = file_symbols
+    else:
+        symbols = symbols_raw
     funding_map = _load_funding_events_csv(args.funding_csv)
 
     if args.portfolio_mode:
@@ -1777,12 +1832,11 @@ def main():
         raw_syms = _list_symbols_from_csv(args.data_template)
         # Mapa normalizado -> original
         sym_map = {_norm_symbol(s): s for s in raw_syms}
-        if len(symbols) == 1 and symbols[0].lower() in ('auto', 'all'):
+        if auto_symbols and not file_symbols:
             # Usa todos los símbolos del CSV (acotado a 12 por seguridad)
             available_symbols = [sym_map[k] for k in list(sym_map.keys())[:12]]
         else:
             # Filtra los solicitados por disponibilidad real
-            available_symbols = []
             for s in symbols:
                 ns = _norm_symbol(s)
                 if ns in sym_map:
@@ -1793,6 +1847,8 @@ def main():
                 available_symbols = [list(sym_map.values())[0]]
         symbols = available_symbols
         print(f"[INFO] Símbolos usados: {symbols}")
+    elif auto_symbols and not file_symbols:
+        print("[WARN] --symbols=auto requiere pkg/symbols.json cuando data_template tiene {symbol}.")
     os.makedirs(args.out_dir, exist_ok=True)
 
 
@@ -1812,11 +1868,11 @@ def main():
                 return x
             return [x]
 
-        # Símbolos: si en cfg dice 'auto' y estamos en CSV único, usamos los detectados
+        # Símbolos: si en cfg dice 'auto', usamos la lista ya resuelta
         sweep_symbols = cfg.get('symbols', symbols)
         if isinstance(sweep_symbols, str):
-            if sweep_symbols.lower() in ('auto','all') and csv_unique_mode and sym_map:
-                sweep_symbols = [sym_map[k] for k in list(sym_map.keys())[:12]]
+            if sweep_symbols.lower() in ('auto', 'all'):
+                sweep_symbols = symbols
             else:
                 sweep_symbols = [s.strip() for s in sweep_symbols.split(',') if s.strip()]
 

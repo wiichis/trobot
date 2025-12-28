@@ -3,9 +3,10 @@
 Este script automatiza el reemplazo de una moneda dentro del flujo:
 
 1. Actualiza `pkg/best_prod.json` con el nuevo símbolo (y sus parámetros si los proporcionas).
-2. Sincroniza el `DEFAULT_SYMBOLS` de `pkg/settings.py` como respaldo.
-3. Purga el histórico del símbolo saliente en los CSV principales (`archivos/cripto_price_5m*.csv`, `indicadores.csv`).
-4. Opcionalmente (por defecto lo hace) dispara `price_bingx_5m` y `actualizar_long_ultimas_12h` para que el símbolo nuevo comience a acumular velas.
+2. Actualiza `pkg/symbols.json` (fuente simple para la whitelist en despliegues con `git pull`).
+3. Sincroniza el `DEFAULT_SYMBOLS` de `pkg/settings.py` como respaldo.
+4. Purga el histórico del símbolo saliente en los CSV principales (`archivos/cripto_price_5m*.csv`, `indicadores.csv`).
+5. Opcionalmente (por defecto lo hace) dispara `price_bingx_5m` y `actualizar_long_ultimas_12h` para que el símbolo nuevo comience a acumular velas.
 
 > **Importante:** Ejecuta el comando en el servidor donde corre el bot, con el proceso detenido mientras dura el swap. Los CSV y el `best_prod.json` son parte del estado local; si lo haces en tu máquina y solo subes el código, producción no verá el cambio.
 

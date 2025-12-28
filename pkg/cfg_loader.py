@@ -1,10 +1,12 @@
 # pkg/cfg_loader.py
 import json
 import logging
+from pathlib import Path
 from typing import Any, List
 from .settings import BEST_PROD_PATH, DEFAULT_SYMBOLS
 
 log = logging.getLogger("trobot")
+SYMBOLS_PATH = Path(__file__).resolve().parent / "symbols.json"
 
 def _extract_symbols(obj: Any) -> List[str]:
     """
@@ -48,9 +50,22 @@ def _extract_symbols(obj: Any) -> List[str]:
 
 def load_best_symbols() -> List[str]:
     """
-    Carga la whitelist de símbolos desde pkg/best_prod.json.
+    Carga la whitelist de símbolos desde pkg/symbols.json (si existe) o pkg/best_prod.json.
     Si no existe o es inválido, regresa DEFAULT_SYMBOLS.
     """
+    try:
+        with SYMBOLS_PATH.open("r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        syms = _extract_symbols(cfg)
+        if syms:
+            log.info("✅ Whitelist derivada de symbols.json (%d)", len(syms))
+            return syms
+        log.warning("Config symbols.json sin lista de símbolos usable; se intenta best_prod.json.")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log.error("Config inválida en symbols.json: %s", e)
+
     try:
         with BEST_PROD_PATH.open("r", encoding="utf-8") as f:
             cfg = json.load(f)

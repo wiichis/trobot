@@ -27,6 +27,7 @@ ARCHIVOS_DIR = REPO_ROOT / "archivos"
 
 BEST_PROD_PATH = PKG_DIR / "best_prod.json"
 SETTINGS_PATH = PKG_DIR / "settings.py"
+SYMBOLS_PATH = PKG_DIR / "symbols.json"
 
 DEFAULT_PURGE_TARGETS = [
     ARCHIVOS_DIR / "cripto_price_5m.csv",
@@ -78,6 +79,18 @@ def _symbol_from_entry(entry: Any) -> str:
         if isinstance(sym, str):
             return sym.upper()
     return ""
+
+def _extract_symbols_payload(data: Any) -> List[str]:
+    if isinstance(data, list):
+        return [str(item).upper() for item in data if isinstance(item, str)]
+    if isinstance(data, dict):
+        for key in ("symbols", "whitelist", "winners"):
+            val = data.get(key)
+            if isinstance(val, list):
+                return [str(item).upper() for item in val if isinstance(item, str)]
+            if isinstance(val, dict):
+                return [str(k).upper() for k in val.keys()]
+    return []
 
 
 def update_best_prod(remove_sym: str, add_sym: str, params: Dict[str, Any], dry_run: bool) -> Tuple[int, int]:
@@ -170,6 +183,33 @@ def update_default_symbols(remove_sym: str, add_sym: str, dry_run: bool) -> List
         SETTINGS_PATH.write_text(updated_text, encoding="utf-8")
     return symbols
 
+def update_symbols_file(remove_sym: str, add_sym: str, dry_run: bool) -> List[str]:
+    symbols: List[str] = []
+    if SYMBOLS_PATH.exists():
+        try:
+            data = json.loads(SYMBOLS_PATH.read_text(encoding="utf-8"))
+            symbols = _extract_symbols_payload(data)
+        except Exception as exc:
+            print(f"⚠️  No se pudo leer symbols.json: {exc}", file=sys.stderr)
+            symbols = []
+    if not symbols:
+        symbols = _extract_default_symbols(SETTINGS_PATH.read_text(encoding="utf-8"))
+
+    idx = None
+    for i, sym in enumerate(symbols):
+        if sym == remove_sym:
+            idx = i
+            break
+    if idx is not None:
+        symbols.pop(idx)
+    symbols = [s for s in symbols if s != add_sym]
+    insert_pos = idx if idx is not None else len(symbols)
+    symbols.insert(insert_pos, add_sym)
+
+    if not dry_run:
+        SYMBOLS_PATH.write_text(json.dumps(symbols, indent=2) + "\n", encoding="utf-8")
+    return symbols
+
 
 def purge_history(remove_sym: str, dry_run: bool) -> Dict[str, int]:
     stats: Dict[str, int] = {}
@@ -249,12 +289,14 @@ def main() -> None:
 
     removed_count, total_entries = update_best_prod(remove_sym, add_sym, params, dry)
     defaults = update_default_symbols(remove_sym, add_sym, dry)
+    symbols_list = update_symbols_file(remove_sym, add_sym, dry)
     purge_stats = purge_history(remove_sym, dry)
     fetch_status = fetch_new_data(args.skip_download or dry)
 
     print("=== Resumen del swap ===")
     print(f"best_prod.json: -{removed_count} entradas, total ahora {total_entries}.")
     print(f"DEFAULT_SYMBOLS: {len(defaults)} símbolos -> {', '.join(defaults)}")
+    print(f"symbols.json: {len(symbols_list)} símbolos -> {', '.join(symbols_list)}")
     if purge_stats:
         for fname, count in purge_stats.items():
             if count >= 0:
