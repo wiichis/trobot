@@ -5,11 +5,11 @@ from functools import lru_cache
 
 import numpy as np
 import pandas as pd
-import talib
 from pathlib import Path
 import json
 from .cfg_loader import load_best_symbols
 from datetime import datetime, timedelta  # NUEVO: para purgar registros antiguos
+from .ta_shared import ema, rsi, atr, adx
 
 # === Parámetros base (alineados al backtest) ===
 # === Parámetros base (alineados al backtest) ===
@@ -232,12 +232,12 @@ def _calc_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     require_rsi_cross = bool(p.get('require_rsi_cross', True))
 
     # Indicadores
-    df["RSI"]   = talib.RSI(c, RSI_P)
-    df["ATR"]   = talib.ATR(h, l, c, ATR_P)
+    df["RSI"]   = rsi(c, RSI_P)
+    df["ATR"]   = atr(h, l, c, ATR_P)
     df["ATR_pct"] = (df["ATR"] / c).replace([np.inf, -np.inf], np.nan)
-    df["EMA_S"] = talib.EMA(c, ema_f)
-    df["EMA_L"] = talib.EMA(c, ema_s)
-    df["ADX"]   = talib.ADX(h, l, c, ADX_P)
+    df["EMA_S"] = ema(c, ema_f)
+    df["EMA_L"] = ema(c, ema_s)
+    df["ADX"]   = adx(h, l, c, ADX_P)
 
     # --- Features adicionales ---
     # Volumen relativo

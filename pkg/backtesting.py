@@ -30,12 +30,33 @@ import re
 import itertools
 import sys
 import atexit
+from decimal import Decimal, ROUND_DOWN
 from multiprocessing import Pool, cpu_count
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple
 
 import numpy as np
 import pandas as pd
+
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+try:
+    from pkg.ta_shared import ema as _ta_ema, rsi as _ta_rsi, atr as _ta_atr, adx as _ta_adx
+except Exception:
+    try:
+        from ta_shared import ema as _ta_ema, rsi as _ta_rsi, atr as _ta_atr, adx as _ta_adx
+    except Exception:
+        _ta_ema = _ta_rsi = _ta_atr = _ta_adx = None
+
+try:
+    import pkg.indicadores as _indicadores
+except Exception:
+    try:
+        import indicadores as _indicadores
+    except Exception:
+        _indicadores = None
 
 #
 # ==========================
@@ -48,6 +69,14 @@ TP_LADDER_FACTORS = (0.6, 1.0, 1.6)
 TP_SPLITS_DEFAULT = (0.40, 0.40, 0.20)
 TP1_DEFAULT_FACTOR = 0.70
 FUNDING_EVENTS_CACHE: Dict[str, Dict[str, List[Tuple[int, float]]]] = {}
+STEP_SIZE_DEFAULT = 0.001
+SYMBOL_TRADING_RULES = {
+    'BNB-USDT': {'qty_step': 0.01, 'price_tick': 0.1},
+    'DOT-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
+    'HBAR-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
+    'TRX-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
+    'DOGE-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
+}
 
 # ==========================
 # Configuración SIMPLE-RUN (ejecuta con un solo comando, sin flags)
@@ -74,38 +103,38 @@ SIMPLE_RUN: Dict[str, object] = {
     'RANDOM_SEED': 123,
     'SECOND_PASS': True,
     'SECOND_TOPK': 3,
-    'FILTERS': {'min_trades': 3, 'min_winrate': 0.0, 'max_cost_ratio': 0.92, 'max_dd': 0.20},
+    'FILTERS': {'min_trades': 5, 'min_winrate': 0.0, 'max_cost_ratio': 0.70, 'max_dd': 0.20},
     'EXPORT_BEST': 'best_prod.json',
     'RANGES': {
-        'tp': [0.008, 0.010, 0.012, 0.013, 0.015, 0.017, 0.019, 0.022, 0.025],
-        'tp_mode': ['fixed', 'atrx', 'none'],
-        'tp_atr_mult': [0.0, 0.4, 0.6, 0.8, 1.0],
-        'ema_fast': [10, 13, 20, 21, 34],
+        'tp': [0.015, 0.018, 0.020, 0.024, 0.028, 0.032, 0.036, 0.040],
+        'tp_mode': ['fixed', 'atrx'],
+        'tp_atr_mult': [0.6, 0.8, 1.0, 1.2],
+        'ema_fast': [13, 21, 34],
         'ema_slow': [55, 72, 89],
-        'rsi_buy': [54, 56, 58, 60, 62],
-        'rsi_sell': [40, 42, 44, 46, 48],
-        'adx_min': [12, 15, 18, 22],
-        'min_atr_pct': [0.0010, 0.0012, 0.0015, 0.0020],
-        'max_atr_pct': [0.010, 0.012, 0.015, 0.020],
-        'atr_mult': [1.4, 1.6, 1.8, 2.0, 2.2],
-        'sl_mode': ['atr_then_trailing', 'atr_trailing_only', 'percent'],
-        'sl_pct': [0.010, 0.015, 0.020],
-        'be_trigger': [0.0035, 0.0045, 0.0055],
-        'cooldown': [5, 10, 15],
-        'logic': ['any', 'strict'],
-        'hhll_lookback': [8, 10, 12, 14, 18],
-        'time_exit_bars': [24, 30, 36, 48, 60],
-        'max_dist_emaslow': [0.008, 0.010, 0.012],
-        'fresh_cross_max_bars': [4, 6, 8],
-        'require_rsi_cross': [True, False],
-        # Nuevos endurecedores:
-        'min_ema_spread': [0.0008, 0.0010, 0.0012],   # separación mínima EMA_f/EMA_s
-        'require_close_vs_emas': [True, False],        # permite escenarios más flexibles
-        'min_vol_ratio': [1.00, 1.05, 1.10, 1.15],     # volumen relativo al MA
-        'vol_ma_len': [20, 30, 40],                   # lookback MA de volumen
-        'adx_slope_len': [3, 4],                       # barras para pendiente ADX
-        'adx_slope_min': [0.2, 0.3, 0.5, 0.7],        # pendiente mínima ADX
-        'fresh_breakout_only': [False, True],          # controla rupturas frescas
+        'rsi_buy': [58, 60, 62, 64],
+        'rsi_sell': [38, 40, 42, 44],
+        'adx_min': [18, 22, 26, 30],
+        'min_atr_pct': [0.0015, 0.0020, 0.0025, 0.0030],
+        'max_atr_pct': [0.008, 0.010, 0.012],
+        'atr_mult': [1.6, 1.8, 2.0],
+        'sl_mode': ['atr_then_trailing', 'percent'],
+        'sl_pct': [0.008, 0.010, 0.012, 0.015],
+        'be_trigger': [0.0045, 0.0055, 0.0065],
+        'cooldown': [10, 15, 20],
+        'logic': ['strict'],
+        'hhll_lookback': [12, 14, 18, 22],
+        'time_exit_bars': [36, 48, 60, 72],
+        'max_dist_emaslow': [0.006, 0.008, 0.010],
+        'fresh_cross_max_bars': [3, 4, 5],
+        'require_rsi_cross': [True],
+        # Endurecedores (más estrictos):
+        'min_ema_spread': [0.0012, 0.0015, 0.0020],    # separación mínima EMA_f/EMA_s
+        'require_close_vs_emas': [True],              # exigir relación close/EMAs
+        'min_vol_ratio': [1.10, 1.20, 1.25],          # volumen relativo al MA
+        'vol_ma_len': [30, 40, 50],                   # lookback MA de volumen
+        'adx_slope_len': [3, 4],
+        'adx_slope_min': [0.4, 0.6, 0.8],             # pendiente mínima ADX
+        'fresh_breakout_only': [True],                # rupturas frescas
     },
     'LOAD_BEST_FILE': None,
     'WINNERS_FROM_BEST': False,
@@ -639,6 +668,104 @@ def calc_slippage_rate(atr_pct: float) -> float:
     return min(s, 0.0006)
 
 
+def _step_size_for(symbol: str) -> float:
+    return SYMBOL_TRADING_RULES.get(str(symbol).upper(), {}).get('qty_step', STEP_SIZE_DEFAULT)
+
+
+def _tick_size_for(symbol: str) -> float:
+    return SYMBOL_TRADING_RULES.get(str(symbol).upper(), {}).get('price_tick', 0.01)
+
+
+def _round_to_tick(value: float, tick: float) -> float:
+    if tick is None or tick <= 0:
+        return float(value)
+    try:
+        tick_dec = Decimal(str(tick))
+        val_dec = Decimal(str(value))
+        rounded = (val_dec / tick_dec).to_integral_value(rounding=ROUND_DOWN) * tick_dec
+        return float(rounded)
+    except Exception:
+        return float(value)
+
+
+def _split_position_qtys(total_qty: float, splits, step: float = STEP_SIZE_DEFAULT):
+    if total_qty is None:
+        return [0.0 for _ in splits]
+    try:
+        qty_dec = Decimal(str(abs(float(total_qty))))
+    except Exception:
+        return [0.0 for _ in splits]
+    if qty_dec <= 0:
+        return [0.0 for _ in splits]
+
+    step = STEP_SIZE_DEFAULT if step is None else step
+    if step <= 0:
+        step = STEP_SIZE_DEFAULT
+    step_dec = Decimal(str(step))
+
+    qty_dec = (qty_dec / step_dec).to_integral_value(rounding=ROUND_DOWN) * step_dec
+    units_total = int((qty_dec / step_dec))
+    if units_total <= 0:
+        return [0.0 for _ in splits]
+
+    result = []
+    remaining_units = units_total
+    splits = tuple(splits) if splits else (1.0,)
+
+    for idx, split in enumerate(splits):
+        if idx == len(splits) - 1:
+            units = remaining_units
+        else:
+            try:
+                fraction = Decimal(str(split))
+            except Exception:
+                fraction = Decimal('0')
+            if fraction <= 0:
+                units = 0
+            else:
+                units = int((fraction * Decimal(units_total)).to_integral_value(rounding=ROUND_DOWN))
+            if units > remaining_units:
+                units = remaining_units
+        result.append(float(step_dec * units))
+        remaining_units -= units
+    if remaining_units > 0:
+        result[-1] += float(step_dec * remaining_units)
+    return result
+
+
+def _as_bool_signal(val) -> bool:
+    try:
+        return bool(val) if pd.notna(val) else False
+    except Exception:
+        return False
+
+
+def _load_weight_map(path: Optional[str], symbols: List[str]) -> Dict[str, float]:
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return {}
+    if df.empty:
+        return {}
+    cols = {c.lower(): c for c in df.columns}
+    sym_col = cols.get('symbol')
+    weight_col = cols.get('peso_actualizado') or cols.get('peso') or cols.get('weight')
+    if not sym_col or not weight_col:
+        return {}
+    df = df[[sym_col, weight_col]].copy()
+    df[sym_col] = df[sym_col].astype(str).str.upper()
+    df[weight_col] = pd.to_numeric(df[weight_col], errors='coerce').fillna(0.0)
+    df['peso_ajustado'] = df[weight_col].clip(upper=0.40)
+    suma = float(df['peso_ajustado'].sum())
+    if suma <= 0:
+        return {}
+    df['peso_normalizado'] = (df['peso_ajustado'] / suma) * 2.0
+    df['peso_normalizado'] = df['peso_normalizado'].clip(upper=0.80)
+    return {str(r[sym_col]).upper(): float(r['peso_normalizado']) for _, r in df.iterrows()}
+
+
 def round_qty(qty: float, step: float = 0.0001) -> float:
     if step <= 0:
         return qty
@@ -687,6 +814,164 @@ class Trade:
         gross = direction * (self.exit_price - self.entry_price) * self.qty
         costs = self.commission_in + self.commission_out + self.slippage_in + self.slippage_out + self.funding_cost
         return gross - costs
+
+
+@dataclass
+class LivePosition:
+    symbol: str
+    side: str  # 'long' o 'short'
+    entry_time: pd.Timestamp
+    entry_price: float
+    qty: float
+    remaining_qty: float
+    entry_fee_remaining: float
+    slippage_in_remaining: float
+    funding_remaining: float
+    sl_price: float
+    tp_plan: List[Dict[str, float]]
+    be_trigger: float
+    cooldown_bars: int
+
+
+def _allocate_entry_cost_live(position: LivePosition, qty_close: float) -> Tuple[float, float, float]:
+    if qty_close <= 0 or position.remaining_qty <= 0:
+        return 0.0, 0.0, 0.0
+    ratio = qty_close / position.remaining_qty
+    fee_share = position.entry_fee_remaining * ratio
+    slip_in_share = position.slippage_in_remaining * ratio
+    funding_share = position.funding_remaining * ratio
+    position.entry_fee_remaining -= fee_share
+    position.slippage_in_remaining -= slip_in_share
+    position.funding_remaining -= funding_share
+    return fee_share, slip_in_share, funding_share
+
+
+def _close_position_portion_live(position: LivePosition, qty_close: float, exit_price: float, ts: pd.Timestamp,
+                                 atr_pct: float, taker_fee: float) -> Tuple[float, float, float, Trade]:
+    if qty_close <= 0 or position.remaining_qty <= 0:
+        return 0.0, 0.0, 0.0, None
+    qty_close = min(qty_close, position.remaining_qty)
+    entry_fee_share, slip_in_share, funding_share = _allocate_entry_cost_live(position, qty_close)
+    slip_rate = calc_slippage_rate(atr_pct)
+    if position.side == 'long':
+        actual_exit_notional = exit_price * (1 - slip_rate) * qty_close
+    else:
+        actual_exit_notional = exit_price * (1 + slip_rate) * qty_close
+    exit_fee = abs(actual_exit_notional) * taker_fee
+    sl_out = exit_price * slip_rate * qty_close
+    trade = Trade(
+        symbol=position.symbol,
+        side=position.side,
+        entry_time=position.entry_time,
+        entry_price=position.entry_price,
+        exit_time=ts,
+        exit_price=exit_price,
+        qty=qty_close,
+        commission_in=entry_fee_share,
+        commission_out=exit_fee,
+        slippage_in=slip_in_share,
+        slippage_out=sl_out,
+        funding_cost=funding_share,
+    )
+    pnl = trade.pnl()
+    position.remaining_qty -= qty_close
+    return pnl, entry_fee_share + exit_fee, slip_in_share + sl_out, trade
+
+
+def _adjust_tp1(entry_price: float, tp_price: float, side: str,
+                tp1_factor: Optional[float], tp1_pct_override: Optional[float]) -> float:
+    if tp1_pct_override is not None and tp1_pct_override > 0:
+        direction = 1.0 if side == 'long' else -1.0
+        return entry_price * (1 + direction * float(tp1_pct_override))
+    factor = tp1_factor if (tp1_factor is not None and 0 < tp1_factor < 1) else TP1_DEFAULT_FACTOR
+    return entry_price + (tp_price - entry_price) * float(factor)
+
+
+def _prepare_live_tp_plan(row: pd.Series, side: str, entry_price: float, qty: float, symbol: str,
+                          params: Dict[str, object]) -> List[Dict[str, float]]:
+    side = str(side).lower()
+    tp_cols = ['TP1_L', 'TP2_L', 'TP3_L'] if side == 'long' else ['TP1_S', 'TP2_S', 'TP3_S']
+    tps = [float(row[c]) for c in tp_cols if c in row and pd.notna(row[c])]
+    if not tps:
+        try:
+            tp_pct = float(params.get('tp', 0.015))
+        except Exception:
+            tp_pct = 0.015
+        direction = 1.0 if side == 'long' else -1.0
+        tps = [entry_price * (1 + direction * tp_pct)]
+
+    tp1_factor = params.get('tp1_factor', None)
+    tp1_pct_override = params.get('tp1_pct_override', None)
+    try:
+        tp1_factor = float(tp1_factor) if tp1_factor is not None else None
+    except Exception:
+        tp1_factor = None
+    try:
+        tp1_pct_override = float(tp1_pct_override) if tp1_pct_override is not None else None
+    except Exception:
+        tp1_pct_override = None
+
+    if tps:
+        tps[0] = _adjust_tp1(entry_price, float(tps[0]), side, tp1_factor, tp1_pct_override)
+
+    tick = _tick_size_for(symbol)
+    tps = [_round_to_tick(float(tp), tick) for tp in tps]
+    splits = TP_SPLITS_DEFAULT if len(tps) >= 3 else (1.0,)
+    step = _step_size_for(symbol)
+    split_qtys = _split_position_qtys(qty, splits, step)
+    plan = []
+    for idx, tp_px in enumerate(tps[:len(split_qtys)]):
+        tp_qty = float(split_qtys[idx]) if idx < len(split_qtys) else 0.0
+        plan.append({
+            'price': float(tp_px),
+            'qty': max(tp_qty, 0.0),
+            'label': f"TP{idx + 1}",
+            'filled': tp_qty <= 0,
+        })
+    return plan
+
+
+def _initial_sl_from_row(row: pd.Series, side: str, entry_price: float, symbol: str) -> float:
+    side = str(side).lower()
+    col = 'SL_L' if side == 'long' else 'SL_S'
+    sl = None
+    if col in row and pd.notna(row[col]):
+        try:
+            sl = float(row[col])
+        except Exception:
+            sl = None
+    if sl is None:
+        sl = entry_price * (0.995 if side == 'long' else 1.005)
+    return _round_to_tick(float(sl), _tick_size_for(symbol))
+
+
+def _update_live_sl(position: LivePosition, row: pd.Series, price: float) -> None:
+    side = position.side
+    col = 'SL_L' if side == 'long' else 'SL_S'
+    indicator_sl = None
+    if col in row and pd.notna(row[col]):
+        try:
+            indicator_sl = float(row[col])
+        except Exception:
+            indicator_sl = None
+    if indicator_sl is None:
+        indicator_sl = position.sl_price
+    else:
+        indicator_sl = _round_to_tick(indicator_sl, _tick_size_for(position.symbol))
+
+    be_trigger = float(position.be_trigger) if position.be_trigger is not None else 0.0
+    tiny_be = 0.0002
+    if side == 'long' and be_trigger > 0:
+        if price >= position.entry_price * (1 + be_trigger):
+            indicator_sl = max(indicator_sl, position.entry_price * (1 + tiny_be))
+    if side == 'short' and be_trigger > 0:
+        if price <= position.entry_price * (1 - be_trigger):
+            indicator_sl = min(indicator_sl, position.entry_price * (1 - tiny_be))
+
+    if side == 'long':
+        position.sl_price = max(position.sl_price, indicator_sl)
+    else:
+        position.sl_price = min(position.sl_price, indicator_sl)
 
 
 # ==========================
@@ -797,12 +1082,22 @@ class Backtester:
         df = self.df5m
         df = ensure_dt_utc(df)
         # Indicadores 5m
-        df['ema_f'] = ema(df['close'], self.ema_fast)
-        df['ema_s'] = ema(df['close'], self.ema_slow)
-        df['rsi'] = rsi(df['close'], 14)
-        df['atr'] = atr(df, 14)
+        ema_fn = _ta_ema if _ta_ema is not None else ema
+        rsi_fn = _ta_rsi if _ta_rsi is not None else rsi
+        atr_fn = _ta_atr if _ta_atr is not None else atr
+        adx_fn = _ta_adx if _ta_adx is not None else adx
+        df['ema_f'] = ema_fn(df['close'], self.ema_fast)
+        df['ema_s'] = ema_fn(df['close'], self.ema_slow)
+        df['rsi'] = rsi_fn(df['close'], 14)
+        if _ta_atr is not None:
+            df['atr'] = atr_fn(df['high'], df['low'], df['close'], 14)
+        else:
+            df['atr'] = atr_fn(df, 14)
         df['atr_pct'] = (df['atr'] / df['close']).clip(lower=0)
-        df['adx'] = adx(df, 14)
+        if _ta_adx is not None:
+            df['adx'] = adx_fn(df['high'], df['low'], df['close'], 14)
+        else:
+            df['adx'] = adx_fn(df, 14)
         # Señales de volumen y tendencia ADX (pendiente)
         try:
             vlen = max(2, int(self.vol_ma_len))
@@ -1427,6 +1722,292 @@ class Backtester:
         pd.DataFrame(rows).to_csv(out_path, index=False)
 
 
+def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: float,
+                              weights_csv: Optional[str], funding_8h: float = 0.0001) -> Dict[str, object]:
+    if _indicadores is None:
+        raise SystemExit("No se pudo importar indicadores.py; live_parity requiere pkg/indicadores.py.")
+
+    params_by_symbol = {}
+    try:
+        params_by_symbol = _indicadores.PARAMS_BY_SYMBOL or {}
+    except Exception:
+        params_by_symbol = {}
+    params_norm = {_norm_symbol(k): v for k, v in params_by_symbol.items()} if params_by_symbol else {}
+
+    data_by_symbol = {}
+    for sym in symbols:
+        df_sym = load_candles(data_template, sym)
+        df_ind = _indicadores._calc_symbol(df_sym.copy(), sym)
+        df_ind = df_ind.sort_values('date')
+        df_ind = df_ind.drop_duplicates(subset=['date'], keep='last')
+        data_by_symbol[sym] = df_ind.set_index('date')
+
+    timeline = None
+    for df in data_by_symbol.values():
+        idx = pd.Index(df.index)
+        timeline = idx if timeline is None else timeline.union(idx)
+    if timeline is None or timeline.empty:
+        return {
+            'trades': 0,
+            'pnl_net': 0.0,
+            'equity_final': capital,
+            'winrate_pct': 0.0,
+            'profit_factor': None,
+            'commissions': 0.0,
+            'slippage_cost': 0.0,
+            'funding_cost': 0.0,
+            'cost_ratio': None,
+            'max_dd_pct': None,
+            'sharpe_annual': None,
+        }
+    timeline = timeline.sort_values()
+
+    weights_map = _load_weight_map(weights_csv, symbols)
+    weights_norm = {_norm_symbol(k): v for k, v in weights_map.items()} if weights_map else {}
+    default_weight = min(0.8, 2.0 / len(symbols)) if symbols else 0.0
+
+    cooldown_map = {}
+    for sym in symbols:
+        sym_u = str(sym).upper()
+        p = params_by_symbol.get(sym_u) or params_norm.get(_norm_symbol(sym_u)) or {}
+        try:
+            minutes = int(p.get('cooldown', 0))
+        except Exception:
+            minutes = 0
+        cooldown_map[sym] = max(0, int(math.ceil(minutes / 5.0))) if minutes > 0 else 0
+
+    equity = float(capital)
+    trades: List[Trade] = []
+    open_positions: Dict[str, LivePosition] = {}
+    cooldowns: Dict[str, int] = {str(s): 0 for s in symbols}
+    commissions = slippages = funding_costs = 0.0
+    equity_curve = []
+    equity_time = []
+
+    for ts in timeline:
+        closed_this_bar = set()
+        candidates = []
+
+        for sym in symbols:
+            df = data_by_symbol.get(sym)
+            if df is None or ts not in df.index:
+                continue
+            row = df.loc[ts]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[-1]
+            if cooldowns.get(sym, 0) > 0:
+                cooldowns[sym] = max(0, cooldowns[sym] - 1)
+
+            pos = open_positions.get(sym)
+            if pos is not None:
+                price = float(row.get('close', np.nan))
+                if math.isnan(price):
+                    continue
+                atr_pct = float(row.get('ATR_pct', 0.0)) if pd.notna(row.get('ATR_pct', 0.0)) else 0.0
+
+                if funding_8h and pos.remaining_qty > 0:
+                    notional = pos.remaining_qty * price
+                    per_bar_rate = funding_8h * (5.0 / 480.0)
+                    fcost = abs(notional) * per_bar_rate
+                    pos.funding_remaining += fcost
+                    funding_costs += fcost
+
+                _update_live_sl(pos, row, price)
+
+                tp_hits = []
+                for target in pos.tp_plan:
+                    if target.get('filled') or target.get('qty', 0.0) <= 0:
+                        continue
+                    if pos.side == 'long':
+                        if float(row.get('high', price)) >= float(target['price']):
+                            tp_hits.append(target)
+                    else:
+                        if float(row.get('low', price)) <= float(target['price']):
+                            tp_hits.append(target)
+
+                if tp_hits:
+                    for target in tp_hits:
+                        if pos.remaining_qty <= 0:
+                            break
+                        qty_tp = min(float(target.get('qty', 0.0)), pos.remaining_qty)
+                        if qty_tp <= 0:
+                            target['filled'] = True
+                            continue
+                        pnl_tp, comm_tp, slip_tp, trade = _close_position_portion_live(
+                            pos, qty_tp, float(target['price']), ts, atr_pct, 0.0005
+                        )
+                        if trade is not None:
+                            trades.append(trade)
+                        equity += pnl_tp
+                        commissions += comm_tp
+                        slippages += slip_tp
+                        target['filled'] = True
+                        target['qty'] = 0.0
+                    if pos.remaining_qty <= 0:
+                        open_positions.pop(sym, None)
+                        closed_this_bar.add(sym)
+                        continue
+
+                hit_sl = False
+                if pos.side == 'long':
+                    hit_sl = float(row.get('low', price)) <= float(pos.sl_price)
+                else:
+                    hit_sl = float(row.get('high', price)) >= float(pos.sl_price)
+
+                if hit_sl:
+                    pnl_exit, comm_exit, slip_exit, trade = _close_position_portion_live(
+                        pos, pos.remaining_qty, float(pos.sl_price), ts, atr_pct, 0.0005
+                    )
+                    if trade is not None:
+                        trades.append(trade)
+                    equity += pnl_exit
+                    commissions += comm_exit
+                    slippages += slip_exit
+                    open_positions.pop(sym, None)
+                    cooldowns[sym] = cooldown_map.get(sym, 0)
+                    closed_this_bar.add(sym)
+
+            if sym in open_positions or cooldowns.get(sym, 0) > 0 or sym in closed_this_bar:
+                continue
+
+            long_sig = _as_bool_signal(row.get('Long_Signal', False))
+            short_sig = _as_bool_signal(row.get('Short_Signal', False))
+            side = 'long' if long_sig else ('short' if short_sig else None)
+            if side is None:
+                continue
+
+            price = float(row.get('close', np.nan))
+            if math.isnan(price):
+                continue
+            atr_pct = float(row.get('ATR_pct', 0.0)) if pd.notna(row.get('ATR_pct', 0.0)) else 0.0
+            candidates.append({
+                'symbol': sym,
+                'side': side,
+                'price': price,
+                'atr_pct': atr_pct,
+                'row': row,
+            })
+
+        if candidates:
+            weights = {}
+            for cand in candidates:
+                sym = cand['symbol']
+                sym_u = str(sym).upper()
+                weights[sym] = weights_map.get(sym_u) or weights_norm.get(_norm_symbol(sym_u)) or default_weight
+            sum_active = sum(weights.values())
+            if sum_active > 0:
+                factor = min(2.0, sum_active) / sum_active
+                for sym in list(weights.keys()):
+                    weights[sym] = weights[sym] * factor
+
+            total_alloc = 0.0
+            for cand in candidates:
+                sym = cand['symbol']
+                w = weights.get(sym, default_weight)
+                trade_amt = equity * w
+                if total_alloc + trade_amt > equity:
+                    trade_amt = equity - total_alloc
+                if trade_amt <= 0:
+                    continue
+                price = cand['price']
+                step = _step_size_for(sym)
+                qty = math.floor((trade_amt / price) / step) * step
+                if qty <= 0:
+                    continue
+                slip_rate = calc_slippage_rate(cand['atr_pct'])
+                entry_price = price
+                sl_in = price * slip_rate * qty
+                if cand['side'] == 'long':
+                    actual_entry_notional = price * (1 + slip_rate) * qty
+                else:
+                    actual_entry_notional = price * (1 - slip_rate) * qty
+                fee = abs(actual_entry_notional) * 0.0005
+
+                sym_u = str(sym).upper()
+                p = params_by_symbol.get(sym_u) or params_norm.get(_norm_symbol(sym_u)) or {}
+                be_trigger = float(p.get('be_trigger', 0.0)) if p.get('be_trigger') is not None else 0.0
+                tp_plan = _prepare_live_tp_plan(cand['row'], cand['side'], entry_price, qty, sym, p)
+                sl_price = _initial_sl_from_row(cand['row'], cand['side'], entry_price, sym)
+                cooldown_bars = cooldown_map.get(sym, 0)
+
+                open_positions[sym] = LivePosition(
+                    symbol=sym,
+                    side=cand['side'],
+                    entry_time=ts,
+                    entry_price=entry_price,
+                    qty=qty,
+                    remaining_qty=qty,
+                    entry_fee_remaining=fee,
+                    slippage_in_remaining=sl_in,
+                    funding_remaining=0.0,
+                    sl_price=sl_price,
+                    tp_plan=tp_plan,
+                    be_trigger=be_trigger,
+                    cooldown_bars=cooldown_bars,
+                )
+                total_alloc += trade_amt
+
+        equity_curve.append(equity)
+        equity_time.append(ts)
+
+    for sym, pos in list(open_positions.items()):
+        df = data_by_symbol.get(sym)
+        if df is None or df.empty:
+            continue
+        last_row = df.iloc[-1]
+        ts = df.index[-1]
+        price = float(last_row.get('close', np.nan))
+        if math.isnan(price):
+            continue
+        atr_pct = float(last_row.get('ATR_pct', 0.0)) if pd.notna(last_row.get('ATR_pct', 0.0)) else 0.0
+        pnl_exit, comm_exit, slip_exit, trade = _close_position_portion_live(
+            pos, pos.remaining_qty, price, ts, atr_pct, 0.0005
+        )
+        if trade is not None:
+            trades.append(trade)
+        equity += pnl_exit
+        commissions += comm_exit
+        slippages += slip_exit
+
+    gross_pnl = sum([(1 if t.side == 'long' else -1) * (t.exit_price - t.entry_price) * t.qty for t in trades if t.exit_price is not None])
+    costs_total = commissions + slippages + funding_costs
+    cost_ratio = (costs_total / abs(gross_pnl)) if gross_pnl != 0 else np.nan
+
+    wins = [t for t in trades if t.pnl() > 0]
+    winrate = (len(wins) / len(trades)) * 100 if trades else 0.0
+    pos_pnl = sum([t.pnl() for t in trades if t.pnl() > 0])
+    neg_pnl = -sum([t.pnl() for t in trades if t.pnl() < 0])
+    profit_factor = (pos_pnl / neg_pnl) if neg_pnl > 0 else None
+
+    max_dd_pct = None
+    sharpe_annual = None
+    if len(equity_curve) >= 2:
+        eq = np.array(equity_curve, dtype=float)
+        peak = np.maximum.accumulate(eq)
+        dd = (eq - peak) / peak
+        max_dd_pct = float(dd.min()) if len(dd) else None
+    if len(equity_curve) >= 3:
+        eq = np.array(equity_curve, dtype=float)
+        rets = np.diff(eq) / eq[:-1]
+        if rets.std() > 1e-12:
+            bars_per_year = 288 * 365
+            sharpe_annual = float((rets.mean() / rets.std()) * np.sqrt(bars_per_year))
+
+    return {
+        'trades': len(trades),
+        'pnl_net': round(equity - capital, 2),
+        'equity_final': round(equity, 2),
+        'winrate_pct': round(winrate, 2),
+        'profit_factor': round(float(profit_factor), 3) if profit_factor is not None else None,
+        'commissions': round(commissions, 4),
+        'slippage_cost': round(slippages, 4),
+        'funding_cost': round(funding_costs, 4),
+        'cost_ratio': round(float(cost_ratio), 4) if not np.isnan(cost_ratio) else None,
+        'max_dd_pct': round(float(max_dd_pct), 4) if max_dd_pct is not None else None,
+        'sharpe_annual': round(float(sharpe_annual), 3) if sharpe_annual is not None else None,
+    }
+
+
 def simulate_portfolio(trades_by_symbol: Dict[str, List[Trade]],
                        initial_equity: float,
                        max_positions: int = 3,
@@ -1729,6 +2310,8 @@ def main():
     parser.add_argument('--no_fresh_breakout_only', dest='fresh_breakout_only', action='store_false', help='Permitir rupturas no frescas')
     parser.set_defaults(fresh_breakout_only=False)
     parser.add_argument('--portfolio_mode', action='store_true', help='Simular todos los símbolos compartiendo el mismo capital')
+    parser.add_argument('--live_parity', action='store_true', help='Simulación live-parity usando indicadores/TP/SL del bot')
+    parser.add_argument('--weights_csv', type=str, default='archivos/pesos_actualizados.csv', help='CSV de pesos (symbol,peso_actualizado)')
     parser.add_argument('--portfolio_max_positions', type=int, default=3, help='Máximo de posiciones abiertas simultáneas (0 = sin límite)')
     parser.add_argument('--portfolio_alloc_pct', type=float, default=0.30, help='Fracción máxima del equity que puede asignar cada trade (0.30 = 30%)')
     parser.add_argument('--portfolio_eval_best', action='store_true', help='Después de un sweep, evalúa el portafolio usando el archivo exportado en --export_best')
@@ -1761,6 +2344,34 @@ def main():
     else:
         symbols = symbols_raw
     funding_map = _load_funding_events_csv(args.funding_csv)
+
+    if args.live_parity:
+        symbols_lp = symbols
+        if '{symbol}' not in args.data_template:
+            raw_syms = _list_symbols_from_csv(args.data_template)
+            sym_map = {_norm_symbol(s): s for s in raw_syms}
+            if auto_symbols and not file_symbols:
+                symbols_lp = [sym_map[k] for k in list(sym_map.keys())[:12]]
+            else:
+                symbols_lp = []
+                for s in symbols:
+                    ns = _norm_symbol(s)
+                    if ns in sym_map:
+                        symbols_lp.append(sym_map[ns])
+        if not symbols_lp and sym_map:
+            symbols_lp = [sym_map[list(sym_map.keys())[0]]]
+        print(f"[LIVE_PARITY] Símbolos usados: {', '.join(symbols_lp)}")
+        result = run_live_parity_portfolio(
+            symbols_lp,
+            args.data_template,
+            args.capital,
+            args.weights_csv,
+        )
+        print("[LIVE_PARITY] Resultado agregado:")
+        print(f"  Trades: {result['trades']} | PnL neto: {result['pnl_net']} | Winrate: {result['winrate_pct']}%")
+        print(f"  Max DD: {result['max_dd_pct']} | Sharpe anualizado: {result['sharpe_annual']}")
+        print(f"  Cost ratio: {result['cost_ratio']} (comisiones={result['commissions']}, slip={result['slippage_cost']}, funding={result['funding_cost']})")
+        return
 
     if args.portfolio_mode:
         if args.sweep:
