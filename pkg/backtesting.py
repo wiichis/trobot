@@ -97,44 +97,45 @@ SIMPLE_RUN: Dict[str, object] = {
     'DATA_TEMPLATE': DEFAULT_DATA_TEMPLATE,
     'CAPITAL': 300.0,
     'OUT_DIR': DEFAULT_OUT_DIR,
-    'RANK_BY': 'pnl_net',
+    'RANK_BY': 'pnl_net_per_trade',
     'SEARCH_MODE': 'random',        # 'grid' o 'random'
-    'N_TRIALS': 320,                 # combos aleatorios por símbolo (si SEARCH_MODE='random')
+    'N_TRIALS': 600,                 # combos aleatorios por símbolo (si SEARCH_MODE='random')
     'RANDOM_SEED': 123,
     'SECOND_PASS': True,
     'SECOND_TOPK': 3,
-    'FILTERS': {'min_trades': 5, 'min_winrate': 0.0, 'max_cost_ratio': 0.70, 'max_dd': 0.20},
+    'FILTERS': {'min_trades': 8, 'min_winrate': 0.0, 'max_cost_ratio': 0.90, 'max_dd': 0.30},
     'EXPORT_BEST': 'best_prod.json',
+    'EXPORT_POSITIVE_ONLY': True,
     'RANGES': {
-        'tp': [0.015, 0.018, 0.020, 0.024, 0.028, 0.032, 0.036, 0.040],
+        'tp': [0.012, 0.015, 0.018, 0.022, 0.026, 0.030],
         'tp_mode': ['fixed', 'atrx'],
-        'tp_atr_mult': [0.6, 0.8, 1.0, 1.2],
-        'ema_fast': [13, 21, 34],
-        'ema_slow': [55, 72, 89],
-        'rsi_buy': [58, 60, 62, 64],
-        'rsi_sell': [38, 40, 42, 44],
-        'adx_min': [18, 22, 26, 30],
-        'min_atr_pct': [0.0015, 0.0020, 0.0025, 0.0030],
-        'max_atr_pct': [0.008, 0.010, 0.012],
-        'atr_mult': [1.6, 1.8, 2.0],
+        'tp_atr_mult': [0.6, 0.9, 1.2, 1.5],
+        'ema_fast': [8, 13, 21],
+        'ema_slow': [30, 50, 72],
+        'rsi_buy': [54, 56, 58, 60],
+        'rsi_sell': [40, 42, 44, 46],
+        'adx_min': [14, 18, 22],
+        'min_atr_pct': [0.0010, 0.0015, 0.0020],
+        'max_atr_pct': [0.010, 0.015, 0.020],
+        'atr_mult': [1.6, 1.8, 2.2],
         'sl_mode': ['atr_then_trailing', 'percent'],
-        'sl_pct': [0.008, 0.010, 0.012, 0.015],
-        'be_trigger': [0.0045, 0.0055, 0.0065],
-        'cooldown': [10, 15, 20],
-        'logic': ['strict'],
-        'hhll_lookback': [12, 14, 18, 22],
-        'time_exit_bars': [36, 48, 60, 72],
-        'max_dist_emaslow': [0.006, 0.008, 0.010],
-        'fresh_cross_max_bars': [3, 4, 5],
-        'require_rsi_cross': [True],
+        'sl_pct': [0.010, 0.012, 0.015, 0.018],
+        'be_trigger': [0.0040, 0.0050, 0.0060],
+        'cooldown': [6, 10, 15],
+        'logic': ['any', 'strict'],
+        'hhll_lookback': [8, 12, 16],
+        'time_exit_bars': [24, 36, 48, 60],
+        'max_dist_emaslow': [0.010, 0.012, 0.015],
+        'fresh_cross_max_bars': [3, 5, 7],
+        'require_rsi_cross': [True, False],
         # Endurecedores (más estrictos):
-        'min_ema_spread': [0.0012, 0.0015, 0.0020],    # separación mínima EMA_f/EMA_s
-        'require_close_vs_emas': [True],              # exigir relación close/EMAs
-        'min_vol_ratio': [1.10, 1.20, 1.25],          # volumen relativo al MA
-        'vol_ma_len': [30, 40, 50],                   # lookback MA de volumen
+        'min_ema_spread': [0.0008, 0.0010, 0.0012],    # separación mínima EMA_f/EMA_s
+        'require_close_vs_emas': [True, False],        # exigir relación close/EMAs
+        'min_vol_ratio': [1.00, 1.05, 1.10],           # volumen relativo al MA
+        'vol_ma_len': [20, 30, 40],                    # lookback MA de volumen
         'adx_slope_len': [3, 4],
-        'adx_slope_min': [0.4, 0.6, 0.8],             # pendiente mínima ADX
-        'fresh_breakout_only': [True],                # rupturas frescas
+        'adx_slope_min': [0.2, 0.4, 0.6],             # pendiente mínima ADX
+        'fresh_breakout_only': [False, True],          # rupturas frescas
     },
     'LOAD_BEST_FILE': None,
     'WINNERS_FROM_BEST': False,
@@ -161,6 +162,8 @@ def _build_simple_argv(cfg: Dict[str, object]) -> list:
     filters = cfg.get('FILTERS') or {}
     if filters.get('min_trades'):
         add('--min_trades', filters['min_trades'])
+    if filters.get('max_trades') is not None:
+        add('--max_trades', filters['max_trades'])
     if (filters.get('min_winrate') or 0) > 0:
         add('--min_winrate', filters['min_winrate'])
     if filters.get('max_cost_ratio') is not None:
@@ -169,6 +172,8 @@ def _build_simple_argv(cfg: Dict[str, object]) -> list:
         add('--max_dd', filters['max_dd'])
     if cfg.get('EXPORT_BEST'):
         add('--export_best', cfg.get('EXPORT_BEST'))
+    if cfg.get('EXPORT_POSITIVE_ONLY'):
+        argv.append('--export_positive_only')
 
     # Añadir flags de búsqueda random/grid si están presentes
     if cfg.get('SEARCH_MODE'):
@@ -434,6 +439,53 @@ def _load_best_params(path: str) -> List[Dict[str, object]]:
         for sym, params in data.items():
             best.append({'symbol': str(sym).upper(), 'params': params if isinstance(params, dict) else {}})
     return best
+
+
+_ATRX_ALLOWED = None
+
+
+def _load_atrx_symbols(path: str) -> set:
+    try:
+        with open(path, 'r') as f:
+            data = json.load(f)
+    except Exception:
+        return set()
+    allowed = set()
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                sym = str(item.get('symbol', '')).upper()
+                params = item.get('params')
+                if params is None:
+                    params = {k: v for k, v in item.items() if k.lower() != 'symbol'}
+                if sym and isinstance(params, dict) and params.get('tp_mode') == 'atrx':
+                    allowed.add(sym)
+    elif isinstance(data, dict):
+        for sym, params in data.items():
+            if isinstance(params, dict) and params.get('tp_mode') == 'atrx':
+                allowed.add(str(sym).upper())
+    return allowed
+
+
+def _atrx_allowed_for(symbol: str) -> bool:
+    global _ATRX_ALLOWED
+    if _ATRX_ALLOWED is None:
+        best_path = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+        _ATRX_ALLOWED = _load_atrx_symbols(best_path)
+    if not _ATRX_ALLOWED:
+        return False
+    return str(symbol).upper() in _ATRX_ALLOWED
+
+
+def _apply_atrx_guard(symbol: str, params: Dict[str, object]) -> Dict[str, object]:
+    if params.get('tp_mode') != 'atrx':
+        return params
+    if _atrx_allowed_for(symbol):
+        return params
+    p = dict(params)
+    p['tp_mode'] = 'fixed'
+    p['tp_atr_mult'] = 0.0
+    return p
 
 
 def _run_portfolio_from_best(best_path: str, args, funding_map: Dict[str, List[Tuple[int, float]]]):
@@ -788,6 +840,21 @@ def bars_since(event: pd.Series) -> pd.Series:
             out[i] = float(i - last)
     return pd.Series(out, index=event.index)
 
+def _rank_metric(df: pd.DataFrame, rank_by: str) -> pd.Series:
+    if rank_by == 'cost_ratio':
+        metric = -df.get('cost_ratio', np.nan).astype(float)
+    elif rank_by == 'max_dd_pct':
+        metric = -df.get('max_dd_pct', np.nan).abs().astype(float)
+    elif rank_by == 'calmar':
+        dd = df.get('max_dd_pct', np.nan).abs().astype(float).replace(0, np.nan)
+        metric = df.get('pnl_net', np.nan).astype(float) / dd
+    elif rank_by == 'pnl_net_per_trade':
+        trades = df.get('trades', np.nan).astype(float).replace(0, np.nan)
+        metric = df.get('pnl_net', np.nan).astype(float) / trades
+    else:
+        metric = df.get(rank_by, np.nan).astype(float)
+    return metric.where(metric.notna(), other=-np.inf)
+
 
 # ==========================
 # Data classes
@@ -992,26 +1059,26 @@ class Backtester:
                  ema_slow: int = 50,
                  rsi_buy: int = 55,
                  rsi_sell: int = 45,
-                 adx_min: int = 20,
+                 adx_min: int = 15,
                  taker_fee: float = 0.0005,       # 0.05%
                  funding_8h: float = 0.0001,      # 0.01% por 8h
-                 min_atr_pct: float = 0.0015,     # 0.15%
-                 max_atr_pct: float = 0.02,       # 2.0%
+                 min_atr_pct: float = 0.0012,     # 0.12%
+                 max_atr_pct: float = 0.012,      # 1.2%
                  lot_step: float = 0.001,
                  be_trigger: float = 0.0045,
                  cooldown_bars: int = 10,
                  logic: str = 'any',
                  hhll_lookback: int = 10,
                  time_exit_bars: Optional[int] = 30,
-                 max_dist_emaslow: float = 0.015,
-                 fresh_cross_max_bars: int = 6,
+                 max_dist_emaslow: float = 0.010,
+                 fresh_cross_max_bars: int = 3,
                  require_rsi_cross: bool = True,
-                 min_ema_spread: float = 0.0,
-                 require_close_vs_emas: bool = False,
-                 min_vol_ratio: float = 0.0,
-                 vol_ma_len: int = 50,
+                 min_ema_spread: float = 0.001,
+                 require_close_vs_emas: bool = True,
+                 min_vol_ratio: float = 1.1,
+                 vol_ma_len: int = 30,
                  adx_slope_len: int = 3,
-                 adx_slope_min: float = 0.0,
+                 adx_slope_min: float = 0.4,
                  fresh_breakout_only: bool = False,
                  tp_splits: Optional[List[float]] = None,
                  tp_ladder_factors: Optional[List[float]] = None,
@@ -2219,6 +2286,7 @@ def run_job(job):
     sym, p, data_template, capital, out_dir = job[:5]
     funding_map = job[5] if len(job) >= 6 else {}
     try:
+        p = _apply_atrx_guard(sym, p)
         dfj = load_candles(data_template, sym)
         funding_events = _normalize_funding_events_for(sym, funding_map) if isinstance(funding_map, dict) else []
         bt = Backtester(
@@ -2322,12 +2390,14 @@ def main():
     parser.add_argument('--sl_mode', type=str, default='atr_then_trailing', choices=['atr_then_trailing','atr_trailing_only','percent'], help="Modo de SL: ATR fijo y luego trailing, solo trailing por ATR, o porcentaje fijo")
     parser.add_argument('--sl_pct', type=float, default=0.0, help='SL en porcentaje (0.01 = 1%) cuando sl_mode=percent')
     parser.add_argument('--out_dir', type=str, default=DEFAULT_OUT_DIR)
-    parser.add_argument('--rank_by', type=str, default='pnl_net', choices=['pnl_net','sharpe_annual','profit_factor','winrate_pct','cost_ratio','max_dd_pct','calmar'], help="Métrica para ranking y selección por símbolo. 'calmar' = pnl_net / |max_dd_pct|")
+    parser.add_argument('--rank_by', type=str, default='pnl_net', choices=['pnl_net','pnl_net_per_trade','sharpe_annual','profit_factor','winrate_pct','cost_ratio','max_dd_pct','calmar'], help="Métrica para ranking y selección por símbolo. 'calmar' = pnl_net / |max_dd_pct|")
     parser.add_argument('--min_trades', type=int, default=0, help='Filtra combinaciones con menos de este número de trades')
+    parser.add_argument('--max_trades', type=int, default=None, help='Filtra combinaciones con más de este número de trades')
     parser.add_argument('--min_winrate', type=float, default=0.0, help='Filtra combinaciones con winrate &lt; a este porcentaje')
     parser.add_argument('--max_cost_ratio', type=float, default=None, help='Filtra combinaciones con cost_ratio &gt; a este valor')
     parser.add_argument('--max_dd', type=float, default=None, help='Filtra combinaciones con drawdown máximo absoluto mayor a este valor (ej. 0.3 para 30%)')
     parser.add_argument('--export_best', type=str, default=None, help='Ruta a JSON para exportar el mejor set por símbolo listo para producción')
+    parser.add_argument('--export_positive_only', action='store_true', help='Exporta solo símbolos con pnl_net &gt; 0')
     parser.add_argument('--search_mode', type=str, default='grid', choices=['grid','random'], help='Estrategia de búsqueda: grid completo o muestreo aleatorio')
     parser.add_argument('--n_trials', type=int, default=None, help='Número de combinaciones aleatorias por símbolo (solo search_mode=random)')
     parser.add_argument('--random_seed', type=int, default=42, help='Semilla para el muestreo aleatorio')
@@ -2575,6 +2645,10 @@ def main():
             before = len(good)
             good = good[good['trades'].astype(float) >= args.min_trades]
             print(f"[SWEEP][DIAG] tras min_trades>={args.min_trades}: {len(good)} (−{before-len(good)})")
+        if args.max_trades is not None:
+            before = len(good)
+            good = good[good['trades'].astype(float) <= args.max_trades]
+            print(f"[SWEEP][DIAG] tras max_trades<={args.max_trades}: {len(good)} (−{before-len(good)})")
         if args.min_winrate > 0.0:
             before = len(good)
             good = good[good['winrate_pct'].astype(float) >= args.min_winrate]
@@ -2591,47 +2665,51 @@ def main():
         # ---- Ranking por métrica seleccionada ----
         if len(good):
             rb = args.rank_by
-            if rb == 'cost_ratio':
-                metric = -good.get('cost_ratio', np.nan).astype(float)
-            elif rb == 'max_dd_pct':
-                metric = -good.get('max_dd_pct', np.nan).abs().astype(float)
-            elif rb == 'calmar':
-                dd = good.get('max_dd_pct', np.nan).abs().astype(float).replace(0, np.nan)
-                metric = good.get('pnl_net', np.nan).astype(float) / dd
-            else:
-                metric = good.get(rb, np.nan).astype(float)
-            metric = metric.where(metric.notna(), other=-np.inf)
-            good['__metric__'] = metric
-            symbol_best = good.sort_values(['symbol','__metric__'], ascending=[True, False]).groupby('symbol').head(1).copy()
+            good['__metric__'] = _rank_metric(good, rb)
+            good['__trades__'] = good.get('trades', np.nan).astype(float)
+            symbol_best = (
+                good.sort_values(['symbol','__metric__','__trades__'], ascending=[True, False, True])
+                    .groupby('symbol')
+                    .head(1)
+                    .copy()
+            )
 
             # Exportar resumen (JSON) y config de producción
             out_json = os.path.join(args.out_dir, 'resumen.json')
             with open(out_json, 'w') as f:
-                f.write(good.drop(columns=['__metric__'], errors='ignore').to_json(orient='records', indent=2))
+                f.write(good.drop(columns=['__metric__','__trades__'], errors='ignore').to_json(orient='records', indent=2))
             print(f"[SWEEP] Resumen guardado en {out_json}")
 
             if args.export_best and len(symbol_best):
-                prod = []
-                for _, r in symbol_best.iterrows():
-                    prod.append({'symbol': r['symbol'], 'params': r['params']})
-                outp = args.export_best if os.path.isabs(args.export_best) else os.path.join(args.out_dir, args.export_best)
-                try:
-                    out_dirname = os.path.dirname(outp)
-                    if out_dirname:
-                        os.makedirs(out_dirname, exist_ok=True)
-                except Exception:
-                    pass
-                with open(outp, 'w') as f:
-                    json.dump(prod, f, indent=2)
-                print(f"[SWEEP] Config de producción exportada en {outp}")
-                # Copia a pkg/best_prod.json para que el runtime lo lea directo
-                try:
-                    _pkg_best = os.path.join(os.path.dirname(__file__), 'best_prod.json')
-                    with open(_pkg_best, 'w') as _pf:
-                        json.dump(prod, _pf, indent=2)
-                    print(f"[SWEEP] Copia de producción para pkg en {_pkg_best}")
-                except Exception as _e:
-                    print(f"[SWEEP][WARN] No se pudo escribir copia en pkg: {_e}")
+                export_best = symbol_best
+                if args.export_positive_only:
+                    export_best = export_best[export_best['pnl_net'].astype(float) > 0].copy()
+                    if len(export_best) < len(symbol_best):
+                        print(f"[SWEEP] Export filtrado pnl_net>0: {len(export_best)}/{len(symbol_best)} símbolos")
+                if export_best.empty:
+                    print("[SWEEP][WARN] export_positive_only dejó 0 símbolos; no se exporta best_prod.")
+                else:
+                    prod = []
+                    for _, r in export_best.iterrows():
+                        prod.append({'symbol': r['symbol'], 'params': r['params']})
+                    outp = args.export_best if os.path.isabs(args.export_best) else os.path.join(args.out_dir, args.export_best)
+                    try:
+                        out_dirname = os.path.dirname(outp)
+                        if out_dirname:
+                            os.makedirs(out_dirname, exist_ok=True)
+                    except Exception:
+                        pass
+                    with open(outp, 'w') as f:
+                        json.dump(prod, f, indent=2)
+                    print(f"[SWEEP] Config de producción exportada en {outp}")
+                    # Copia a pkg/best_prod.json para que el runtime lo lea directo
+                    try:
+                        _pkg_best = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+                        with open(_pkg_best, 'w') as _pf:
+                            json.dump(prod, _pf, indent=2)
+                        print(f"[SWEEP] Copia de producción para pkg en {_pkg_best}")
+                    except Exception as _e:
+                        print(f"[SWEEP][WARN] No se pudo escribir copia en pkg: {_e}")
                 # ---- Resumen en consola (ganancia por portafolio usando best por símbolo) ----
                 try:
                     tot_pnl = float(symbol_best['pnl_net'].astype(float).sum()) if 'pnl_net' in symbol_best.columns else float('nan')
@@ -2647,7 +2725,7 @@ def main():
                 except Exception as _e:
                     print(f"[RESUMEN][WARN] No se pudo calcular el resumen de portafolio: {_e}")
 
-                if args.portfolio_eval_best:
+                if args.portfolio_eval_best and not export_best.empty:
                     _run_portfolio_from_best(outp, args, funding_map)
 
                 # ---- Segunda pasada local (vecindad) opcional ----
@@ -2662,7 +2740,7 @@ def main():
                     except Exception:
                         topk = 1
                     seeds = (
-                        good.sort_values(['symbol','__metric__'], ascending=[True, False])
+                        good.sort_values(['symbol','__metric__','__trades__'], ascending=[True, False, True])
                             .groupby('symbol')
                             .head(topk)
                             .copy()
@@ -2775,6 +2853,8 @@ def main():
                         # Reaplica filtros de calidad
                         if args.min_trades:
                             df2 = df2[df2['trades'].astype(float) >= args.min_trades]
+                        if args.max_trades is not None:
+                            df2 = df2[df2['trades'].astype(float) <= args.max_trades]
                         if args.min_winrate > 0.0:
                             df2 = df2[df2['winrate_pct'].astype(float) >= args.min_winrate]
                         if args.max_cost_ratio is not None:
@@ -2785,21 +2865,17 @@ def main():
                         if len(df2):
                             # Métrica y comparación contra best inicial
                             rank_key = args.rank_by
-                            if rank_key == 'cost_ratio':
-                                metric2 = -df2.get('cost_ratio', np.nan).astype(float)
-                            elif rank_key == 'max_dd_pct':
-                                metric2 = -df2.get('max_dd_pct', np.nan).abs().astype(float)
-                            elif rank_key == 'calmar':
-                                dd2 = df2.get('max_dd_pct', np.nan).abs().astype(float).replace(0, np.nan)
-                                metric2 = df2.get('pnl_net', np.nan).astype(float) / dd2
-                            else:
-                                metric2 = df2.get(rank_key, np.nan).astype(float)
-                            metric2 = metric2.where(metric2.notna(), other=-np.inf)
-                            df2['__metric__'] = metric2
+                            df2['__metric__'] = _rank_metric(df2, rank_key)
+                            df2['__trades__'] = df2.get('trades', np.nan).astype(float)
 
                             # Merge por símbolo el mejor entre initial y second
                             current_best = symbol_best.copy()
-                            cand_best = df2.sort_values(['symbol','__metric__'], ascending=[True, False]).groupby('symbol').head(1).copy()
+                            cand_best = (
+                                df2.sort_values(['symbol','__metric__','__trades__'], ascending=[True, False, True])
+                                    .groupby('symbol')
+                                    .head(1)
+                                    .copy()
+                            )
                             merged = current_best.merge(cand_best[['symbol','__metric__']], on='symbol', how='left', suffixes=('', '_cand'))
                             take_cand = merged['__metric___cand'].notna() & (merged['__metric___cand'] > merged['__metric__'])
                             # Construye nuevo symbol_best
@@ -2813,27 +2889,35 @@ def main():
                                     improved.append(c0.iloc[0])
                             symbol_best = _pd.DataFrame(improved)
                             # Re-exporta best_prod.json final
-                            prod2 = []
-                            for _, r in symbol_best.iterrows():
-                                prod2.append({'symbol': r['symbol'], 'params': r['params']})
-                            outp2 = args.export_best if os.path.isabs(args.export_best) else os.path.join(args.out_dir, args.export_best)
-                            try:
-                                out_dirname2 = os.path.dirname(outp2)
-                                if out_dirname2:
-                                    os.makedirs(out_dirname2, exist_ok=True)
-                            except Exception:
-                                pass
-                            with open(outp2, 'w') as f:
-                                json.dump(prod2, f, indent=2)
-                            print(f"[SECOND] Refinamiento completado. Config de producción actualizada en {outp2}")
-                            # Copia a pkg/best_prod.json tras refinamiento
-                            try:
-                                _pkg_best2 = os.path.join(os.path.dirname(__file__), 'best_prod.json')
-                                with open(_pkg_best2, 'w') as _pf2:
-                                    json.dump(prod2, _pf2, indent=2)
-                                print(f"[SECOND] Copia de producción para pkg en {_pkg_best2}")
-                            except Exception as _e:
-                                print(f"[SECOND][WARN] No se pudo escribir copia en pkg: {_e}")
+                            export_best2 = symbol_best
+                            if args.export_positive_only:
+                                export_best2 = export_best2[export_best2['pnl_net'].astype(float) > 0].copy()
+                                if len(export_best2) < len(symbol_best):
+                                    print(f"[SECOND] Export filtrado pnl_net>0: {len(export_best2)}/{len(symbol_best)} símbolos")
+                            if export_best2.empty:
+                                print("[SECOND][WARN] export_positive_only dejó 0 símbolos; no se exporta best_prod.")
+                            else:
+                                prod2 = []
+                                for _, r in export_best2.iterrows():
+                                    prod2.append({'symbol': r['symbol'], 'params': r['params']})
+                                outp2 = args.export_best if os.path.isabs(args.export_best) else os.path.join(args.out_dir, args.export_best)
+                                try:
+                                    out_dirname2 = os.path.dirname(outp2)
+                                    if out_dirname2:
+                                        os.makedirs(out_dirname2, exist_ok=True)
+                                except Exception:
+                                    pass
+                                with open(outp2, 'w') as f:
+                                    json.dump(prod2, f, indent=2)
+                                print(f"[SECOND] Refinamiento completado. Config de producción actualizada en {outp2}")
+                                # Copia a pkg/best_prod.json tras refinamiento
+                                try:
+                                    _pkg_best2 = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+                                    with open(_pkg_best2, 'w') as _pf2:
+                                        json.dump(prod2, _pf2, indent=2)
+                                    print(f"[SECOND] Copia de producción para pkg en {_pkg_best2}")
+                                except Exception as _e:
+                                    print(f"[SECOND][WARN] No se pudo escribir copia en pkg: {_e}")
                             # Resumen consola post-second
                             try:
                                 tot_pnl2 = float(symbol_best['pnl_net'].astype(float).sum()) if 'pnl_net' in symbol_best.columns else float('nan')

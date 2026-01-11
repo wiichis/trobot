@@ -13,7 +13,7 @@ from .ta_shared import ema, rsi, atr, adx
 
 # === Parámetros base (alineados al backtest) ===
 # === Parámetros base (alineados al backtest) ===
-RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 14, 14, 8, 30, 14
+RSI_P, ATR_P, EMA_S, EMA_L, ADX_P = 14, 14, 20, 50, 14
 # Escalonado de TP: factores para ladder de take-profit
 TP_FACTORS = (0.6, 1.0, 1.6)  # escalonado: 60%, 100%, 160% del tp base
 # Multiplicadores legacy (NO usados en prod, mantenidos como fallback si no hay best_prod.json)
@@ -205,19 +205,19 @@ def _calc_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     p = (PARAMS_BY_SYMBOL.get(symbol.upper(), {}) or {})
     ema_f = int(p.get('ema_fast', EMA_S))
     ema_s = int(p.get('ema_slow', EMA_L))
-    rsi_buy  = int(p.get('rsi_buy', 56))
-    rsi_sell = int(p.get('rsi_sell', 44))
-    adx_min  = int(p.get('adx_min', 28))
-    min_atr  = float(p.get('min_atr_pct', 0.002))
-    max_atr  = float(p.get('max_atr_pct', 0.03))
-    tp_pct   = float(p.get('tp', 0.015))
+    rsi_buy  = int(p.get('rsi_buy', 55))
+    rsi_sell = int(p.get('rsi_sell', 45))
+    adx_min  = int(p.get('adx_min', 15))
+    min_atr  = float(p.get('min_atr_pct', 0.0012))
+    max_atr  = float(p.get('max_atr_pct', 0.012))
+    tp_pct   = float(p.get('tp', 0.01))
     tp_mode  = str(p.get('tp_mode', 'fixed'))
     tp_atr_mult = float(p.get('tp_atr_mult', 0.0))
     atr_mult = float(p.get('atr_mult', 2.0))
     sl_mode  = str(p.get('sl_mode', 'atr_then_trailing'))
     sl_pct   = float(p.get('sl_pct', 0.0))
-    logic    = str(p.get('logic', 'strict'))
-    hhll_n   = int(p.get('hhll_lookback', 0) or 0)
+    logic    = str(p.get('logic', 'any'))
+    hhll_n   = int(p.get('hhll_lookback', 10) or 0)
 
     # --- Nuevos knobs alineados al backtesting (con defaults "lean") ---
     require_close_vs_emas = bool(p.get('require_close_vs_emas', True))
