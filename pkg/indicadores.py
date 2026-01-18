@@ -140,7 +140,29 @@ PRICE_5  = f"{BASE}/cripto_price_5m.csv"
 IND_CSV  = f"{BASE}/indicadores.csv"
 
 _BOOL_SIGNAL_COLS = ("Long_Signal", "Short_Signal")
-_READ_DTYPES = {col: "float64" for col in _BOOL_SIGNAL_COLS}
+_BOOL_TRUE = {"true", "t", "1", "yes", "y"}
+_BOOL_FALSE = {"false", "f", "0", "no", "n", "", "nan", "none", "na"}
+
+
+def _coerce_bool_series(series: pd.Series) -> pd.Series:
+    if series is None:
+        return series
+    if series.dtype == bool:
+        return series
+    if str(series.dtype) == "boolean":
+        return series.fillna(False).astype(bool)
+    if pd.api.types.is_numeric_dtype(series):
+        return series.fillna(0).astype(float).ne(0)
+    s = series.astype(str).str.strip().str.lower()
+    out = pd.Series(False, index=s.index)
+    true_mask = s.isin(_BOOL_TRUE)
+    false_mask = s.isin(_BOOL_FALSE)
+    out.loc[true_mask] = True
+    rest = ~(true_mask | false_mask)
+    if rest.any():
+        num = pd.to_numeric(s[rest], errors="coerce").fillna(0)
+        out.loc[rest] = num.ne(0).values
+    return out.astype(bool)
 
 
 def _nearest_funding_minutes(ts: pd.Timestamp) -> int:
@@ -176,8 +198,7 @@ def _read(path, mtime=None):
             path,
             parse_dates=["date"],
             na_values=["NA"],
-            low_memory=False,
-            dtype=_READ_DTYPES
+            low_memory=False
         )
     except pd.errors.ParserError as e:
         print(f"⚠️  ParserError leyendo {path}: {e}. Reintentando con on_bad_lines='skip'.")
@@ -186,13 +207,12 @@ def _read(path, mtime=None):
             parse_dates=["date"],
             na_values=["NA"],
             low_memory=False,
-            dtype=_READ_DTYPES,
             engine='python',
             on_bad_lines='skip'
         )
     for col in _BOOL_SIGNAL_COLS:
         if col in df.columns:
-            df[col] = df[col].fillna(False).astype(bool)
+            df[col] = _coerce_bool_series(df[col])
     return df
 
 
