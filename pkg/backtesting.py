@@ -103,38 +103,46 @@ SIMPLE_RUN: Dict[str, object] = {
     'RANDOM_SEED': 123,
     'SECOND_PASS': True,
     'SECOND_TOPK': 3,
-    'FILTERS': {'min_trades': 8, 'min_winrate': 0.0, 'max_cost_ratio': 0.90, 'max_dd': 0.30},
+    'FILTERS': {
+        'min_trades': 8,
+        'min_trades_per_day': 0.6,
+        'max_daily_sl_streak': 3,
+        'min_winrate': 0.0,
+        'max_cost_ratio': 1.20,
+        'max_dd': 0.30,
+        'export_positive_ratio': True
+    },
     'EXPORT_BEST': 'best_prod.json',
     'EXPORT_POSITIVE_ONLY': True,
     'RANGES': {
         'tp': [0.012, 0.015, 0.018, 0.022, 0.026, 0.030],
         'tp_mode': ['fixed', 'atrx'],
         'tp_atr_mult': [0.6, 0.9, 1.2, 1.5],
-        'ema_fast': [8, 13, 21],
-        'ema_slow': [30, 50, 72],
-        'rsi_buy': [54, 56, 58, 60],
-        'rsi_sell': [40, 42, 44, 46],
-        'adx_min': [14, 18, 22],
-        'min_atr_pct': [0.0010, 0.0015, 0.0020],
-        'max_atr_pct': [0.010, 0.015, 0.020],
+        'ema_fast': [5, 8, 13, 21],
+        'ema_slow': [21, 30, 50, 72],
+        'rsi_buy': [50, 52, 54, 56, 58, 60],
+        'rsi_sell': [40, 42, 44, 46, 48, 50],
+        'adx_min': [8, 10, 14, 18, 22],
+        'min_atr_pct': [0.0006, 0.0008, 0.0010, 0.0015, 0.0020],
+        'max_atr_pct': [0.010, 0.015, 0.020, 0.025, 0.030],
         'atr_mult': [1.6, 1.8, 2.2],
         'sl_mode': ['atr_then_trailing', 'percent'],
         'sl_pct': [0.010, 0.012, 0.015, 0.018],
         'be_trigger': [0.0040, 0.0050, 0.0060],
         'cooldown': [6, 10, 15],
         'logic': ['any', 'strict'],
-        'hhll_lookback': [8, 12, 16],
+        'hhll_lookback': [4, 6, 8, 12, 16],
         'time_exit_bars': [24, 36, 48, 60],
-        'max_dist_emaslow': [0.010, 0.012, 0.015],
-        'fresh_cross_max_bars': [3, 5, 7],
+        'max_dist_emaslow': [0.010, 0.012, 0.015, 0.020, 0.025],
+        'fresh_cross_max_bars': [3, 5, 7, 9, 11],
         'require_rsi_cross': [True, False],
         # Endurecedores (más estrictos):
-        'min_ema_spread': [0.0008, 0.0010, 0.0012],    # separación mínima EMA_f/EMA_s
+        'min_ema_spread': [0.0, 0.0003, 0.0005, 0.0008, 0.0010],    # separación mínima EMA_f/EMA_s
         'require_close_vs_emas': [True, False],        # exigir relación close/EMAs
-        'min_vol_ratio': [1.00, 1.05, 1.10],           # volumen relativo al MA
-        'vol_ma_len': [20, 30, 40],                    # lookback MA de volumen
+        'min_vol_ratio': [0.80, 0.90, 1.00, 1.05, 1.10],      # volumen relativo al MA
+        'vol_ma_len': [10, 20, 30, 40],                    # lookback MA de volumen
         'adx_slope_len': [3, 4],
-        'adx_slope_min': [0.2, 0.4, 0.6],             # pendiente mínima ADX
+        'adx_slope_min': [0.0, 0.2, 0.4],             # pendiente mínima ADX
         'fresh_breakout_only': [False, True],          # rupturas frescas
     },
     'LOAD_BEST_FILE': None,
@@ -157,6 +165,10 @@ def _build_simple_argv(cfg: Dict[str, object]) -> list:
     add('--symbols', cfg.get('SYMBOLS', 'auto'))
     add('--data_template', cfg.get('DATA_TEMPLATE', DEFAULT_DATA_TEMPLATE))
     add('--capital', cfg.get('CAPITAL', 1000.0))
+    if cfg.get('LOOKBACK_DAYS') is not None:
+        add('--lookback_days', cfg.get('LOOKBACK_DAYS'))
+    if cfg.get('TRAIN_RATIO') is not None:
+        add('--train_ratio', cfg.get('TRAIN_RATIO'))
     add('--out_dir', cfg.get('OUT_DIR', DEFAULT_OUT_DIR))
     add('--rank_by', cfg.get('RANK_BY', 'pnl_net'))
     filters = cfg.get('FILTERS') or {}
@@ -164,6 +176,12 @@ def _build_simple_argv(cfg: Dict[str, object]) -> list:
         add('--min_trades', filters['min_trades'])
     if filters.get('max_trades') is not None:
         add('--max_trades', filters['max_trades'])
+    if filters.get('min_trades_per_day') is not None:
+        add('--min_trades_per_day', filters['min_trades_per_day'])
+    if filters.get('max_daily_sl_streak') is not None:
+        add('--max_daily_sl_streak', filters['max_daily_sl_streak'])
+    if filters.get('export_positive_ratio'):
+        argv.append('--export_positive_ratio')
     if (filters.get('min_winrate') or 0) > 0:
         add('--min_winrate', filters['min_winrate'])
     if filters.get('max_cost_ratio') is not None:
@@ -441,6 +459,41 @@ def _load_best_params(path: str) -> List[Dict[str, object]]:
     return best
 
 
+def _load_params_map(best_path: Optional[str]) -> Dict[str, Dict[str, object]]:
+    """Carga params por símbolo desde un best_prod.json (si existe)."""
+    if not best_path:
+        return {}
+    try:
+        entries = _load_best_params(best_path)
+    except Exception:
+        return {}
+    out: Dict[str, Dict[str, object]] = {}
+    for entry in entries:
+        sym = str(entry.get('symbol', '')).upper()
+        if not sym:
+            continue
+        params = entry.get('params') or {}
+        out[sym] = params if isinstance(params, dict) else {}
+    return out
+
+
+def _ratio_positive_row(row: dict) -> bool:
+    """Define 'ratio positivo' para exportación: cost_ratio < 1 (si existe), fallback a profit_factor > 1."""
+    try:
+        cr = row.get('cost_ratio', None)
+        if cr is not None and not np.isnan(float(cr)):
+            return float(cr) < 1.0
+    except Exception:
+        pass
+    try:
+        pf = row.get('profit_factor', None)
+        if pf is not None and not np.isnan(float(pf)):
+            return float(pf) > 1.0
+    except Exception:
+        pass
+    return False
+
+
 _ATRX_ALLOWED = None
 
 
@@ -500,7 +553,7 @@ def _run_portfolio_from_best(best_path: str, args, funding_map: Dict[str, List[T
         sym = entry['symbol']
         params = entry.get('params') or {}
         try:
-            df_sym = load_candles(args.data_template, sym)
+            df_sym = load_candles(args.data_template, sym, lookback_days=args.lookback_days)
         except Exception as exc:
             print(f"[PORTFOLIO][WARN] No se pudo cargar {sym}: {exc}")
             continue
@@ -548,7 +601,7 @@ def _run_portfolio_from_best(best_path: str, args, funding_map: Dict[str, List[T
             tp1_pct_override=params.get('tp1_pct_override'),
             funding_events=_normalize_funding_events_for(sym, funding_map),
         )
-        res = bt.run(train_ratio=0.7)
+        res = bt.run(train_ratio=args.train_ratio)
         trades_map[sym] = bt.trades
         print(f"  {sym}: trades={res['trades']} pnl={res['pnl_net']} winrate={res['winrate_pct']}%")
 
@@ -873,6 +926,8 @@ class Trade:
     slippage_in: float = 0.0
     slippage_out: float = 0.0
     funding_cost: float = 0.0
+    exit_reason: Optional[str] = None
+    position_id: Optional[int] = None
 
     def pnl(self) -> float:
         if self.exit_price is None:
@@ -898,6 +953,7 @@ class LivePosition:
     tp_plan: List[Dict[str, float]]
     be_trigger: float
     cooldown_bars: int
+    position_id: int
 
 
 def _allocate_entry_cost_live(position: LivePosition, qty_close: float) -> Tuple[float, float, float]:
@@ -914,7 +970,7 @@ def _allocate_entry_cost_live(position: LivePosition, qty_close: float) -> Tuple
 
 
 def _close_position_portion_live(position: LivePosition, qty_close: float, exit_price: float, ts: pd.Timestamp,
-                                 atr_pct: float, taker_fee: float) -> Tuple[float, float, float, Trade]:
+                                 atr_pct: float, taker_fee: float, exit_reason: Optional[str] = None) -> Tuple[float, float, float, Trade]:
     if qty_close <= 0 or position.remaining_qty <= 0:
         return 0.0, 0.0, 0.0, None
     qty_close = min(qty_close, position.remaining_qty)
@@ -939,6 +995,8 @@ def _close_position_portion_live(position: LivePosition, qty_close: float, exit_
         slippage_in=slip_in_share,
         slippage_out=sl_out,
         funding_cost=funding_share,
+        exit_reason=exit_reason,
+        position_id=getattr(position, 'position_id', None),
     )
     pnl = trade.pnl()
     position.remaining_qty -= qty_close
@@ -1144,6 +1202,8 @@ class Backtester:
         self.position_slippage_in_remaining = 0.0
         self.position_funding_remaining = 0.0
         self.tp_plan: List[Dict[str, float]] = []
+        self._pos_counter = 0
+        self._current_pos_id = None
 
     def _prepare_features(self):
         df = self.df5m
@@ -1317,7 +1377,8 @@ class Backtester:
         self.position_funding_remaining -= funding_share
         return fee_share, slip_in_share, funding_share
 
-    def _close_position_portion(self, qty_close: float, exit_price: float, ts: pd.Timestamp, atr_pct: float) -> Tuple[float, float, float]:
+    def _close_position_portion(self, qty_close: float, exit_price: float, ts: pd.Timestamp, atr_pct: float,
+                                exit_reason: Optional[str] = None) -> Tuple[float, float, float]:
         if self.open_trade is None or qty_close <= 0:
             return 0.0, 0.0, 0.0
         qty_close = min(qty_close, self.position_open_qty)
@@ -1344,6 +1405,8 @@ class Backtester:
             slippage_in=slip_in_share,
             slippage_out=sl_out,
             funding_cost=funding_share,
+            exit_reason=exit_reason,
+            position_id=self.open_trade.position_id,
         )
         pnl = trade.pnl()
         self.trades.append(trade)
@@ -1358,6 +1421,7 @@ class Backtester:
         self.position_funding_remaining = 0.0
         self.tp_plan = []
         self.be_active = False
+        self._current_pos_id = None
 
     # --------------------------
     # Reglas
@@ -1511,9 +1575,19 @@ class Backtester:
             raise ValueError("Datos insuficientes")
 
         # Split + embargo 1h
-        cut_idx = int(len(df) * train_ratio)
-        cut_time = df.loc[cut_idx, 'date']
-        oos_start = cut_time + pd.Timedelta(hours=1)
+        try:
+            tr = float(train_ratio)
+        except Exception:
+            tr = 0.7
+        if tr <= 0:
+            cut_idx = 0
+            cut_time = df.loc[cut_idx, 'date']
+            oos_start = cut_time  # sin embargo
+        else:
+            cut_idx = int(len(df) * tr)
+            cut_idx = max(0, min(cut_idx, len(df) - 1))
+            cut_time = df.loc[cut_idx, 'date']
+            oos_start = cut_time + pd.Timedelta(hours=1)
 
         commissions = slippages = funding_costs = 0.0
         realized_pnl = 0.0
@@ -1594,7 +1668,9 @@ class Backtester:
                         if qty_tp <= 0:
                             target['filled'] = True
                             continue
-                        pnl_tp, comm_tp, slip_tp = self._close_position_portion(qty_tp, float(target['price']), ts, atr_pct)
+                        pnl_tp, comm_tp, slip_tp = self._close_position_portion(
+                            qty_tp, float(target['price']), ts, atr_pct, exit_reason='TP'
+                        )
                         realized_pnl += pnl_tp
                         commissions += comm_tp
                         slippages += slip_tp
@@ -1630,7 +1706,9 @@ class Backtester:
 
                 if exit_reason is not None:
                     qty_to_close = self.position_open_qty
-                    pnl_exit, comm_exit, slip_exit = self._close_position_portion(qty_to_close, float(exit_price), ts, atr_pct)
+                    pnl_exit, comm_exit, slip_exit = self._close_position_portion(
+                        qty_to_close, float(exit_price), ts, atr_pct, exit_reason=exit_reason
+                    )
                     realized_pnl += pnl_exit
                     commissions += comm_exit
                     slippages += slip_exit
@@ -1691,6 +1769,9 @@ class Backtester:
                     commission_in=fee,
                     slippage_in=sl_in,
                 )
+                self._pos_counter += 1
+                self._current_pos_id = self._pos_counter
+                self.open_trade.position_id = self._current_pos_id
                 self.position_open_qty = qty
                 self.position_entry_fee_remaining = fee
                 self.position_slippage_in_remaining = sl_in
@@ -1712,7 +1793,9 @@ class Backtester:
             ts = row['date']
             price = float(row['close'])
             atr_pct = float(row['atr_pct'])
-            pnl_exit, comm_exit, slip_exit = self._close_position_portion(self.position_open_qty, price, ts, atr_pct)
+            pnl_exit, comm_exit, slip_exit = self._close_position_portion(
+                self.position_open_qty, price, ts, atr_pct, exit_reason='EOD'
+            )
             realized_pnl += pnl_exit
             commissions += comm_exit
             slippages += slip_exit
@@ -1751,9 +1834,99 @@ class Backtester:
                 bars_per_year = 288 * 365  # 5m bars ≈ 105,120/año
                 sharpe_annual = float((rets.mean() / rets.std()) * np.sqrt(bars_per_year))
 
+        # ==== Métricas de señales por día (por posición, criterio estricto) ====
+        trades_per_day = None
+        min_trades_per_day = None
+        max_daily_sl_streak = None
+        days_oos = None
+        positions_count = None
+        try:
+            oos_df = df[df['date'] >= oos_start]
+            if oos_df.empty:
+                oos_df = df
+            start_day = pd.Timestamp(oos_df['date'].min()).normalize()
+            end_day = pd.Timestamp(oos_df['date'].max()).normalize()
+            days_oos = (end_day - start_day).days + 1
+            if days_oos and days_oos > 0:
+                days_idx = pd.date_range(start_day, end_day, freq='D')
+                # Agrupar trades por posición
+                positions = {}
+                for t in self.trades:
+                    pid = t.position_id if t.position_id is not None else id(t)
+                    if pid not in positions:
+                        positions[pid] = {'entry_time': t.entry_time, 'trades': [t]}
+                    else:
+                        positions[pid]['trades'].append(t)
+                        et = positions[pid]['entry_time']
+                        if et is None or (t.entry_time is not None and t.entry_time < et):
+                            positions[pid]['entry_time'] = t.entry_time
+
+                positions_count = len(positions)
+                # Conteo de posiciones abiertas por día (entry_time)
+                counts = pd.Series(0, index=days_idx)
+                for pos in positions.values():
+                    et = pos.get('entry_time')
+                    if et is None:
+                        continue
+                    d = pd.Timestamp(et)
+                    if d.tzinfo is None:
+                        d = d.tz_localize('UTC')
+                    else:
+                        d = d.tz_convert('UTC')
+                    d = d.normalize()
+                    if d in counts.index:
+                        counts.loc[d] += 1
+                trades_per_day = float(counts.mean())
+                min_trades_per_day = int(counts.min())
+
+                # Racha de SL consecutivos por día (usa cierre final por posición)
+                finals_by_day = {day: [] for day in days_idx}
+                for pos in positions.values():
+                    trades = pos.get('trades', [])
+                    if not trades:
+                        continue
+                    # trade final por posición
+                    final = None
+                    for t in trades:
+                        if t.exit_time is None:
+                            continue
+                        if final is None or t.exit_time > final.exit_time:
+                            final = t
+                    if final is None:
+                        continue
+                    e = pd.Timestamp(final.exit_time)
+                    if e.tzinfo is None:
+                        e = e.tz_localize('UTC')
+                    else:
+                        e = e.tz_convert('UTC')
+                    day = e.normalize()
+                    if day in finals_by_day:
+                        finals_by_day[day].append(final)
+
+                max_daily_sl_streak = 0
+                for day, finals in finals_by_day.items():
+                    if not finals:
+                        continue
+                    finals.sort(key=lambda x: x.exit_time)
+                    streak = 0
+                    for t in finals:
+                        if str(t.exit_reason).upper() == 'SL':
+                            streak += 1
+                            if streak > max_daily_sl_streak:
+                                max_daily_sl_streak = streak
+                        else:
+                            streak = 0
+        except Exception:
+            trades_per_day = None
+            min_trades_per_day = None
+            max_daily_sl_streak = None
+            days_oos = None
+            positions_count = None
+
         result = {
             'symbol': self.symbol,
             'trades': len(self.trades),
+            'positions': int(positions_count) if positions_count is not None else None,
             'equity_final': round(self.equity, 2),
             'pnl_net': round(self.equity - self.initial_equity, 2),
             'winrate_pct': round(winrate, 2),
@@ -1764,6 +1937,10 @@ class Backtester:
             'cost_ratio': round(float(cost_ratio), 4) if not np.isnan(cost_ratio) else None,
             'max_dd_pct': round(float(max_dd_pct), 4) if max_dd_pct is not None else None,
             'sharpe_annual': round(float(sharpe_annual), 3) if sharpe_annual is not None else None,
+            'trades_per_day': round(float(trades_per_day), 4) if trades_per_day is not None else None,
+            'min_trades_per_day': int(min_trades_per_day) if min_trades_per_day is not None else None,
+            'max_daily_sl_streak': int(max_daily_sl_streak) if max_daily_sl_streak is not None else None,
+            'days_oos': int(days_oos) if days_oos is not None else None,
         }
         return result
 
@@ -1790,23 +1967,36 @@ class Backtester:
 
 
 def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: float,
-                              weights_csv: Optional[str], funding_8h: float = 0.0001) -> Dict[str, object]:
+                              weights_csv: Optional[str], funding_8h: float = 0.0001,
+                              best_path: Optional[str] = None,
+                              lookback_days: Optional[int] = None,
+                              return_trades: bool = False) -> Dict[str, object]:
     if _indicadores is None:
         raise SystemExit("No se pudo importar indicadores.py; live_parity requiere pkg/indicadores.py.")
 
-    params_by_symbol = {}
-    try:
-        params_by_symbol = _indicadores.PARAMS_BY_SYMBOL or {}
-    except Exception:
-        params_by_symbol = {}
+    params_by_symbol = _load_params_map(best_path)
+    if not params_by_symbol:
+        try:
+            params_by_symbol = _indicadores.PARAMS_BY_SYMBOL or {}
+        except Exception:
+            params_by_symbol = {}
     params_norm = {_norm_symbol(k): v for k, v in params_by_symbol.items()} if params_by_symbol else {}
 
     data_by_symbol = {}
     for sym in symbols:
-        df_sym = load_candles(data_template, sym)
-        df_ind = _indicadores._calc_symbol(df_sym.copy(), sym)
+        df_sym = load_candles(data_template, sym, lookback_days=lookback_days)
+        sym_u = str(sym).upper()
+        p = params_by_symbol.get(sym_u) or params_norm.get(_norm_symbol(sym_u)) or {}
+        df_ind = _indicadores._calc_symbol(df_sym.copy(), sym, params_override=p if p else None)
         df_ind = df_ind.sort_values('date')
         df_ind = df_ind.drop_duplicates(subset=['date'], keep='last')
+        if lookback_days and not df_ind.empty:
+            try:
+                last_ts = df_ind['date'].max()
+                cutoff = last_ts - pd.Timedelta(days=int(lookback_days))
+                df_ind = df_ind[df_ind['date'] >= cutoff]
+            except Exception:
+                pass
         data_by_symbol[sym] = df_ind.set_index('date')
 
     timeline = None
@@ -1851,6 +2041,7 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
     equity_curve = []
     equity_time = []
 
+    pos_counter = 0
     for ts in timeline:
         closed_this_bar = set()
         candidates = []
@@ -1901,7 +2092,7 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                             target['filled'] = True
                             continue
                         pnl_tp, comm_tp, slip_tp, trade = _close_position_portion_live(
-                            pos, qty_tp, float(target['price']), ts, atr_pct, 0.0005
+                            pos, qty_tp, float(target['price']), ts, atr_pct, 0.0005, exit_reason='TP'
                         )
                         if trade is not None:
                             trades.append(trade)
@@ -1923,7 +2114,7 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
 
                 if hit_sl:
                     pnl_exit, comm_exit, slip_exit, trade = _close_position_portion_live(
-                        pos, pos.remaining_qty, float(pos.sl_price), ts, atr_pct, 0.0005
+                        pos, pos.remaining_qty, float(pos.sl_price), ts, atr_pct, 0.0005, exit_reason='SL'
                     )
                     if trade is not None:
                         trades.append(trade)
@@ -1997,6 +2188,7 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                 sl_price = _initial_sl_from_row(cand['row'], cand['side'], entry_price, sym)
                 cooldown_bars = cooldown_map.get(sym, 0)
 
+                pos_counter += 1
                 open_positions[sym] = LivePosition(
                     symbol=sym,
                     side=cand['side'],
@@ -2011,6 +2203,7 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                     tp_plan=tp_plan,
                     be_trigger=be_trigger,
                     cooldown_bars=cooldown_bars,
+                    position_id=pos_counter,
                 )
                 total_alloc += trade_amt
 
@@ -2028,7 +2221,7 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
             continue
         atr_pct = float(last_row.get('ATR_pct', 0.0)) if pd.notna(last_row.get('ATR_pct', 0.0)) else 0.0
         pnl_exit, comm_exit, slip_exit, trade = _close_position_portion_live(
-            pos, pos.remaining_qty, price, ts, atr_pct, 0.0005
+            pos, pos.remaining_qty, price, ts, atr_pct, 0.0005, exit_reason='EOD'
         )
         if trade is not None:
             trades.append(trade)
@@ -2060,7 +2253,7 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
             bars_per_year = 288 * 365
             sharpe_annual = float((rets.mean() / rets.std()) * np.sqrt(bars_per_year))
 
-    return {
+    result = {
         'trades': len(trades),
         'pnl_net': round(equity - capital, 2),
         'equity_final': round(equity, 2),
@@ -2073,6 +2266,118 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
         'max_dd_pct': round(float(max_dd_pct), 4) if max_dd_pct is not None else None,
         'sharpe_annual': round(float(sharpe_annual), 3) if sharpe_annual is not None else None,
     }
+    if return_trades:
+        result['trades_list'] = trades
+        result['equity_curve'] = equity_curve
+        result['equity_time'] = equity_time
+    return result
+
+
+def _summarize_trades_by_symbol(trades: List[Trade]) -> List[Dict[str, object]]:
+    if not trades:
+        return []
+    buckets: Dict[str, List[Trade]] = {}
+    for t in trades:
+        buckets.setdefault(str(t.symbol).upper(), []).append(t)
+    rows = []
+    for sym in sorted(buckets.keys()):
+        tlist = buckets[sym]
+        pnl_net = sum(t.pnl() for t in tlist)
+        gross_pnl = sum([(1 if t.side == 'long' else -1) * (t.exit_price - t.entry_price) * t.qty
+                         for t in tlist if t.exit_price is not None])
+        commissions = sum(t.commission_in + t.commission_out for t in tlist)
+        slippages = sum(t.slippage_in + t.slippage_out for t in tlist)
+        funding_costs = sum(t.funding_cost for t in tlist)
+        costs_total = commissions + slippages + funding_costs
+        cost_ratio = (costs_total / abs(gross_pnl)) if gross_pnl else None
+        wins = [t for t in tlist if t.pnl() > 0]
+        winrate = (len(wins) / len(tlist)) * 100 if tlist else 0.0
+        pos = sum([t.pnl() for t in tlist if t.pnl() > 0])
+        neg = -sum([t.pnl() for t in tlist if t.pnl() < 0])
+        profit_factor = (pos / neg) if neg > 0 else None
+        # trades/día y racha SL diaria (criterio estricto por posición)
+        trades_per_day = None
+        max_daily_sl_streak = None
+        try:
+            # agrupa por posición
+            positions = {}
+            for t in tlist:
+                pid = t.position_id if t.position_id is not None else id(t)
+                if pid not in positions:
+                    positions[pid] = {'entry_time': t.entry_time, 'trades': [t]}
+                else:
+                    positions[pid]['trades'].append(t)
+                    et = positions[pid]['entry_time']
+                    if et is None or (t.entry_time is not None and t.entry_time < et):
+                        positions[pid]['entry_time'] = t.entry_time
+
+            entry_times = [pd.Timestamp(p['entry_time']) for p in positions.values() if p.get('entry_time') is not None]
+            if entry_times:
+                start_day = min(entry_times).normalize()
+                end_day = max(entry_times).normalize()
+                days = (end_day - start_day).days + 1
+                if days > 0:
+                    days_idx = pd.date_range(start_day, end_day, freq='D')
+                    counts = pd.Series(0, index=days_idx)
+                    for p in positions.values():
+                        et = p.get('entry_time')
+                        if et is None:
+                            continue
+                        d = pd.Timestamp(et).normalize()
+                        if d in counts.index:
+                            counts.loc[d] += 1
+                    trades_per_day = float(counts.mean())
+
+                max_daily_sl_streak = 0
+                days_idx = pd.date_range(start_day, end_day, freq='D')
+                finals_by_day = {day: [] for day in days_idx}
+                for p in positions.values():
+                    trades = p.get('trades', [])
+                    if not trades:
+                        continue
+                    final = None
+                    for t in trades:
+                        if t.exit_time is None:
+                            continue
+                        if final is None or t.exit_time > final.exit_time:
+                            final = t
+                    if final is None:
+                        continue
+                    day = pd.Timestamp(final.exit_time).normalize()
+                    if day in finals_by_day:
+                        finals_by_day[day].append(final)
+                for day, finals in finals_by_day.items():
+                    if not finals:
+                        continue
+                    finals.sort(key=lambda x: x.exit_time)
+                    streak = 0
+                    for t in finals:
+                        if str(t.exit_reason).upper() == 'SL':
+                            streak += 1
+                            if streak > max_daily_sl_streak:
+                                max_daily_sl_streak = streak
+                        else:
+                            streak = 0
+        except Exception:
+            trades_per_day = None
+            max_daily_sl_streak = None
+
+        positions_count = len(positions) if 'positions' in locals() else None
+        rows.append({
+            'symbol': sym,
+            'trades': len(tlist),
+            'positions': int(positions_count) if positions_count is not None else None,
+            'pnl_net': round(pnl_net, 2),
+            'winrate_pct': round(winrate, 2),
+            'profit_factor': round(float(profit_factor), 3) if profit_factor is not None else None,
+            'commissions': round(commissions, 4),
+            'slippage_cost': round(slippages, 4),
+            'funding_cost': round(funding_costs, 4),
+            'cost_ratio': round(float(cost_ratio), 4) if cost_ratio is not None else None,
+            'trades_per_day': round(float(trades_per_day), 4) if trades_per_day is not None else None,
+            'max_daily_sl_streak': int(max_daily_sl_streak) if max_daily_sl_streak is not None else None,
+        })
+    return rows
 
 
 def simulate_portfolio(trades_by_symbol: Dict[str, List[Trade]],
@@ -2135,6 +2440,8 @@ def simulate_portfolio(trades_by_symbol: Dict[str, List[Trade]],
                 slippage_in=trade.slippage_in * scale,
                 slippage_out=trade.slippage_out * scale,
                 funding_cost=trade.funding_cost * scale,
+                exit_reason=trade.exit_reason,
+                position_id=trade.position_id,
             )
             portfolio_trades.append(scaled_trade)
             equity_curve.append(equity)
@@ -2212,7 +2519,7 @@ def simulate_portfolio(trades_by_symbol: Dict[str, List[Trade]],
 # CLI
 # ==========================
 
-def load_candles(template_or_path: str, symbol: str) -> pd.DataFrame:
+def load_candles(template_or_path: str, symbol: str, lookback_days: Optional[int] = None) -> pd.DataFrame:
     """Carga velas 5m desde:
     - Una ruta *templated* con `{symbol}` (ej. 'archivos/{symbol}_5m.csv'), o
     - Un CSV único con múltiples símbolos (ej. 'archivos/cripto_price_5m_long.csv').
@@ -2273,6 +2580,13 @@ def load_candles(template_or_path: str, symbol: str) -> pd.DataFrame:
     # Ordena por fecha y devuelve columnas esperadas en orden
     df = df[['symbol','open','high','low','close','volume','date']]
     df = ensure_dt_utc(df, 'date')
+    if lookback_days and not df.empty:
+        try:
+            last_ts = df['date'].max()
+            cutoff = last_ts - pd.Timedelta(days=int(lookback_days))
+            df = df[df['date'] >= cutoff]
+        except Exception:
+            pass
     if 'symbol_norm' in df.columns: df = df.drop(columns=['symbol_norm'])
     return df
 
@@ -2285,9 +2599,11 @@ def load_candles(template_or_path: str, symbol: str) -> pd.DataFrame:
 def run_job(job):
     sym, p, data_template, capital, out_dir = job[:5]
     funding_map = job[5] if len(job) >= 6 else {}
+    train_ratio = job[6] if len(job) >= 7 else 0.7
+    lookback_days = job[7] if len(job) >= 8 else None
     try:
         p = _apply_atrx_guard(sym, p)
-        dfj = load_candles(data_template, sym)
+        dfj = load_candles(data_template, sym, lookback_days=lookback_days)
         funding_events = _normalize_funding_events_for(sym, funding_map) if isinstance(funding_map, dict) else []
         bt = Backtester(
             symbol=sym,
@@ -2327,7 +2643,7 @@ def run_job(job):
             tp1_pct_override=p.get('tp1_pct_override'),
             funding_events=funding_events,
         )
-        res = bt.run(train_ratio=0.7)
+        res = bt.run(train_ratio=train_ratio)
         res['params'] = p
         res['symbol'] = sym
         # Ya no guardamos trades en cada combinación del sweep aquí.
@@ -2347,6 +2663,8 @@ def main():
     parser.add_argument('--symbols', type=str, default='BTCUSDT', help='Lista separada por comas')
     parser.add_argument('--data_template', type=str, default=DEFAULT_DATA_TEMPLATE, help='Ruta con {symbol} o CSV único (default: DEFAULT_DATA_TEMPLATE)')
     parser.add_argument('--capital', type=float, default=1000.0)
+    parser.add_argument('--train_ratio', type=float, default=0.7, help='Proporción de datos usada como entrenamiento (0 = usar todo)')
+    parser.add_argument('--lookback_days', type=int, default=None, help='Limitar el histórico a los últimos N días (None = todo)')
     parser.add_argument('--tp', type=float, default=0.01, help='Take Profit en fracción (0.01 = 1%)')
     parser.add_argument('--atr_mult', type=float, default=2.0)
     parser.add_argument('--ema_fast', type=int, default=20)
@@ -2379,6 +2697,9 @@ def main():
     parser.set_defaults(fresh_breakout_only=False)
     parser.add_argument('--portfolio_mode', action='store_true', help='Simular todos los símbolos compartiendo el mismo capital')
     parser.add_argument('--live_parity', action='store_true', help='Simulación live-parity usando indicadores/TP/SL del bot')
+    parser.add_argument('--parity_days', type=int, default=None, help='Limitar live-parity a los últimos N días (None = todo)')
+    parser.add_argument('--parity_best', type=str, default=None, help='Ruta a best_prod.json para live-parity (si se omite, usa el cargado por indicadores)')
+    parser.add_argument('--parity_per_symbol', action='store_true', help='Imprime resumen por símbolo en live-parity')
     parser.add_argument('--weights_csv', type=str, default='archivos/pesos_actualizados.csv', help='CSV de pesos (symbol,peso_actualizado)')
     parser.add_argument('--portfolio_max_positions', type=int, default=3, help='Máximo de posiciones abiertas simultáneas (0 = sin límite)')
     parser.add_argument('--portfolio_alloc_pct', type=float, default=0.30, help='Fracción máxima del equity que puede asignar cada trade (0.30 = 30%)')
@@ -2393,6 +2714,8 @@ def main():
     parser.add_argument('--rank_by', type=str, default='pnl_net', choices=['pnl_net','pnl_net_per_trade','sharpe_annual','profit_factor','winrate_pct','cost_ratio','max_dd_pct','calmar'], help="Métrica para ranking y selección por símbolo. 'calmar' = pnl_net / |max_dd_pct|")
     parser.add_argument('--min_trades', type=int, default=0, help='Filtra combinaciones con menos de este número de trades')
     parser.add_argument('--max_trades', type=int, default=None, help='Filtra combinaciones con más de este número de trades')
+    parser.add_argument('--min_trades_per_day', type=float, default=0.0, help='Filtra combinaciones con trades/día promedio < a este valor')
+    parser.add_argument('--max_daily_sl_streak', type=int, default=None, help='Filtra combinaciones con racha diaria de SL consecutivos > a este valor')
     parser.add_argument('--min_winrate', type=float, default=0.0, help='Filtra combinaciones con winrate &lt; a este porcentaje')
     parser.add_argument('--max_cost_ratio', type=float, default=None, help='Filtra combinaciones con cost_ratio &gt; a este valor')
     parser.add_argument('--max_dd', type=float, default=None, help='Filtra combinaciones con drawdown máximo absoluto mayor a este valor (ej. 0.3 para 30%)')
@@ -2403,6 +2726,7 @@ def main():
     parser.add_argument('--random_seed', type=int, default=42, help='Semilla para el muestreo aleatorio')
     parser.add_argument('--second_pass', action='store_true', help='Hacer una segunda pasada local alrededor de los mejores por símbolo')
     parser.add_argument('--second_topk', type=int, default=1, help='Cuántos mejores por símbolo usar como base para la segunda pasada')
+    parser.add_argument('--export_positive_ratio', action='store_true', help='Exporta solo símbolos con ratio positivo (cost_ratio < 1 o profit_factor > 1)')
 
     args = parser.parse_args()
 
@@ -2416,6 +2740,12 @@ def main():
     funding_map = _load_funding_events_csv(args.funding_csv)
 
     if args.live_parity:
+        best_syms = None
+        if args.parity_best:
+            try:
+                best_syms = [e.get('symbol') for e in _load_best_params(args.parity_best) if e.get('symbol')]
+            except Exception:
+                best_syms = None
         symbols_lp = symbols
         if '{symbol}' not in args.data_template:
             raw_syms = _list_symbols_from_csv(args.data_template)
@@ -2430,13 +2760,25 @@ def main():
                         symbols_lp.append(sym_map[ns])
         if not symbols_lp and sym_map:
             symbols_lp = [sym_map[list(sym_map.keys())[0]]]
+        if best_syms:
+            best_norm = {_norm_symbol(s) for s in best_syms if s}
+            symbols_lp = [s for s in symbols_lp if _norm_symbol(s) in best_norm]
         print(f"[LIVE_PARITY] Símbolos usados: {', '.join(symbols_lp)}")
         result = run_live_parity_portfolio(
             symbols_lp,
             args.data_template,
             args.capital,
             args.weights_csv,
+            best_path=args.parity_best,
+            lookback_days=args.parity_days,
+            return_trades=args.parity_per_symbol,
         )
+        if args.parity_per_symbol and result.get('trades_list'):
+            rows = _summarize_trades_by_symbol(result['trades_list'])
+            if rows:
+                print("[LIVE_PARITY] Resumen por símbolo:")
+                for r in rows:
+                    print(f"  {r['symbol']}: trades={r['trades']} pnl={r['pnl_net']} winrate={r['winrate_pct']}% cost_ratio={r['cost_ratio']}")
         print("[LIVE_PARITY] Resultado agregado:")
         print(f"  Trades: {result['trades']} | PnL neto: {result['pnl_net']} | Winrate: {result['winrate_pct']}%")
         print(f"  Max DD: {result['max_dd_pct']} | Sharpe anualizado: {result['sharpe_annual']}")
@@ -2449,7 +2791,7 @@ def main():
         trades_map: Dict[str, List[Trade]] = {}
         symbol_results = []
         for sym in symbols:
-            df_sym = load_candles(args.data_template, sym)
+            df_sym = load_candles(args.data_template, sym, lookback_days=args.lookback_days)
             bt = Backtester(
                 symbol=sym,
                 df5m=df_sym,
@@ -2484,7 +2826,7 @@ def main():
                 fresh_breakout_only=args.fresh_breakout_only,
                 funding_events=_normalize_funding_events_for(sym, funding_map),
             )
-            res_sym = bt.run(train_ratio=0.7)
+            res_sym = bt.run(train_ratio=args.train_ratio)
             symbol_results.append(res_sym)
             trades_map[sym.upper()] = bt.trades
 
@@ -2616,7 +2958,7 @@ def main():
         for sym in sweep_symbols:
             for values in combos:
                 params = dict(zip([k for k, _ in keys], values))
-                jobs.append((sym, params, args.data_template, args.capital, args.out_dir, funding_map))
+                jobs.append((sym, params, args.data_template, args.capital, args.out_dir, funding_map, args.train_ratio, args.lookback_days))
 
         os.makedirs(args.out_dir, exist_ok=True)
         print(f"[SWEEP] Total jobs: {len(jobs)} (symbols={len(sweep_symbols)}, base={len(combos)})")
@@ -2649,6 +2991,14 @@ def main():
             before = len(good)
             good = good[good['trades'].astype(float) <= args.max_trades]
             print(f"[SWEEP][DIAG] tras max_trades<={args.max_trades}: {len(good)} (−{before-len(good)})")
+        if args.min_trades_per_day and 'trades_per_day' in good.columns:
+            before = len(good)
+            good = good[good['trades_per_day'].astype(float) >= float(args.min_trades_per_day)]
+            print(f"[SWEEP][DIAG] tras trades_per_day>={args.min_trades_per_day}: {len(good)} (−{before-len(good)})")
+        if args.max_daily_sl_streak is not None and 'max_daily_sl_streak' in good.columns:
+            before = len(good)
+            good = good[good['max_daily_sl_streak'].astype(float) <= float(args.max_daily_sl_streak)]
+            print(f"[SWEEP][DIAG] tras max_daily_sl_streak<={args.max_daily_sl_streak}: {len(good)} (−{before-len(good)})")
         if args.min_winrate > 0.0:
             before = len(good)
             good = good[good['winrate_pct'].astype(float) >= args.min_winrate]
@@ -2680,12 +3030,33 @@ def main():
                 f.write(good.drop(columns=['__metric__','__trades__'], errors='ignore').to_json(orient='records', indent=2))
             print(f"[SWEEP] Resumen guardado en {out_json}")
 
+            # Reporte compacto de mejores por símbolo
+            try:
+                report_df = symbol_best.copy()
+                if 'params' in report_df.columns:
+                    report_df['params_json'] = report_df['params'].apply(lambda x: json.dumps(x, ensure_ascii=False))
+                cols = [c for c in [
+                    'symbol','pnl_net','trades','positions','trades_per_day','min_trades_per_day',
+                    'max_daily_sl_streak','winrate_pct','profit_factor','cost_ratio','max_dd_pct','params_json'
+                ] if c in report_df.columns]
+                report_df = report_df[cols].copy()
+                report_csv = os.path.join(args.out_dir, 'reporte_best.csv')
+                report_df.to_csv(report_csv, index=False)
+                print(f"[SWEEP] Reporte guardado en {report_csv}")
+            except Exception as _e:
+                print(f"[SWEEP][WARN] No se pudo generar reporte: {_e}")
+
             if args.export_best and len(symbol_best):
                 export_best = symbol_best
                 if args.export_positive_only:
                     export_best = export_best[export_best['pnl_net'].astype(float) > 0].copy()
                     if len(export_best) < len(symbol_best):
                         print(f"[SWEEP] Export filtrado pnl_net>0: {len(export_best)}/{len(symbol_best)} símbolos")
+                if args.export_positive_ratio:
+                    before_ratio = len(export_best)
+                    export_best = export_best[export_best.apply(lambda r: _ratio_positive_row(r), axis=1)].copy()
+                    if len(export_best) < before_ratio:
+                        print(f"[SWEEP] Export filtrado ratio positivo: {len(export_best)}/{before_ratio} símbolos")
                 if export_best.empty:
                     print("[SWEEP][WARN] export_positive_only dejó 0 símbolos; no se exporta best_prod.")
                 else:
@@ -2837,7 +3208,7 @@ def main():
                                 'be_trigger': float(be),
                                 'logic': str(lg),
                             })
-                            neigh_jobs.append((sym, p, args.data_template, args.capital, args.out_dir, funding_map))
+                            neigh_jobs.append((sym, p, args.data_template, args.capital, args.out_dir, funding_map, args.train_ratio, args.lookback_days))
 
                     if len(neigh_jobs):
                         print(f"[SECOND] Vecindad jobs: {len(neigh_jobs)}")
@@ -2855,6 +3226,10 @@ def main():
                             df2 = df2[df2['trades'].astype(float) >= args.min_trades]
                         if args.max_trades is not None:
                             df2 = df2[df2['trades'].astype(float) <= args.max_trades]
+                        if args.min_trades_per_day and 'trades_per_day' in df2.columns:
+                            df2 = df2[df2['trades_per_day'].astype(float) >= float(args.min_trades_per_day)]
+                        if args.max_daily_sl_streak is not None and 'max_daily_sl_streak' in df2.columns:
+                            df2 = df2[df2['max_daily_sl_streak'].astype(float) <= float(args.max_daily_sl_streak)]
                         if args.min_winrate > 0.0:
                             df2 = df2[df2['winrate_pct'].astype(float) >= args.min_winrate]
                         if args.max_cost_ratio is not None:
@@ -2894,6 +3269,11 @@ def main():
                                 export_best2 = export_best2[export_best2['pnl_net'].astype(float) > 0].copy()
                                 if len(export_best2) < len(symbol_best):
                                     print(f"[SECOND] Export filtrado pnl_net>0: {len(export_best2)}/{len(symbol_best)} símbolos")
+                            if args.export_positive_ratio:
+                                before_ratio2 = len(export_best2)
+                                export_best2 = export_best2[export_best2.apply(lambda r: _ratio_positive_row(r), axis=1)].copy()
+                                if len(export_best2) < before_ratio2:
+                                    print(f"[SECOND] Export filtrado ratio positivo: {len(export_best2)}/{before_ratio2} símbolos")
                             if export_best2.empty:
                                 print("[SECOND][WARN] export_positive_only dejó 0 símbolos; no se exporta best_prod.")
                             else:
@@ -2950,7 +3330,7 @@ def main():
     summary = []
     for sym in symbols:
         try:
-            df = load_candles(args.data_template, sym)
+            df = load_candles(args.data_template, sym, lookback_days=args.lookback_days)
         except Exception as e:
             print(f"[SKIP] {sym}: {e}")
             continue
@@ -3017,7 +3397,7 @@ def main():
             adx_slope_min=p['adx_slope_min'],
             fresh_breakout_only=p['fresh_breakout_only'],
         )
-        res = bt.run(train_ratio=0.7)
+        res = bt.run(train_ratio=args.train_ratio)
         summary.append(res)
         print(f"[{sym}] Trades: {res['trades']}, PnL neto: {res['pnl_net']}, Winrate: {res['winrate_pct']}%, CostRatio: {res['cost_ratio']}")
 

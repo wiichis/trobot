@@ -217,12 +217,15 @@ def _read(path, mtime=None):
 
 
 # ---------- indicadores ----------
-def _calc_symbol(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
+def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.DataFrame:
     df = df.sort_values("date").copy()
     c, h, l, v = df["close"], df["high"], df["low"], df["volume"]
 
     # Params por símbolo (fallbacks sensatos)
-    p = (PARAMS_BY_SYMBOL.get(symbol.upper(), {}) or {})
+    if isinstance(params_override, dict):
+        p = params_override
+    else:
+        p = (PARAMS_BY_SYMBOL.get(symbol.upper(), {}) or {})
     ema_f = int(p.get('ema_fast', EMA_S))
     ema_s = int(p.get('ema_slow', EMA_L))
     rsi_buy  = int(p.get('rsi_buy', 55))
