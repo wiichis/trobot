@@ -494,6 +494,17 @@ def _ratio_positive_row(row: dict) -> bool:
     return False
 
 
+def _refresh_indicators_from_best() -> None:
+    """Recalcula indicadores.csv usando el best_prod.json recién exportado."""
+    try:
+        if _indicadores is None:
+            return
+        _indicadores.update_indicators()
+        print("[SWEEP] Indicadores actualizados (archivos/indicadores.csv)")
+    except Exception as exc:
+        print(f"[SWEEP][WARN] No se pudieron actualizar indicadores: {exc}")
+
+
 _ATRX_ALLOWED = None
 
 
@@ -3079,6 +3090,7 @@ def main():
                         with open(_pkg_best, 'w') as _pf:
                             json.dump(prod, _pf, indent=2)
                         print(f"[SWEEP] Copia de producción para pkg en {_pkg_best}")
+                        _refresh_indicators_from_best()
                     except Exception as _e:
                         print(f"[SWEEP][WARN] No se pudo escribir copia en pkg: {_e}")
                 # ---- Resumen en consola (ganancia por portafolio usando best por símbolo) ----
@@ -3296,6 +3308,7 @@ def main():
                                     with open(_pkg_best2, 'w') as _pf2:
                                         json.dump(prod2, _pf2, indent=2)
                                     print(f"[SECOND] Copia de producción para pkg en {_pkg_best2}")
+                                    _refresh_indicators_from_best()
                                 except Exception as _e:
                                     print(f"[SECOND][WARN] No se pudo escribir copia en pkg: {_e}")
                             # Resumen consola post-second

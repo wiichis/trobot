@@ -110,16 +110,24 @@ def _load_best_prod_and_params(path: str):
 
 BEST_PROD_PATH = Path(__file__).resolve().parent / "best_prod.json"
 PARAMS_BY_SYMBOL = {}
+TRADE_SYMBOLS = []
 try:
   if BEST_PROD_PATH.exists():
       wl, params_map = _load_best_prod_and_params(str(BEST_PROD_PATH))
       PARAMS_BY_SYMBOL = params_map
+      if wl:
+          TRADE_SYMBOLS = [str(sym).upper() for sym in wl if sym]
       # Si no hay whitelist explícita, usa la derivada del best_prod.json
       if not ALLOWED_SYMBOLS and wl:
           ALLOWED_SYMBOLS = wl
           print(f"✅ Whitelist derivada de best_prod.json ({len(ALLOWED_SYMBOLS)})")
 except Exception as _e:
     PARAMS_BY_SYMBOL = {}
+    TRADE_SYMBOLS = []
+
+# Si no hay lista de trading, usar la whitelist de datos
+if not TRADE_SYMBOLS and ALLOWED_SYMBOLS:
+    TRADE_SYMBOLS = [str(sym).upper() for sym in ALLOWED_SYMBOLS if sym]
 
 def _apply_whitelist(df: pd.DataFrame) -> pd.DataFrame:
     """Filtra por la whitelist si existe y si el DataFrame tiene columna 'symbol'."""
@@ -367,6 +375,11 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
     df["Long_Signal"]  = (base_long & gates_long & trigger_long)
     df["Short_Signal"] = (base_short & gates_short & trigger_short)
 
+    # Bloquea señales si el símbolo no está habilitado para trading
+    if TRADE_SYMBOLS and str(symbol).upper() not in TRADE_SYMBOLS:
+        df["Long_Signal"] = False
+        df["Short_Signal"] = False
+
     funding_block = df['date'].apply(_in_funding_window)
     df["FUNDING_WINDOW"] = funding_block
     df["Long_Signal"] = df["Long_Signal"] & (~funding_block)
@@ -468,6 +481,8 @@ def update_indicators():
         before = len(price)
         price = price[price['symbol'].isin(ALLOWED_SYMBOLS)]
         print(f"✅ Whitelist aplicada: {before}→{len(price)} filas, {len(ALLOWED_SYMBOLS)} símbolos")
+        if TRADE_SYMBOLS and len(TRADE_SYMBOLS) < len(ALLOWED_SYMBOLS):
+            print(f"✅ Trading activo solo en: {len(TRADE_SYMBOLS)} símbolos (best_prod.json)")
         if price.empty:
             print("🚫 Whitelist vació el dataset; no hay datos para procesar.")
             return
