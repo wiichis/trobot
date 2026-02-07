@@ -1,98 +1,76 @@
-# Flujo diario de backtesting y pase a produccion
+# Flujo diario activo: loss recovery
 
-Este flujo crea un dataset diario de evaluacion (`cripto_price_5m_eval.csv`), optimiza parametros, valida consistencia y promueve a produccion solo si pasa gates.
+Este es el modelo que queda activo para ajustes diarios en produccion:
 
-## 1) Archivos nuevos del flujo
+- detectar perdidas recientes en `archivos/PnL.csv`
+- aplicar `cooldown` por simbolo
+- reoptimizar solo simbolos con perdida
+- promover cambios por simbolo solo si pasan gates
+- enviar alerta por Telegram
 
-- `scripts/build_eval_dataset.py`
-  - Crea `archivos/cripto_price_5m_eval.csv` desde `archivos/cripto_price_5m_long.csv`.
-  - Limpia duplicados y corta ventana de N dias (default 90).
-- `scripts/daily_backtest_pipeline.sh`
-  - Orquesta todo el flujo diario.
-- `scripts/evaluate_and_promote.py`
-  - Evalua candidato vs modelo actual y promueve solo si pasa gates.
-- `scripts/profile_daily_pipeline.sh`
-  - Ejecuta una corrida con profiling de consumo (CPU/RAM/tiempo).
+## 1) Scripts usados
 
-## 2) Flujo operativo diario
+- `scripts/loss_recovery_tuner.py`
+- `scripts/daily_loss_recovery.sh`
 
-Paso a paso que ejecuta el pipeline:
-
-1. Actualiza precios (`cripto_price_5m.csv` y `cripto_price_5m_long.csv`).
-2. Construye `archivos/cripto_price_5m_eval.csv` con ventana de 90 dias.
-3. Corre sweep diario (liviano) sobre dataset de evaluacion.
-4. Exporta candidato consistente (`best_prod_daily_consistent.json`) validando 90d vs 180d.
-5. Evalua gates y promueve a:
-   - `pkg/best_prod_consistent.json`
-   - `pkg/best_prod.json` (compatibilidad)
-6. Refresca `archivos/indicadores.csv` solo si hubo promocion.
-
-## 3) Ejecucion manual (prueba)
+## 2) Ejecucion manual
 
 ```bash
 cd ~/TRobot
 source env/bin/activate
-chmod +x scripts/daily_backtest_pipeline.sh scripts/profile_daily_pipeline.sh
-bash scripts/daily_backtest_pipeline.sh
+chmod +x scripts/loss_recovery_tuner.py scripts/daily_loss_recovery.sh
 ```
 
-Salida principal:
-- logs en `archivos/backtesting/daily/daily_pipeline_YYYYmmdd_HHMMSS.log`
-- reporte de dataset en `archivos/backtesting/daily/eval_dataset_report.json`
-- reporte de promocion en `archivos/backtesting/daily/promotion_report.json`
-
-## 4) Parametros recomendados para diario
-
-Variables que puedes ajustar sin tocar codigo:
+Prueba sin aplicar cambios:
 
 ```bash
-EVAL_DAYS=90
-LONG_CHECK_DAYS=180
-N_TRIALS=180
-MIN_TRADES=6
-MAX_DAILY_SL_STREAK=3
-MAX_COST_RATIO=0.90
-MAX_DD=0.10
-PROMOTION_DROP_PCT=0.10
-PROMOTION_MAX_COST_RATIO=1.00
-PROMOTION_MAX_DD=0.12
+LOSS_TRIGGER=-1.5 APPLY=0 SEND_ALERT=1 REFRESH_INDICATORS=0 bash scripts/daily_loss_recovery.sh
 ```
 
-Ejemplo:
+Ejecucion real (aplica si pasa gates):
 
 ```bash
-EVAL_DAYS=90 N_TRIALS=150 PROMOTION_DROP_PCT=0.08 bash scripts/daily_backtest_pipeline.sh
+LOSS_TRIGGER=-1.5 APPLY=1 SEND_ALERT=1 REFRESH_INDICATORS=1 bash scripts/daily_loss_recovery.sh
 ```
 
-## 5) Test de consumo de recursos en produccion
-
-Primero prueba sin promover (`PROMOTE=0`) para medir costo real:
+## 3) Parametros recomendados
 
 ```bash
-cd ~/TRobot
-source env/bin/activate
-bash scripts/profile_daily_pipeline.sh
+LOSS_TRIGGER=-1.5
+LOOKBACK_HOURS=24
+COOLDOWN_HOURS=72
+MAX_SYMBOLS_PER_RUN=3
+N_TRIALS=45
+LOOKBACK_DAYS_OPT=60
+LOOKBACK_DAYS_LONG=120
 ```
 
-Archivos generados:
-- `archivos/backtesting/daily/profile_run_*.log`
-- `archivos/backtesting/daily/profile_time_*.log`
-- `archivos/backtesting/daily/profile_system_*.log`
-- `archivos/backtesting/daily/profile_summary_*.txt`
+## 4) Archivos de salida
 
-Si ves picos altos de RAM/CPU:
-- baja `N_TRIALS` (ej. 180 -> 120)
-- desactiva `SECOND_PASS` (default ya es 0)
-- evita correr pipeline al mismo tiempo que procesos pesados.
+- `archivos/backtesting/daily/loss_recovery_report.json`
+- `archivos/backtesting/daily/loss_recovery_YYYYmmdd_HHMMSS.log`
+- `archivos/backtesting/daily/loss_recovery_cooldown.json`
+- `archivos/backtesting/daily/best_prod_consistent_loss_merged.json` (cuando hay candidatos)
 
-## 6) Automatizacion diaria con systemd timer (server)
+## 5) Gates de promocion por simbolo
 
-Crear service:
+Un simbolo se promueve solo si cumple:
+
+- trades minimos en evaluacion corta
+- mejora de PnL corto vs modelo actual
+- `cost_ratio` y `max_dd` dentro de limites
+- no degradar de mas la ventana larga
+
+Si no cumple, ese simbolo no se toca.
+
+## 6) Timer diario (opcional)
+
+Service:
 
 ```bash
-sudo tee /etc/systemd/system/trobot-backtest-daily.service >/dev/null <<'EOF'
+sudo tee /etc/systemd/system/trobot-loss-recovery.service >/dev/null <<'EOF'
 [Unit]
-Description=TRobot daily backtesting pipeline
+Description=TRobot loss recovery tuner
 After=network-online.target
 Wants=network-online.target
 
@@ -100,30 +78,31 @@ Wants=network-online.target
 Type=oneshot
 User=ubuntu
 WorkingDirectory=/home/ubuntu/TRobot
-Environment=PYTHONUNBUFFERED=1
-Environment=EVAL_DAYS=90
-Environment=LONG_CHECK_DAYS=180
-Environment=N_TRIALS=180
-Environment=MIN_TRADES=6
-Environment=MAX_DAILY_SL_STREAK=3
-Environment=MAX_COST_RATIO=0.90
-Environment=MAX_DD=0.10
-Environment=PROMOTION_DROP_PCT=0.10
-ExecStart=/bin/bash -lc 'source env/bin/activate && bash scripts/daily_backtest_pipeline.sh'
+Environment=LOSS_TRIGGER=-1.5
+Environment=LOOKBACK_HOURS=24
+Environment=COOLDOWN_HOURS=72
+Environment=MAX_SYMBOLS_PER_RUN=3
+Environment=N_TRIALS=45
+Environment=LOOKBACK_DAYS_OPT=60
+Environment=LOOKBACK_DAYS_LONG=120
+Environment=APPLY=1
+Environment=SEND_ALERT=1
+Environment=REFRESH_INDICATORS=1
+ExecStart=/bin/bash -lc 'source env/bin/activate && bash scripts/daily_loss_recovery.sh'
 EOF
 ```
 
-Crear timer (ejemplo 03:30 UTC diario):
+Timer (ejemplo 04:10 UTC):
 
 ```bash
-sudo tee /etc/systemd/system/trobot-backtest-daily.timer >/dev/null <<'EOF'
+sudo tee /etc/systemd/system/trobot-loss-recovery.timer >/dev/null <<'EOF'
 [Unit]
-Description=Run TRobot daily backtesting pipeline
+Description=Run TRobot loss recovery daily
 
 [Timer]
-OnCalendar=*-*-* 03:30:00 UTC
+OnCalendar=*-*-* 04:10:00 UTC
 Persistent=true
-Unit=trobot-backtest-daily.service
+Unit=trobot-loss-recovery.service
 
 [Install]
 WantedBy=timers.target
@@ -134,23 +113,6 @@ Activar:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now trobot-backtest-daily.timer
-systemctl list-timers | grep trobot-backtest-daily
+sudo systemctl enable --now trobot-loss-recovery.timer
+systemctl list-timers | grep trobot-loss-recovery
 ```
-
-Ver logs:
-
-```bash
-journalctl -u trobot-backtest-daily.service -n 200 --no-pager
-```
-
-## 7) Regla de seguridad de produccion
-
-No se reemplaza el modelo en produccion si falla algun gate:
-- trades minimos
-- pnl minimo
-- cost ratio maximo
-- drawdown maximo
-- degradacion maxima vs modelo actual (`PROMOTION_DROP_PCT`)
-
-En ese caso, se conserva `pkg/best_prod_consistent.json` anterior.
