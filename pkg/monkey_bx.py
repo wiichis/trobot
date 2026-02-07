@@ -5,6 +5,7 @@ import requests
 import json
 import time
 import os
+from .settings import BEST_PROD_PATH
 
 import math
 from decimal import Decimal, ROUND_DOWN
@@ -479,7 +480,7 @@ def colocando_ordenes():
     except Exception as _e:
         latest_values = None
     # --- Whitelist desde best_prod.json (si existe) ---
-    best_prod_path = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+    best_prod_path = str(BEST_PROD_PATH)
     whitelist = None
     params_by_symbol = {}
     try:
@@ -805,7 +806,7 @@ def sync_cooldowns_from_sl_fills():
     # Pre-cargar parámetros por símbolo para determinar duración del cooldown
     params_by_symbol = {}
     try:
-        _best_path = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+        _best_path = str(BEST_PROD_PATH)
         if os.path.exists(_best_path):
             with open(_best_path, 'r') as _f:
                 _prod = json.load(_f) or []
@@ -882,7 +883,7 @@ def colocando_TK_SL():
     # Cargar parametros por símbolo (para ajustar TP1) desde pkg/best_prod.json
     params_by_symbol = {}
     try:
-        _best_path = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+        _best_path = str(BEST_PROD_PATH)
         if os.path.exists(_best_path):
             with open(_best_path, 'r') as _f:
                 _prod = json.load(_f) or []
@@ -1337,7 +1338,7 @@ def unrealized_profit_positions():
     # Cargar parametros por símbolo (para be_trigger) desde pkg/best_prod.json
     params_by_symbol = {}
     try:
-        _best_path = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+        _best_path = str(BEST_PROD_PATH)
         if os.path.exists(_best_path):
             with open(_best_path, 'r') as _f:
                 _prod = json.load(_f) or []

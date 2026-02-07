@@ -8,6 +8,7 @@ import pandas as pd
 from pathlib import Path
 import json
 from .cfg_loader import load_best_symbols
+from .settings import BEST_PROD_PATH
 from datetime import datetime, timedelta  # NUEVO: para purgar registros antiguos
 from .ta_shared import ema, rsi, atr, adx
 
@@ -108,7 +109,6 @@ def _load_best_prod_and_params(path: str):
     wl = sorted(set(wl))
     return wl, pm
 
-BEST_PROD_PATH = Path(__file__).resolve().parent / "best_prod.json"
 PARAMS_BY_SYMBOL = {}
 TRADE_SYMBOLS = []
 try:
