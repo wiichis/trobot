@@ -105,44 +105,44 @@ SIMPLE_RUN: Dict[str, object] = {
     'SECOND_TOPK': 3,
     'FILTERS': {
         'min_trades': 8,
-        'min_trades_per_day': 0.6,
         'max_daily_sl_streak': 3,
         'min_winrate': 0.0,
-        'max_cost_ratio': 1.20,
-        'max_dd': 0.30,
+        'max_cost_ratio': 0.90,
+        'max_dd': 0.10,
         'export_positive_ratio': True
     },
+    'LOOKBACK_DAYS': 90,
     'EXPORT_BEST': 'best_prod.json',
     'EXPORT_POSITIVE_ONLY': True,
     'RANGES': {
-        'tp': [0.012, 0.015, 0.018, 0.022, 0.026, 0.030],
+        'tp': [0.012, 0.015, 0.018, 0.022],
         'tp_mode': ['fixed', 'atrx'],
         'tp_atr_mult': [0.6, 0.9, 1.2, 1.5],
-        'ema_fast': [5, 8, 13, 21],
-        'ema_slow': [21, 30, 50, 72],
-        'rsi_buy': [50, 52, 54, 56, 58, 60],
-        'rsi_sell': [40, 42, 44, 46, 48, 50],
-        'adx_min': [8, 10, 14, 18, 22],
-        'min_atr_pct': [0.0006, 0.0008, 0.0010, 0.0015, 0.0020],
-        'max_atr_pct': [0.010, 0.015, 0.020, 0.025, 0.030],
-        'atr_mult': [1.6, 1.8, 2.2],
+        'ema_fast': [8, 13, 21],
+        'ema_slow': [30, 50, 72],
+        'rsi_buy': [54, 56, 58, 60],
+        'rsi_sell': [40, 42, 44, 46],
+        'adx_min': [14, 18, 22, 26],
+        'min_atr_pct': [0.0010, 0.0015, 0.0020],
+        'max_atr_pct': [0.012, 0.015, 0.020],
+        'atr_mult': [1.8, 2.0, 2.2],
         'sl_mode': ['atr_then_trailing', 'percent'],
         'sl_pct': [0.010, 0.012, 0.015, 0.018],
         'be_trigger': [0.0040, 0.0050, 0.0060],
         'cooldown': [6, 10, 15],
         'logic': ['any', 'strict'],
-        'hhll_lookback': [4, 6, 8, 12, 16],
+        'hhll_lookback': [8, 12, 16],
         'time_exit_bars': [24, 36, 48, 60],
-        'max_dist_emaslow': [0.010, 0.012, 0.015, 0.020, 0.025],
-        'fresh_cross_max_bars': [3, 5, 7, 9, 11],
+        'max_dist_emaslow': [0.008, 0.010, 0.012, 0.015],
+        'fresh_cross_max_bars': [3, 5, 7],
         'require_rsi_cross': [True, False],
         # Endurecedores (más estrictos):
-        'min_ema_spread': [0.0, 0.0003, 0.0005, 0.0008, 0.0010],    # separación mínima EMA_f/EMA_s
+        'min_ema_spread': [0.0005, 0.0008, 0.0010, 0.0012],    # separación mínima EMA_f/EMA_s
         'require_close_vs_emas': [True, False],        # exigir relación close/EMAs
-        'min_vol_ratio': [0.80, 0.90, 1.00, 1.05, 1.10],      # volumen relativo al MA
-        'vol_ma_len': [10, 20, 30, 40],                    # lookback MA de volumen
+        'min_vol_ratio': [1.00, 1.05, 1.10, 1.15],      # volumen relativo al MA
+        'vol_ma_len': [20, 30, 40],                    # lookback MA de volumen
         'adx_slope_len': [3, 4],
-        'adx_slope_min': [0.0, 0.2, 0.4],             # pendiente mínima ADX
+        'adx_slope_min': [0.2, 0.4, 0.6],             # pendiente mínima ADX
         'fresh_breakout_only': [False, True],          # rupturas frescas
     },
     'LOAD_BEST_FILE': None,
@@ -503,6 +503,103 @@ def _refresh_indicators_from_best() -> None:
         print("[SWEEP] Indicadores actualizados (archivos/indicadores.csv)")
     except Exception as exc:
         print(f"[SWEEP][WARN] No se pudieron actualizar indicadores: {exc}")
+
+
+def _export_consistent_best(best_path: str, data_template: str, out_path: str,
+                            short_days: int = 90, long_days: Optional[int] = None,
+                            max_cost_ratio: float = 1.0, require_pnl_positive: bool = True) -> None:
+    """Exporta best_prod.json con símbolos consistentes entre 90d y largo plazo."""
+    if not best_path or not os.path.exists(best_path):
+        print(f"[CONSISTENT][WARN] best_path no existe: {best_path}")
+        return
+
+    entries = _load_best_params(best_path)
+    if not entries:
+        print(f"[CONSISTENT][WARN] No hay símbolos en {best_path}")
+        return
+    symbols = [e.get('symbol') for e in entries if e.get('symbol')]
+    if not symbols:
+        print(f"[CONSISTENT][WARN] Sin símbolos válidos en {best_path}")
+        return
+
+    # Short window
+    res_short = run_live_parity_portfolio(
+        symbols,
+        data_template,
+        capital=1000.0,
+        weights_csv=None,
+        best_path=best_path,
+        lookback_days=int(short_days) if short_days else None,
+        return_trades=True,
+    )
+    short_rows = _summarize_trades_by_symbol(res_short.get('trades_list', []))
+    short_map = {r['symbol']: r for r in short_rows}
+
+    # Long window (full history if long_days is None)
+    res_long = run_live_parity_portfolio(
+        symbols,
+        data_template,
+        capital=1000.0,
+        weights_csv=None,
+        best_path=best_path,
+        lookback_days=int(long_days) if long_days else None,
+        return_trades=True,
+    )
+    long_rows = _summarize_trades_by_symbol(res_long.get('trades_list', []))
+    long_map = {r['symbol']: r for r in long_rows}
+
+    keep = []
+    for sym in symbols:
+        s = short_map.get(sym)
+        l = long_map.get(sym)
+        if not s or not l:
+            continue
+        try:
+            if s.get('cost_ratio') is None or l.get('cost_ratio') is None:
+                continue
+            if float(s['cost_ratio']) >= max_cost_ratio:
+                continue
+            if float(l['cost_ratio']) >= max_cost_ratio:
+                continue
+            if require_pnl_positive:
+                if float(s.get('pnl_net', 0.0)) <= 0:
+                    continue
+                if float(l.get('pnl_net', 0.0)) <= 0:
+                    continue
+        except Exception:
+            continue
+        keep.append(sym)
+
+    if not keep:
+        print("[CONSISTENT][WARN] Ningún símbolo cumple consistencia.")
+        return
+
+    prod = []
+    keep_set = set(keep)
+    for e in entries:
+        sym = e.get('symbol')
+        if sym in keep_set:
+            prod.append({'symbol': sym, 'params': e.get('params') or {}})
+
+    try:
+        out_dirname = os.path.dirname(out_path)
+        if out_dirname:
+            os.makedirs(out_dirname, exist_ok=True)
+    except Exception:
+        pass
+    with open(out_path, 'w') as f:
+        json.dump(prod, f, indent=2)
+    print(f"[CONSISTENT] Exportado: {out_path} (symbols={len(prod)})")
+
+    # Copia a pkg/best_prod.json y refresca indicadores
+    try:
+        _pkg_best = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+        with open(_pkg_best, 'w') as _pf:
+            json.dump(prod, _pf, indent=2)
+        print(f"[CONSISTENT] Copia de producción en {_pkg_best}")
+        _refresh_indicators_from_best()
+    except Exception as _e:
+        print(f"[CONSISTENT][WARN] No se pudo escribir copia en pkg: {_e}")
 
 
 _ATRX_ALLOWED = None
@@ -2738,6 +2835,11 @@ def main():
     parser.add_argument('--second_pass', action='store_true', help='Hacer una segunda pasada local alrededor de los mejores por símbolo')
     parser.add_argument('--second_topk', type=int, default=1, help='Cuántos mejores por símbolo usar como base para la segunda pasada')
     parser.add_argument('--export_positive_ratio', action='store_true', help='Exporta solo símbolos con ratio positivo (cost_ratio < 1 o profit_factor > 1)')
+    parser.add_argument('--export_consistent_best', action='store_true', help='Exporta best_prod.json con símbolos consistentes 90d vs largo plazo')
+    parser.add_argument('--consistency_short_days', type=int, default=90, help='Ventana corta para consistencia (días)')
+    parser.add_argument('--consistency_long_days', type=int, default=None, help='Ventana larga para consistencia (None = todo)')
+    parser.add_argument('--consistency_max_cost_ratio', type=float, default=1.0, help='Max cost_ratio permitido para consistencia')
+    parser.add_argument('--consistency_require_pnl_positive', action='store_true', help='Exige pnl_net > 0 en ambas ventanas')
 
     args = parser.parse_args()
 
@@ -2749,6 +2851,22 @@ def main():
     else:
         symbols = symbols_raw
     funding_map = _load_funding_events_csv(args.funding_csv)
+
+    if args.export_consistent_best:
+        best_path = args.parity_best or os.path.join(os.path.dirname(__file__), 'best_prod.json')
+        outp = args.export_best if args.export_best else os.path.join(DEFAULT_OUT_DIR, 'best_prod_consistent.json')
+        if not os.path.isabs(outp) and os.path.dirname(outp) == '':
+            outp = os.path.join(args.out_dir, outp)
+        _export_consistent_best(
+            best_path=best_path,
+            data_template=args.data_template,
+            out_path=outp,
+            short_days=args.consistency_short_days,
+            long_days=args.consistency_long_days,
+            max_cost_ratio=args.consistency_max_cost_ratio,
+            require_pnl_positive=args.consistency_require_pnl_positive,
+        )
+        return
 
     if args.live_parity:
         best_syms = None
