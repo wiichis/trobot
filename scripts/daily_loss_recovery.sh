@@ -22,10 +22,9 @@ REFRESH_INDICATORS="${REFRESH_INDICATORS:-0}"
 STAMP="$(date -u +%Y%m%d_%H%M%S)"
 LOG_FILE="${OUT_DIR}/loss_recovery_${STAMP}.log"
 touch "$LOG_FILE"
-exec >>"$LOG_FILE" 2>&1
 
-echo "[LOSS_RECOVERY] start_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-echo "[LOSS_RECOVERY] log=${LOG_FILE}"
+echo "[LOSS_RECOVERY] start_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$LOG_FILE"
+echo "[LOSS_RECOVERY] log=${LOG_FILE}" | tee -a "$LOG_FILE"
 
 ARGS=(
   --pnl_csv archivos/PnL.csv
@@ -54,6 +53,6 @@ if [[ "$REFRESH_INDICATORS" == "1" ]]; then
   ARGS+=(--refresh_indicators)
 fi
 
-"$PYTHON_BIN" scripts/loss_recovery_tuner.py "${ARGS[@]}"
+"$PYTHON_BIN" scripts/loss_recovery_tuner.py "${ARGS[@]}" 2>&1 | tee -a "$LOG_FILE"
 
-echo "[LOSS_RECOVERY] done_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "[LOSS_RECOVERY] done_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" | tee -a "$LOG_FILE"

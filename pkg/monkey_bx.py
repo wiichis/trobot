@@ -8,7 +8,7 @@ import os
 from .settings import BEST_PROD_PATH
 
 import math
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 # --- Cooldown por SL: lectura de estado compartido con indicadores ---
 
 COOLDOWN_CSV = './archivos/cooldown.csv'
@@ -103,6 +103,7 @@ STEP_SIZE_DEFAULT = 0.001
 SYMBOL_TRADING_RULES = {
     'BNB-USDT': {'qty_step': 0.01, 'price_tick': 0.1},
     'DOT-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
+    'CFX-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
     'HBAR-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
     # TRX y DOGE requieren ticks finos; con 0.01 el TP quedaba por debajo del precio de entrada
     'TRX-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
@@ -176,16 +177,137 @@ def _tick_size_for(symbol: str) -> float:
     return SYMBOL_TRADING_RULES.get(str(symbol).upper(), {}).get('price_tick', 0.01)
 
 
-def _round_to_tick(value: float, tick: float) -> float:
+def _round_to_tick(value: float, tick: float, rounding=ROUND_DOWN) -> float:
     if tick is None or tick <= 0:
         return float(value)
     try:
         tick_dec = Decimal(str(tick))
         val_dec = Decimal(str(value))
-        rounded = (val_dec / tick_dec).to_integral_value(rounding=ROUND_DOWN) * tick_dec
+        rounded = (val_dec / tick_dec).to_integral_value(rounding=rounding) * tick_dec
         return float(rounded)
     except Exception:
         return float(value)
+
+
+def _trigger_rounding(position_side: str, order_type: str):
+    side = str(position_side).upper()
+    otype = str(order_type).upper()
+    if otype == "TAKE_PROFIT_MARKET":
+        return ROUND_UP if side == "LONG" else ROUND_DOWN
+    if otype == "STOP_MARKET":
+        return ROUND_DOWN if side == "LONG" else ROUND_UP
+    return ROUND_DOWN
+
+
+def _round_trigger_price(raw_price: float, symbol: str, position_side: str, order_type: str) -> float:
+    tick = _tick_size_for(symbol)
+    return _round_to_tick(float(raw_price), tick, rounding=_trigger_rounding(position_side, order_type))
+
+
+def _last_traded_price(symbol: str):
+    try:
+        raw = pkg.bingx.last_price_trading_par(symbol)
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        payload = data.get('data', {}) if isinstance(data, dict) else {}
+        if isinstance(payload, list):
+            payload = payload[0] if payload else {}
+        for key in ('price', 'close', 'markPrice', 'lastPrice'):
+            if key in payload:
+                return float(payload[key])
+    except Exception:
+        return None
+    return None
+
+
+def _sanitize_trigger_price(raw_price: float, symbol: str, position_side: str, order_type: str, ref_price) -> float:
+    side = str(position_side).upper()
+    otype = str(order_type).upper()
+    tick = _tick_size_for(symbol)
+    min_px = tick if tick and tick > 0 else 1e-8
+
+    px = _round_trigger_price(float(raw_price), symbol, side, otype)
+    try:
+        ref = float(ref_price)
+    except Exception:
+        ref = None
+
+    if ref is None or ref <= 0:
+        return float(px if px > 0 else min_px)
+
+    if otype == "TAKE_PROFIT_MARKET":
+        if side == "LONG" and px <= ref:
+            px = _round_trigger_price(ref + tick, symbol, side, otype)
+        elif side == "SHORT" and px >= ref:
+            px = _round_trigger_price(max(ref - tick, ref * 0.999), symbol, side, otype)
+    elif otype == "STOP_MARKET":
+        if side == "LONG" and px >= ref:
+            px = _round_trigger_price(max(ref - tick, ref * 0.999), symbol, side, otype)
+        elif side == "SHORT" and px <= ref:
+            px = _round_trigger_price(ref + tick, symbol, side, otype)
+
+    if px <= 0:
+        px = min_px
+    return float(px)
+
+
+def _bootstrap_symbols_for_protection() -> list:
+    symbols = set()
+    try:
+        _best_path = str(BEST_PROD_PATH)
+        if os.path.exists(_best_path):
+            with open(_best_path, 'r') as _f:
+                _prod = json.load(_f) or []
+            for row in _prod:
+                if isinstance(row, dict):
+                    sym = str(row.get('symbol', '')).upper().strip()
+                    if sym:
+                        symbols.add(sym)
+    except Exception:
+        pass
+
+    return sorted(symbols)
+
+
+def _bootstrap_position_queue(df_posiciones: pd.DataFrame, df_ordenes: pd.DataFrame) -> pd.DataFrame:
+    if df_posiciones is None:
+        df_posiciones = pd.DataFrame(columns=['symbol','tipo','counter'])
+    if not df_posiciones.empty:
+        return df_posiciones
+
+    symbols = _bootstrap_symbols_for_protection()
+    if not symbols:
+        return df_posiciones
+
+    new_rows = []
+    df_ordenes = _normalize_orders_df(df_ordenes)
+    for symbol in symbols:
+        try:
+            symbol_result, position_side, _price, position_amt, _upnl = total_positions(symbol)
+        except Exception:
+            continue
+        if symbol_result is None or position_side not in ('LONG', 'SHORT'):
+            continue
+        try:
+            qty = abs(float(position_amt))
+        except Exception:
+            qty = 0.0
+        if qty <= 0:
+            continue
+
+        symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
+        sl_exists = not symbol_orders[symbol_orders['type'] == 'STOP_MARKET'].empty
+        tp_exists = not symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET'].empty
+        if sl_exists and tp_exists:
+            continue
+
+        new_rows.append({'symbol': symbol, 'tipo': position_side, 'counter': 0})
+
+    if not new_rows:
+        return df_posiciones
+
+    bootstrap_df = pd.DataFrame(new_rows, columns=['symbol', 'tipo', 'counter'])
+    print(f"Arranque en frio: se agregaron {len(bootstrap_df)} posiciones abiertas a la cola de proteccion.")
+    return pd.concat([df_posiciones, bootstrap_df], ignore_index=True)
 
 # --- Retry helper for robust order posting ---
 def _post_with_retry(symbol, qty, price, stop, position_side, order_type, side, delays=(0.5, 1.0, 2.0)):
@@ -451,7 +573,7 @@ def obteniendo_ordenes_pendientes():
     orders = data.get('orders', [])
 
     if not orders:
-        df = pd.DataFrame([{'symbol': 'zero', 'orderId': 0, 'side': 'both'}])
+        df = pd.DataFrame(columns=['symbol','orderId','type','stopPrice','time'])
     else:
         df = pd.DataFrame(orders)
 
@@ -871,6 +993,7 @@ def colocando_TK_SL():
     except FileNotFoundError:
         df_ordenes = pd.DataFrame(columns=['symbol','orderId','type','stopPrice','time'])
     df_ordenes = _normalize_orders_df(df_ordenes)
+    df_posiciones = _bootstrap_position_queue(df_posiciones, df_ordenes)
 
     # Leer los últimos valores de indicadores
     df_indicadores = pd.read_csv('./archivos/indicadores.csv', low_memory=False)
@@ -894,7 +1017,7 @@ def colocando_TK_SL():
     # Agrega un pequeño delay antes de buscar la posición en BingX para dar tiempo a que la posición MARKET aparezca
     time.sleep(2)
     for index, row in df_posiciones.iterrows():
-        symbol = row['symbol']
+        symbol = str(row['symbol']).upper()
         counter = row['counter']
 
         # Verificar si ya existen órdenes SL y TP pendientes para este símbolo
@@ -954,6 +1077,12 @@ def colocando_TK_SL():
                 continue
 
             symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
+            market_ref = _last_traded_price(symbol)
+            if market_ref is None or market_ref <= 0:
+                try:
+                    market_ref = float(price)
+                except Exception:
+                    market_ref = None
 
             try:
                 position_qty = abs(float(positionAmt))
@@ -1009,7 +1138,7 @@ def colocando_TK_SL():
                 # Colocar SL si falta
                 exito_sl = not existing_sl.empty
                 if not exito_sl:
-                    sl_px = _round_to_tick(float(sl_level), tick)
+                    sl_px = _sanitize_trigger_price(float(sl_level), symbol, "LONG", "STOP_MARKET", market_ref)
                     exito_sl = _post_with_retry(symbol, position_qty, 0, sl_px, "LONG", "STOP_MARKET", "SELL")
                     if exito_sl:
                         time.sleep(1)
@@ -1040,7 +1169,7 @@ def colocando_TK_SL():
                 # Colocar TPs faltantes (comparando por precio exacto)
                 placed_all_tps = True
                 for idx, tp_px in enumerate(desired_tps[:len(split_qtys)]):
-                    tp_px = _round_to_tick(float(tp_px), tick)
+                    tp_px = _sanitize_trigger_price(float(tp_px), symbol, "LONG", "TAKE_PROFIT_MARKET", market_ref)
                     # ¿Existe un TP muy parecido ya? (tolerancia relativa ~1e-4)
                     exists = any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
                     if exists:
@@ -1068,7 +1197,7 @@ def colocando_TK_SL():
                     target_count = len(split_qtys)
                     have_count = 0
                     for tp_px in desired_tps[:target_count]:
-                        tp_px_round = _round_to_tick(float(tp_px), tick)
+                        tp_px_round = _sanitize_trigger_price(float(tp_px), symbol, "LONG", "TAKE_PROFIT_MARKET", market_ref)
                         if any(abs((tp_px_round - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices):
                             have_count += 1
                     placed_all_tps = (have_count >= target_count)
@@ -1084,7 +1213,7 @@ def colocando_TK_SL():
                 existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 if existing_sl.empty:
-                    sl_px = _round_to_tick(float(sl_level), tick)
+                    sl_px = _sanitize_trigger_price(float(sl_level), symbol, "LONG", "STOP_MARKET", market_ref)
                     ok_sl = _post_with_retry(symbol, position_qty, 0, sl_px, "LONG", "STOP_MARKET", "SELL")
                     time.sleep(0.3)
                     if ok_sl:
@@ -1104,7 +1233,7 @@ def colocando_TK_SL():
                         except Exception:
                             _append_sl_watch(symbol, float(sl_px), 'LONG', None)
                 if existing_tp.empty and desired_tps:
-                    tp1_px = _round_to_tick(float(desired_tps[0]), tick)
+                    tp1_px = _sanitize_trigger_price(float(desired_tps[0]), symbol, "LONG", "TAKE_PROFIT_MARKET", market_ref)
                     try:
                         pos_qty = abs(float(positionAmt))
                     except Exception:
@@ -1160,9 +1289,9 @@ def colocando_TK_SL():
                         existing_tp_prices = set()
 
                 # SL si falta
+                sl_px = _sanitize_trigger_price(float(sl_level), symbol, "SHORT", "STOP_MARKET", market_ref)
                 exito_sl = not existing_sl.empty
                 if not exito_sl:
-                    sl_px = _round_to_tick(float(sl_level), tick)
                     exito_sl = _post_with_retry(symbol, position_qty, 0, sl_px, "SHORT", "STOP_MARKET", "BUY")
                     if exito_sl:
                         time.sleep(1)
@@ -1175,13 +1304,13 @@ def colocando_TK_SL():
                     if not m.empty:
                         if 'stopPrice' in m.columns:
                             m['stopPrice'] = pd.to_numeric(m['stopPrice'], errors='coerce')
-                            m['diff'] = (m['stopPrice'] - float(sl_level)).abs() / float(sl_level)
+                            m['diff'] = (m['stopPrice'] - float(sl_px)).abs() / max(abs(float(sl_px)), 1e-9)
                             m = m.sort_values('diff')
                             if not m.empty and m['diff'].iloc[0] < 1e-3:
                                 order_id = m['orderId'].iloc[0] if 'orderId' in m.columns else None
-                    _append_sl_watch(symbol, float(sl_level), 'SHORT', order_id)
+                    _append_sl_watch(symbol, float(sl_px), 'SHORT', order_id)
                 except Exception:
-                    _append_sl_watch(symbol, float(sl_level), 'SHORT', None)
+                    _append_sl_watch(symbol, float(sl_px), 'SHORT', None)
 
                 # Cantidades parciales
                 try:
@@ -1194,7 +1323,7 @@ def colocando_TK_SL():
                 # Colocar TPs faltantes
                 placed_all_tps = True
                 for idx, tp_px in enumerate(desired_tps[:len(split_qtys)]):
-                    tp_px = _round_to_tick(float(tp_px), tick)
+                    tp_px = _sanitize_trigger_price(float(tp_px), symbol, "SHORT", "TAKE_PROFIT_MARKET", market_ref)
                     exists = any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
                     if exists:
                         continue
@@ -1220,7 +1349,7 @@ def colocando_TK_SL():
                     target_count = len(split_qtys)
                     have_count = 0
                     for tp_px in desired_tps[:target_count]:
-                        tp_px_round = _round_to_tick(float(tp_px), tick)
+                        tp_px_round = _sanitize_trigger_price(float(tp_px), symbol, "SHORT", "TAKE_PROFIT_MARKET", market_ref)
                         if any(abs((tp_px_round - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices):
                             have_count += 1
                     placed_all_tps = (have_count >= target_count)
@@ -1235,7 +1364,7 @@ def colocando_TK_SL():
                 existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 if existing_sl.empty:
-                    sl_px = _round_to_tick(float(sl_level), tick)
+                    sl_px = _sanitize_trigger_price(float(sl_level), symbol, "SHORT", "STOP_MARKET", market_ref)
                     ok_sl = _post_with_retry(symbol, position_qty, 0, sl_px, "SHORT", "STOP_MARKET", "BUY")
                     time.sleep(0.3)
                     if ok_sl:
@@ -1255,7 +1384,7 @@ def colocando_TK_SL():
                         except Exception:
                             _append_sl_watch(symbol, float(sl_px), 'SHORT', None)
                 if existing_tp.empty and desired_tps:
-                    tp1_px = _round_to_tick(float(desired_tps[0]), tick)
+                    tp1_px = _sanitize_trigger_price(float(desired_tps[0]), symbol, "SHORT", "TAKE_PROFIT_MARKET", market_ref)
                     try:
                         pos_qty = abs(float(positionAmt))
                     except Exception:
