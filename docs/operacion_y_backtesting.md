@@ -60,6 +60,7 @@ ls -lh ~/TRobot/archivos/PnL.csv
 ## 2) Backtesting (local)
 
 ### Descarga semanal de datos desde el server
+Descarga `PnL.csv`, `cripto_price_5m.csv` y `cripto_price_5m_long.csv`:
 ```
 chmod +x scripts/weekly_pull_and_backtest.sh
 SERVER_IP=TU_IP_PUBLICA scripts/weekly_pull_and_backtest.sh
