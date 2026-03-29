@@ -1320,11 +1320,165 @@ def _post_with_retry(
                 if return_details:
                     return True, details
                 return True
-            last_err = err_msg
-            last_code = '' if code is None else str(code)
-            last_msg = (err_msg or msg or '')
-            last_order_id = _norm_order_id(order_id)
-            print(f"post_order({order_type}) rechazado para {symbol}: {err_msg}")
+            # Fallback seguro: en Hedge mode, algunas cuentas rechazan reduceOnly en MARKET.
+            # Reintentamos una vez sin reduceOnly para evitar fallo operativo en cierres de emergencia.
+            fallback_attempted = False
+            if (
+                otype_u == "MARKET"
+                and "reduceOnly" in order_kwargs
+                and _is_reduce_only_hedge_rejection(code, (err_msg or msg or ""))
+            ):
+                fallback_attempted = True
+                order_kwargs.pop("reduceOnly", None)
+                warn_detail = "reduceOnly_rejected_in_hedge_mode_retry_without_reduceOnly"
+                emit_lifecycle_event(
+                    "execution_quality_warning",
+                    "WARN",
+                    symbol=symbol_u,
+                    position_side=pside_u,
+                    side=side_u,
+                    order_type=otype_u,
+                    reason="reduce_only_rejected_hedge_mode",
+                    attempt=idx,
+                    source="post_with_retry_fallback",
+                )
+                append_execution_ledger_event(
+                    "order_submit_retry_without_reduce_only",
+                    data_quality="actual",
+                    source="post_with_retry_fallback",
+                    request_id=request_id,
+                    symbol=symbol_u,
+                    side=side_u,
+                    position_side=pside_u,
+                    order_type=otype_u,
+                    submit_qty=_safe_float_or_none(qty),
+                    raw_code=code,
+                    raw_msg=(err_msg or msg or ""),
+                    notes=warn_detail,
+                )
+                try:
+                    resp2 = pkg.bingx.post_order(
+                        symbol,
+                        qty,
+                        price,
+                        stop,
+                        position_side,
+                        order_type,
+                        side,
+                        **order_kwargs,
+                    )
+                    code2 = None
+                    msg2 = None
+                    order_id2 = None
+                    try:
+                        parsed2 = json.loads(resp2) if isinstance(resp2, str) else resp2
+                        if isinstance(parsed2, dict):
+                            code2 = parsed2.get('code')
+                            msg2 = parsed2.get('msg') or parsed2.get('message') or ''
+                            order_id2 = _extract_order_id_from_payload(parsed2.get('data', parsed2))
+                        else:
+                            msg2 = f"respuesta_no_dict:{type(parsed2).__name__}"
+                    except Exception as pe2:
+                        msg2 = f"respuesta_no_json:{pe2}"
+
+                    ok2, err_msg2 = _validate_order_response(resp2)
+                    _log_order_submit_attempt(
+                        request_id=request_id,
+                        symbol=symbol,
+                        qty=qty,
+                        price=price,
+                        stop_price=stop,
+                        position_side=position_side,
+                        order_type=order_type,
+                        side=side,
+                        attempt=idx,
+                        delay_s=0.0,
+                        accepted=ok2,
+                        code=code2,
+                        msg=(err_msg2 or msg2 or ''),
+                        order_id=order_id2,
+                        raw_response=resp2,
+                    )
+                    if ok2:
+                        submit_ts_utc = _utc_now_iso()
+                        order_id_norm = _norm_order_id(order_id2)
+                        details.update(
+                            {
+                                'order_id': order_id_norm,
+                                'submit_time_utc': submit_ts_utc,
+                                'attempt': idx,
+                                'accepted': True,
+                                'code': '' if code2 is None else str(code2),
+                                'msg': (err_msg2 or msg2 or ''),
+                            }
+                        )
+                        append_execution_ledger_event(
+                            "order_submitted",
+                            data_quality="actual",
+                            source="post_with_retry_accept_after_reduce_only_fallback",
+                            request_id=request_id,
+                            order_id=order_id_norm,
+                            symbol=symbol_u,
+                            side=side_u,
+                            position_side=pside_u,
+                            order_type=otype_u,
+                            intended_entry_price=_safe_float_or_none(intended_entry_price),
+                            submitted_price=_safe_float_or_none(price),
+                            stop_price=_safe_float_or_none(stop),
+                            submit_qty=_safe_float_or_none(qty),
+                            submit_time_utc=submit_ts_utc,
+                            raw_code=code2,
+                            raw_msg=(err_msg2 or msg2 or ''),
+                            notes=f"attempt={idx},retry_without_reduce_only=1",
+                        )
+                        if otype_u == "MARKET":
+                            emit_lifecycle_event(
+                                "entry_order_submitted",
+                                "INFO",
+                                symbol=symbol_u,
+                                position_side=pside_u,
+                                side=side_u,
+                                qty=_safe_float(qty, 0.0),
+                                attempt=idx,
+                                request_id=request_id,
+                                order_id=order_id_norm,
+                                source="api_submit_accepted_after_reduce_only_fallback",
+                            )
+                        if return_details:
+                            return True, details
+                        return True
+                    last_err = err_msg2
+                    last_code = '' if code2 is None else str(code2)
+                    last_msg = (err_msg2 or msg2 or '')
+                    last_order_id = _norm_order_id(order_id2)
+                except Exception as e2:
+                    last_err = e2
+                    last_code = 'EXCEPTION'
+                    last_msg = str(e2)
+                    _log_order_submit_attempt(
+                        request_id=request_id,
+                        symbol=symbol,
+                        qty=qty,
+                        price=price,
+                        stop_price=stop,
+                        position_side=position_side,
+                        order_type=order_type,
+                        side=side,
+                        attempt=idx,
+                        delay_s=0.0,
+                        accepted=False,
+                        code='EXCEPTION',
+                        msg=str(e2),
+                        order_id='',
+                        raw_response='',
+                    )
+            if not fallback_attempted:
+                last_err = err_msg
+                last_code = '' if code is None else str(code)
+                last_msg = (err_msg or msg or '')
+                last_order_id = _norm_order_id(order_id)
+            reject_detail = (str(last_err) if fallback_attempted else str(err_msg))
+            print(f"post_order({order_type}) rechazado para {symbol}: {reject_detail}")
         except Exception as e:
             last_err = e
             last_code = 'EXCEPTION'
@@ -1425,6 +1579,15 @@ def _validate_order_response(resp_text):
 
     msg = data.get('msg') or data.get('message') or 'sin detalle'
     return False, f"code={code}, msg={msg}"
+
+
+def _is_reduce_only_hedge_rejection(code, err_msg: str) -> bool:
+    """Detecta rechazo típico de BingX en Hedge mode cuando se envía reduceOnly."""
+    c = str(code or "").strip()
+    msg = str(err_msg or "").lower()
+    if c != "109400":
+        return False
+    return ("reduceonly" in msg) or ("reduce only" in msg) or ("hedge mode" in msg)
 
 import pkg.price_bingx_5m
 
