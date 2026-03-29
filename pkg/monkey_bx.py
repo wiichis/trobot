@@ -5,16 +5,730 @@ import requests
 import json
 import time
 import os
+import uuid
 from .settings import BEST_PROD_PATH
 
 import math
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 # --- Cooldown por SL: lectura de estado compartido con indicadores ---
+from .live_runtime_config import (
+    get_cooldown_minutes_override,
+    is_entry_hour_allowed_utc,
+    get_tp_mode,
+    get_tp_partial_distribution,
+    get_tp_fill_confirmation_mode,
+    get_tp_limit_offset_bps,
+    get_tp_reduce_only,
+    get_tp_legacy_fallback_on_error,
+    is_break_even_after_tp1_enabled,
+)
+from .lifecycle_events import emit_lifecycle_event
+from .execution_ledger import append_execution_ledger_event
+from .tp_stage_state import (
+    get_tp_state,
+    upsert_tp_state,
+    set_tp_submitted,
+    set_tp_filled,
+    set_break_even_state,
+    set_sl_guard,
+    is_sl_guard_active,
+    clear_tp_state,
+)
 
 COOLDOWN_CSV = './archivos/cooldown.csv'
 
 # Registro local de SL colocados para detectar fills
 SL_WATCH_CSV = './archivos/sl_watch.csv'
+ORDER_SUBMIT_LOG_CSV = './archivos/order_submit_log.csv'
+ORDER_LIFECYCLE_LOG_CSV = './archivos/order_lifecycle_log.csv'
+ORDER_PENDING_PREV_CSV = './archivos/order_pending_prev.csv'
+ENTRY_WATCH_CSV = './archivos/entry_watch.csv'
+
+
+def _norm_order_id(value) -> str:
+    if value is None:
+        return ''
+    try:
+        if pd.isna(value):
+            return ''
+    except Exception:
+        pass
+    text = str(value).strip()
+    if not text or text.lower() in ('nan', 'none'):
+        return ''
+    if text.endswith('.0'):
+        base = text[:-2]
+        if base.isdigit():
+            return base
+    return text
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().isoformat() + 'Z'
+
+
+def _append_csv_row(path: str, row: dict, columns: list) -> None:
+    try:
+        df_new = pd.DataFrame([row], columns=columns)
+        exists = os.path.exists(path) and os.path.getsize(path) > 0
+        df_new.to_csv(path, mode='a' if exists else 'w', header=not exists, index=False)
+    except Exception as e:
+        print(f"Error escribiendo log CSV {path}: {e}")
+
+
+def _extract_order_id_from_payload(payload):
+    try:
+        if isinstance(payload, dict):
+            for key in ('orderId', 'order_id', 'id'):
+                if key in payload:
+                    oid = _norm_order_id(payload.get(key))
+                    if oid:
+                        return oid
+            for val in payload.values():
+                oid = _extract_order_id_from_payload(val)
+                if oid:
+                    return oid
+        elif isinstance(payload, list):
+            for item in payload:
+                oid = _extract_order_id_from_payload(item)
+                if oid:
+                    return oid
+    except Exception:
+        return None
+    return None
+
+
+def _log_order_submit_attempt(
+    *,
+    request_id: str,
+    symbol: str,
+    qty,
+    price,
+    stop_price,
+    position_side: str,
+    order_type: str,
+    side: str,
+    attempt: int,
+    delay_s: float,
+    accepted: bool,
+    code,
+    msg: str,
+    order_id: str,
+    raw_response: str,
+) -> None:
+    cols = [
+        'ts_utc', 'request_id', 'symbol', 'order_type', 'position_side', 'side',
+        'qty', 'price', 'stop_price', 'attempt', 'delay_s',
+        'accepted', 'code', 'msg', 'order_id', 'raw_response',
+    ]
+    row = {
+        'ts_utc': _utc_now_iso(),
+        'request_id': str(request_id),
+        'symbol': str(symbol).upper(),
+        'order_type': str(order_type).upper(),
+        'position_side': str(position_side).upper(),
+        'side': str(side).upper(),
+        'qty': _safe_float(qty) if 'qty' in locals() else qty,
+        'price': _safe_float(price) if 'price' in locals() else price,
+        'stop_price': _safe_float(stop_price) if 'stop_price' in locals() else stop_price,
+        'attempt': int(attempt),
+        'delay_s': _safe_float(delay_s),
+        'accepted': bool(accepted),
+        'code': '' if code is None else str(code),
+        'msg': str(msg)[:240] if msg is not None else '',
+        'order_id': _norm_order_id(order_id),
+        'raw_response': (str(raw_response)[:240] if raw_response is not None else ''),
+    }
+    _append_csv_row(ORDER_SUBMIT_LOG_CSV, row, cols)
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _safe_float_or_none(value):
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    text = str(value).strip()
+    if text == '' or text.lower() in ('none', 'nan', 'na'):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _position_close_side(position_side: str) -> str:
+    pside = str(position_side or "").upper().strip()
+    return "SELL" if pside == "LONG" else "BUY"
+
+
+def _normalize_order_side(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "side" not in out.columns:
+        out["side"] = ""
+    if "positionSide" not in out.columns:
+        out["positionSide"] = ""
+    out["side"] = out["side"].astype(str).str.upper().str.strip()
+    out["positionSide"] = out["positionSide"].astype(str).str.upper().str.strip()
+    return out
+
+
+def _extract_tp_orders(symbol_orders: pd.DataFrame, position_side: str, tp_mode: str) -> pd.DataFrame:
+    if symbol_orders is None or symbol_orders.empty:
+        return pd.DataFrame(columns=getattr(symbol_orders, "columns", []))
+    df = symbol_orders.copy()
+    if "type" not in df.columns:
+        df["type"] = ""
+    df = _normalize_order_side(df)
+    df["type"] = df["type"].astype(str).str.upper().str.strip()
+
+    if str(tp_mode or "").lower() != "partial_limit_tp":
+        return df[df["type"] == "TAKE_PROFIT_MARKET"].copy()
+
+    close_side = _position_close_side(position_side)
+    mask_market = df["type"] == "TAKE_PROFIT_MARKET"
+    mask_limit = (df["type"] == "LIMIT") & (df["side"] == close_side)
+    return df[mask_market | mask_limit].copy()
+
+
+def _extract_tp_price_set(tp_orders: pd.DataFrame, symbol: str) -> set:
+    if tp_orders is None or tp_orders.empty:
+        return set()
+    tick = _tick_size_for(symbol)
+    out = set()
+    for _, row in tp_orders.iterrows():
+        otype = str(row.get("type", "")).upper().strip()
+        raw = row.get("price") if otype == "LIMIT" else row.get("stopPrice")
+        try:
+            val = float(raw)
+        except Exception:
+            continue
+        if val <= 0:
+            continue
+        out.add(_round_to_tick(val, tick))
+    return out
+
+
+def _sanitize_tp_limit_price(
+    target_price: float,
+    symbol: str,
+    position_side: str,
+    ref_price,
+    *,
+    offset_bps: float = 0.0,
+) -> float:
+    side = str(position_side or "").upper().strip()
+    tick = _tick_size_for(symbol)
+    min_px = tick if tick and tick > 0 else 1e-8
+    px = float(target_price)
+    bps = max(0.0, _safe_float(offset_bps, 0.0))
+    if bps > 0:
+        mult = 1.0 - (bps / 10000.0) if side == "LONG" else 1.0 + (bps / 10000.0)
+        px *= max(mult, 1e-6)
+    rounding = ROUND_DOWN if side == "LONG" else ROUND_UP
+    px = _round_to_tick(px, tick, rounding=rounding)
+
+    try:
+        ref = float(ref_price)
+    except Exception:
+        ref = None
+    if ref is not None and ref > 0:
+        if side == "LONG" and px <= ref:
+            px = _round_to_tick(ref + tick, tick, rounding=ROUND_UP)
+        if side == "SHORT" and px >= ref:
+            px = _round_to_tick(max(ref - tick, ref * 0.999), tick, rounding=ROUND_DOWN)
+    if px <= 0:
+        px = min_px
+    return float(px)
+
+
+def _sanitize_tp1_limit_price(
+    target_price: float,
+    symbol: str,
+    position_side: str,
+    ref_price,
+    *,
+    offset_bps: float = 0.0,
+) -> float:
+    """Compat alias Patch 5B."""
+    return _sanitize_tp_limit_price(
+        target_price,
+        symbol,
+        position_side,
+        ref_price,
+        offset_bps=offset_bps,
+    )
+
+
+def _tp_limit_order_kwargs(symbol: str, position_side: str, tp_idx: int) -> dict:
+    idx = max(1, min(3, int(tp_idx)))
+    sym = str(symbol or "").upper().replace("-", "")[:10]
+    p = str(position_side or "").upper().strip()
+    short_side = "L" if p == "LONG" else "S"
+    client_id = f"tp{idx}{sym}{short_side}{uuid.uuid4().hex[:12]}"
+    return {
+        "reduceOnly": bool(get_tp_reduce_only()),
+        "timeInForce": "GTC",
+        "clientOrderId": client_id,
+    }
+
+
+def _tp1_limit_order_kwargs(symbol: str, position_side: str) -> dict:
+    """Compat alias Patch 5B."""
+    return _tp_limit_order_kwargs(symbol, position_side, tp_idx=1)
+
+
+def _tp_stage_name(tp_idx: int) -> str:
+    idx = max(1, min(3, int(tp_idx)))
+    return f"tp{idx}"
+
+
+def _next_tp_idx_from_stage(tp_stage: str):
+    stage = str(tp_stage or "").lower().strip()
+    if stage in ("", "none", "tp1_live"):
+        return 1
+    if stage in ("tp1_filled", "tp2_live"):
+        return 2
+    if stage in ("tp2_filled", "tp3_live"):
+        return 3
+    if stage == "tp3_filled":
+        return None
+    return 1
+
+
+def _stage_order_id_from_state(state: dict, tp_idx: int) -> str:
+    idx = max(1, min(3, int(tp_idx)))
+    return _norm_order_id(state.get(f"tp{idx}_order_id"))
+
+
+def _infer_tp_idx_from_state_order_id(state: dict, order_id: str):
+    oid = _norm_order_id(order_id)
+    if not oid:
+        return None
+    for idx in (1, 2, 3):
+        if oid == _stage_order_id_from_state(state, idx):
+            return idx
+    return None
+
+
+def _compute_partial_limit_stage_qty(
+    *,
+    position_qty_now: float,
+    step_sz: float,
+    splits: tuple,
+    state: dict,
+    stage_idx: int,
+):
+    idx = max(1, min(3, int(stage_idx)))
+    qty_now = max(0.0, _safe_float(position_qty_now, 0.0))
+    qty_now = _round_step(qty_now, step_sz)
+    if qty_now <= 0:
+        return 0.0, "position_qty_now_zero"
+
+    base_qty = _safe_float_or_none(state.get("tp1_submit_position_qty"))
+    if base_qty is None or base_qty <= 0:
+        base_qty = qty_now
+    split_qtys = _split_position_qtys(base_qty, splits, step_sz)
+    if not split_qtys:
+        return 0.0, "split_qty_empty"
+
+    if idx >= 3:
+        qty = qty_now
+    else:
+        stage_target = 0.0
+        try:
+            stage_target = float(split_qtys[idx - 1])
+        except Exception:
+            stage_target = 0.0
+        qty = min(max(0.0, stage_target), qty_now)
+    qty = _round_step(qty, step_sz)
+    if qty <= 0:
+        return 0.0, "stage_qty_rounded_zero"
+    return qty, "ok"
+
+
+def _emit_tp_failed(
+    *,
+    tp_idx: int,
+    symbol: str,
+    position_side: str,
+    reason: str,
+    detail: str = "",
+    order_id: str = "",
+    data_quality: str = "actual",
+    source: str = "",
+    tp_price=None,
+    tp_qty=None,
+) -> None:
+    stage = _tp_stage_name(tp_idx)
+    emit_lifecycle_event(
+        f"{stage}_failed",
+        "WARN",
+        symbol=str(symbol).upper(),
+        position_side=str(position_side).upper(),
+        reason=str(reason),
+        detail=str(detail)[:220],
+        order_id=_norm_order_id(order_id),
+        source=str(source or ""),
+    )
+    append_execution_ledger_event(
+        f"{stage}_failed",
+        data_quality=str(data_quality or "inferred"),
+        source=str(source or ""),
+        symbol=str(symbol).upper(),
+        position_side=str(position_side).upper(),
+        order_id=_norm_order_id(order_id),
+        order_type="LIMIT",
+        submitted_price=_safe_float_or_none(tp_price),
+        submit_qty=_safe_float_or_none(tp_qty),
+        cancel_reason=str(reason or ""),
+        raw_msg=str(detail)[:240],
+    )
+
+
+def _emit_tp1_failed(**kwargs):
+    """Compat wrapper Patch 5B."""
+    _emit_tp_failed(tp_idx=1, **kwargs)
+
+
+def _infer_tp_fill_from_position(symbol: str, position_side: str, state: dict, tp_idx: int):
+    idx = max(1, min(3, int(tp_idx)))
+    submit_qty = _safe_float_or_none(state.get(f"tp{idx}_submit_position_qty"))
+    stage_qty = _safe_float_or_none(state.get(f"tp{idx}_qty"))
+    if submit_qty is None or submit_qty <= 0 or stage_qty is None or stage_qty <= 0:
+        return False, "baseline_qty_unavailable", None, None
+
+    try:
+        _, pside_now, _price, position_amt, _upnl = total_positions(symbol)
+        if pside_now is None:
+            return False, "position_unavailable", None, None
+        if str(pside_now).upper().strip() != str(position_side).upper().strip():
+            return False, "position_side_mismatch", None, None
+        current_qty = abs(float(position_amt))
+    except Exception as exc:
+        return False, f"position_read_error:{exc}", None, None
+
+    reduction = max(0.0, float(submit_qty) - float(current_qty))
+    min_expected = max(float(stage_qty) * 0.60, _step_size_for(symbol) * 0.5)
+    if reduction >= min_expected:
+        return True, "inferred_pending_gone_plus_position_reduction", current_qty, reduction
+    return False, f"reduction_too_low:{reduction:.6f}<{min_expected:.6f}", current_qty, reduction
+
+
+def _infer_tp1_fill_from_position(symbol: str, position_side: str, state: dict):
+    """Compat wrapper Patch 5B."""
+    return _infer_tp_fill_from_position(symbol, position_side, state, tp_idx=1)
+
+
+def _submit_tp_legacy_fallback(
+    *,
+    tp_idx: int,
+    symbol: str,
+    position_side: str,
+    market_ref,
+    tp_price,
+    tp_qty,
+    tp_fill_mode: str,
+    reason: str,
+) -> bool:
+    idx = max(1, min(3, int(tp_idx)))
+    tp_qty_f = _safe_float_or_none(tp_qty)
+    tp_px_f = _safe_float_or_none(tp_price)
+    if tp_qty_f is None or tp_qty_f <= 0 or tp_px_f is None or tp_px_f <= 0:
+        return False
+
+    side = _position_close_side(position_side)
+    tp_px = _sanitize_trigger_price(float(tp_px_f), symbol, position_side, "TAKE_PROFIT_MARKET", market_ref)
+    ok, details = _post_with_retry(
+        symbol,
+        tp_qty_f,
+        0,
+        tp_px,
+        position_side,
+        "TAKE_PROFIT_MARKET",
+        side,
+        return_details=True,
+    )
+    if not ok:
+        return False
+
+    set_tp_submitted(
+        symbol,
+        position_side,
+        tp_idx=idx,
+        order_id=details.get("order_id", ""),
+        qty=tp_qty_f,
+        price=tp_px,
+        tp_mode="legacy_market_tp",
+        fill_confirmation_mode=tp_fill_mode,
+    )
+    emit_lifecycle_event(
+        "legacy_fallback_used",
+        "WARN",
+        symbol=str(symbol).upper(),
+        position_side=str(position_side).upper(),
+        order_id=details.get("order_id", ""),
+        tp_price=tp_px,
+        qty=tp_qty_f,
+        tp_stage=_tp_stage_name(idx),
+        reason=str(reason),
+        source=f"{_tp_stage_name(idx)}_fallback_legacy_market",
+    )
+    append_execution_ledger_event(
+        "legacy_fallback_used",
+        data_quality="actual",
+        source=f"{_tp_stage_name(idx)}_fallback_legacy_market",
+        order_id=details.get("order_id", ""),
+        request_id=details.get("request_id", ""),
+        symbol=str(symbol).upper(),
+        side=side,
+        position_side=str(position_side).upper(),
+        order_type="TAKE_PROFIT_MARKET",
+        stop_price=tp_px,
+        submit_qty=tp_qty_f,
+        submit_time_utc=details.get("submit_time_utc", ""),
+        close_reason=f"{_tp_stage_name(idx)}_fallback",
+        notes=str(reason),
+    )
+    return True
+
+
+def _submit_tp1_legacy_fallback(**kwargs) -> bool:
+    """Compat wrapper Patch 5B."""
+    return _submit_tp_legacy_fallback(tp_idx=1, **kwargs)
+
+
+def _pending_order_key(row: dict) -> str:
+    order_id = _norm_order_id(row.get('orderId'))
+    if order_id:
+        return f"id:{order_id}"
+    symbol = str(row.get('symbol', '')).upper()
+    otype = str(row.get('type', '')).upper()
+    side = str(row.get('side', '')).upper()
+    pside = str(row.get('positionSide', '')).upper()
+    stop = row.get('stopPrice')
+    try:
+        stop = f"{float(stop):.8f}"
+    except Exception:
+        stop = ''
+    return f"fallback:{symbol}|{otype}|{side}|{pside}|{stop}"
+
+
+def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame) -> None:
+    cols = ['ts_utc', 'event_type', 'symbol', 'order_id', 'type', 'side', 'position_side', 'stop_price', 'source']
+    ts = _utc_now_iso()
+
+    def _rows_map(df: pd.DataFrame) -> dict:
+        out = {}
+        if df is None or df.empty:
+            return out
+        for _, r in df.iterrows():
+            row = {
+                'symbol': str(r.get('symbol', '')).upper(),
+                'orderId': _norm_order_id(r.get('orderId')),
+                'type': str(r.get('type', '')).upper(),
+                'side': str(r.get('side', '')).upper(),
+                'positionSide': str(r.get('positionSide', '')).upper(),
+                'stopPrice': r.get('stopPrice'),
+            }
+            out[_pending_order_key(row)] = row
+        return out
+
+    prev_map = _rows_map(prev_df)
+    curr_map = _rows_map(curr_df)
+
+    new_keys = sorted(set(curr_map.keys()) - set(prev_map.keys()))
+    gone_keys = sorted(set(prev_map.keys()) - set(curr_map.keys()))
+
+    for key in new_keys:
+        r = curr_map[key]
+        row = {
+            'ts_utc': ts,
+            'event_type': 'pending_seen',
+            'symbol': r.get('symbol', ''),
+            'order_id': _norm_order_id(r.get('orderId')),
+            'type': r.get('type', ''),
+            'side': r.get('side', ''),
+            'position_side': r.get('positionSide', ''),
+            'stop_price': _safe_float(r.get('stopPrice'), default=float('nan')),
+            'source': 'query_pending_orders',
+        }
+        _append_csv_row(ORDER_LIFECYCLE_LOG_CSV, row, cols)
+
+    for key in gone_keys:
+        r = prev_map[key]
+        row = {
+            'ts_utc': ts,
+            'event_type': 'pending_gone',
+            'symbol': r.get('symbol', ''),
+            'order_id': _norm_order_id(r.get('orderId')),
+            'type': r.get('type', ''),
+            'side': r.get('side', ''),
+            'position_side': r.get('positionSide', ''),
+            'stop_price': _safe_float(r.get('stopPrice'), default=float('nan')),
+            'source': 'query_pending_orders',
+        }
+        _append_csv_row(ORDER_LIFECYCLE_LOG_CSV, row, cols)
+        otype = str(r.get('type', '')).upper()
+        symbol_u = str(r.get('symbol', '')).upper()
+        pside_u = str(r.get('positionSide', '')).upper()
+        side_u = str(r.get('side', '')).upper()
+        order_id_norm = _norm_order_id(r.get('orderId'))
+
+        # Patch 5C: TP LIMIT por etapas en modo partial_limit_tp (confirmacion inferida por reduccion de posicion).
+        st_tp = get_tp_state(symbol_u, pside_u)
+        tp_mode_state = str(st_tp.get("tp_mode", "")).lower()
+        tp_fill_mode_state = str(st_tp.get("tp_fill_confirmation_mode", "inferred")).lower()
+        tp_idx_state = _infer_tp_idx_from_state_order_id(st_tp, order_id_norm)
+        is_stage_limit_candidate = (
+            otype == "LIMIT"
+            and tp_mode_state == "partial_limit_tp"
+            and order_id_norm
+            and tp_idx_state in (1, 2, 3)
+        )
+        if is_stage_limit_candidate:
+            tp_idx = int(tp_idx_state)
+            stage_name = _tp_stage_name(tp_idx)
+            confirmed, confirm_reason, current_qty, reduction = _infer_tp_fill_from_position(symbol_u, pside_u, st_tp, tp_idx=tp_idx)
+            confirm_source = "inferred_pending_gone_plus_position_reduction"
+            if tp_fill_mode_state == "exchange_state":
+                confirm_source = "exchange_state_unavailable_fallback_inferred"
+            if confirmed:
+                st = set_tp_filled(symbol_u, pside_u, tp_idx=tp_idx)
+                emit_lifecycle_event(
+                    f"{stage_name}_filled",
+                    "INFO",
+                    symbol=symbol_u,
+                    position_side=pside_u,
+                    side=side_u,
+                    order_id=order_id_norm,
+                    source=confirm_source,
+                    confirmation_mode="inferred" if tp_fill_mode_state == "exchange_state" else tp_fill_mode_state,
+                    reduction_qty=_safe_float_or_none(reduction),
+                    remaining_qty=_safe_float_or_none(current_qty),
+                    tp_stage=str(st.get("tp_stage", "")),
+                )
+                append_execution_ledger_event(
+                    f"{stage_name}_filled",
+                    data_quality="inferred",
+                    source=f"pending_gone_limit_{stage_name}",
+                    ts_utc=ts,
+                    order_id=order_id_norm,
+                    symbol=symbol_u,
+                    side=side_u,
+                    position_side=pside_u,
+                    order_type=otype,
+                    submitted_price=_safe_float_or_none(st_tp.get(f"{stage_name}_price")),
+                    fill_qty=_safe_float_or_none(st_tp.get(f"{stage_name}_qty")),
+                    fill_time_utc=ts,
+                    close_reason=stage_name,
+                    partial_fill_status="inferred",
+                    notes=f"{confirm_source}|{confirm_reason}",
+                )
+            else:
+                _emit_tp_failed(
+                    tp_idx=tp_idx,
+                    symbol=symbol_u,
+                    position_side=pside_u,
+                    reason=f"{stage_name}_confirmation_failed",
+                    detail=f"{confirm_source}|{confirm_reason}",
+                    order_id=order_id_norm,
+                    data_quality="inferred",
+                    source=f"pending_gone_limit_{stage_name}",
+                    tp_price=st_tp.get(f"{stage_name}_price"),
+                    tp_qty=st_tp.get(f"{stage_name}_qty"),
+                )
+                if get_tp_legacy_fallback_on_error():
+                    stage_qty = _safe_float_or_none(st_tp.get(f"{stage_name}_qty"))
+                    if stage_qty is not None and current_qty is not None:
+                        stage_qty = min(float(stage_qty), float(current_qty))
+                    ok_fallback = _submit_tp_legacy_fallback(
+                        tp_idx=tp_idx,
+                        symbol=symbol_u,
+                        position_side=pside_u,
+                        market_ref=_last_traded_price(symbol_u),
+                        tp_price=st_tp.get(f"{stage_name}_price"),
+                        tp_qty=stage_qty,
+                        tp_fill_mode=str(st_tp.get("tp_fill_confirmation_mode", "inferred")),
+                        reason=f"{stage_name}_confirmation_failed:{confirm_reason}",
+                    )
+                    if not ok_fallback:
+                        _emit_tp_failed(
+                            tp_idx=tp_idx,
+                            symbol=symbol_u,
+                            position_side=pside_u,
+                            reason="legacy_fallback_submit_failed",
+                            detail=f"{stage_name}_confirmation_failed:{confirm_reason}",
+                            order_id=order_id_norm,
+                            data_quality="inferred",
+                            source=f"pending_gone_limit_{stage_name}",
+                            tp_price=st_tp.get(f"{stage_name}_price"),
+                            tp_qty=stage_qty,
+                        )
+            continue
+
+        if otype == 'TAKE_PROFIT_MARKET':
+            emit_lifecycle_event(
+                "take_profit_hit",
+                "INFO",
+                symbol=symbol_u,
+                position_side=pside_u,
+                side=side_u,
+                order_id=order_id_norm,
+                source="inferred_pending_gone",
+            )
+            append_execution_ledger_event(
+                "take_profit_hit",
+                data_quality="inferred",
+                source="pending_gone_inference",
+                ts_utc=ts,
+                order_id=order_id_norm,
+                symbol=symbol_u,
+                side=side_u,
+                position_side=pside_u,
+                order_type=otype,
+                stop_price=_safe_float_or_none(r.get('stopPrice')),
+                fill_time_utc=ts,
+                close_reason="take_profit",
+                partial_fill_status="unknown",
+                notes="TP inferido por desaparicion de orden pendiente",
+            )
+            try:
+                tp_idx = _infer_tp_idx_from_state(symbol_u, pside_u, order_id_norm)
+                st = set_tp_filled(symbol_u, pside_u, tp_idx=tp_idx)
+                emit_lifecycle_event(
+                    f"tp{tp_idx}_filled",
+                    "INFO",
+                    symbol=symbol_u,
+                    position_side=pside_u,
+                    order_id=order_id_norm,
+                    source="inferred_pending_gone",
+                    tp_stage=str(st.get("tp_stage", "")),
+                )
+                append_execution_ledger_event(
+                    f"tp{tp_idx}_filled",
+                    data_quality="inferred",
+                    source="pending_gone_inference",
+                    order_id=order_id_norm,
+                    symbol=symbol_u,
+                    side=side_u,
+                    position_side=pside_u,
+                    order_type=otype,
+                    fill_time_utc=ts,
+                    close_reason=f"tp{tp_idx}",
+                    partial_fill_status="unknown",
+                )
+            except Exception:
+                pass
 
 def _normalize_orders_df(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -28,13 +742,29 @@ def _normalize_orders_df(df: pd.DataFrame) -> pd.DataFrame:
         df = df.rename(columns={'orderType': 'type'})
     if 'type' not in df.columns:
         df['type'] = ''
+    if 'orderId' not in df.columns:
+        df['orderId'] = ''
+    if 'side' not in df.columns:
+        df['side'] = ''
+    if 'positionSide' not in df.columns:
+        df['positionSide'] = ''
+    if 'price' not in df.columns:
+        df['price'] = ''
+    df['orderId'] = df['orderId'].apply(_norm_order_id)
     if 'symbol' in df.columns:
         df['symbol'] = df['symbol'].astype(str).str.upper()
+    df['side'] = df['side'].astype(str).str.upper().str.strip()
+    df['positionSide'] = df['positionSide'].astype(str).str.upper().str.strip()
+    if 'price' in df.columns:
+        df['price'] = pd.to_numeric(df['price'], errors='coerce')
     if 'stopPrice' in df.columns:
         df['stopPrice'] = pd.to_numeric(df['stopPrice'], errors='coerce')
     return df
 
 def _cooldown_minutes_for_symbol(params_by_symbol: dict, symbol: str, default: int = 10) -> int:
+    fixed_cd = get_cooldown_minutes_override()
+    if fixed_cd is not None:
+        return int(fixed_cd)
     try:
         p = params_by_symbol.get(str(symbol).upper(), {}) if isinstance(params_by_symbol, dict) else {}
         cd = p.get('cooldown', p.get('cooldown_min', default))
@@ -90,10 +820,104 @@ def _append_sl_watch(symbol: str, stop_price: float, position_side: str, order_i
             'ts': datetime.utcnow().isoformat()
         }
         df = df[~((df['symbol'] == symbol) & (df['position_side'] == row['position_side']))]
-        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        df.loc[len(df)] = row
         df.to_csv(SL_WATCH_CSV, index=False)
     except Exception as e:
         print(f"Error registrando SL watch para {symbol}: {e}")
+
+
+def _append_entry_watch(
+    symbol: str,
+    position_side: str,
+    qty: float,
+    request_id: str = "",
+    order_id: str = "",
+    side: str = "",
+    intended_entry_price=None,
+    submitted_price=None,
+    submit_time_utc: str = "",
+) -> None:
+    cols = [
+        'symbol',
+        'position_side',
+        'side',
+        'qty',
+        'request_id',
+        'order_id',
+        'intended_entry_price',
+        'submitted_price',
+        'submit_time_utc',
+        'ts_utc',
+    ]
+    try:
+        df = pd.read_csv(ENTRY_WATCH_CSV) if os.path.exists(ENTRY_WATCH_CSV) else pd.DataFrame(columns=cols)
+        for c in cols:
+            if c not in df.columns:
+                df[c] = ''
+        symbol_u = str(symbol).upper().strip()
+        pside_u = str(position_side).upper().strip()
+        df['symbol'] = df['symbol'].astype(str).str.upper().str.strip()
+        df['position_side'] = df['position_side'].astype(str).str.upper().str.strip()
+        df = df[~((df['symbol'] == symbol_u) & (df['position_side'] == pside_u))]
+        row = {
+            'symbol': symbol_u,
+            'position_side': pside_u,
+            'side': str(side or '').upper().strip(),
+            'qty': _safe_float(qty, 0.0),
+            'request_id': str(request_id or '').strip(),
+            'order_id': _norm_order_id(order_id),
+            'intended_entry_price': _safe_float_or_none(intended_entry_price),
+            'submitted_price': _safe_float_or_none(submitted_price),
+            'submit_time_utc': str(submit_time_utc or '').strip(),
+            'ts_utc': _utc_now_iso(),
+        }
+        df = pd.concat([df, pd.DataFrame([row], columns=cols)], ignore_index=True)
+        df.to_csv(ENTRY_WATCH_CSV, index=False)
+    except Exception as e:
+        print(f"Error registrando entry watch para {symbol}: {e}")
+
+
+def _consume_entry_watch(symbol: str, position_side: str):
+    cols = [
+        'symbol',
+        'position_side',
+        'side',
+        'qty',
+        'request_id',
+        'order_id',
+        'intended_entry_price',
+        'submitted_price',
+        'submit_time_utc',
+        'ts_utc',
+    ]
+    if not os.path.exists(ENTRY_WATCH_CSV):
+        return None
+    try:
+        df = pd.read_csv(ENTRY_WATCH_CSV)
+    except Exception:
+        return None
+    if df.empty:
+        return None
+    for c in cols:
+        if c not in df.columns:
+            df[c] = ''
+    df['symbol'] = df['symbol'].astype(str).str.upper().str.strip()
+    df['position_side'] = df['position_side'].astype(str).str.upper().str.strip()
+    symbol_u = str(symbol).upper().strip()
+    pside_u = str(position_side).upper().strip()
+    mask = (df['symbol'] == symbol_u) & (df['position_side'] == pside_u)
+    if not mask.any():
+        return None
+    hit = df[mask].tail(1).iloc[0].to_dict()
+    remaining = df[~mask].copy()
+    try:
+        if remaining.empty:
+            os.remove(ENTRY_WATCH_CSV)
+        else:
+            remaining.to_csv(ENTRY_WATCH_CSV, index=False)
+    except Exception:
+        pass
+    return hit
     
  # Paso mínimo global de lote (0.001).  Si en el futuro necesitas pasos específicos,
 # vuelve a añadir un diccionario STEP_SIZES y usa .get().
@@ -109,8 +933,53 @@ SYMBOL_TRADING_RULES = {
     'TRX-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
     'DOGE-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
 }
-# Splits por defecto para TP escalonado (40%, 40%, 20%)
+# Splits legacy por defecto para TP escalonado (40%, 40%, 20%)
 TP_SPLITS = (0.40, 0.40, 0.20)
+
+
+def _runtime_tp_splits():
+    """Obtiene splits TP desde runtime config con fallback legacy."""
+    try:
+        raw = tuple(float(x) for x in get_tp_partial_distribution())
+    except Exception:
+        raw = TP_SPLITS
+    if len(raw) < 3:
+        return TP_SPLITS
+    vals = [max(float(v), 0.0) for v in raw[:3]]
+    total = sum(vals)
+    if total <= 0:
+        return TP_SPLITS
+    return tuple(float(v / total) for v in vals)
+
+
+def _tp_stage_from_live_count(live_count: int) -> str:
+    n = int(live_count)
+    if n >= 3:
+        return "tp3_live"
+    if n >= 2:
+        return "tp2_live"
+    if n >= 1:
+        return "tp1_live"
+    return "none"
+
+
+def _infer_tp_idx_from_state(symbol: str, position_side: str, order_id: str) -> int:
+    """Best-effort: identifica TP1/TP2/TP3 por order_id o etapa actual."""
+    st = get_tp_state(symbol, position_side)
+    oid = _norm_order_id(order_id)
+    if oid:
+        if oid and oid == _norm_order_id(st.get("tp1_order_id")):
+            return 1
+        if oid and oid == _norm_order_id(st.get("tp2_order_id")):
+            return 2
+        if oid and oid == _norm_order_id(st.get("tp3_order_id")):
+            return 3
+    stage = str(st.get("tp_stage", "none")).lower()
+    if stage in ("tp3_live", "tp2_filled"):
+        return 3
+    if stage in ("tp2_live", "tp1_filled"):
+        return 2
+    return 1
 
 def _round_step(qty: float, step: float = STEP_SIZE_DEFAULT) -> float:
     """Redondea cantidad al múltiplo permitido por el contrato."""
@@ -310,21 +1179,234 @@ def _bootstrap_position_queue(df_posiciones: pd.DataFrame, df_ordenes: pd.DataFr
     return pd.concat([df_posiciones, bootstrap_df], ignore_index=True)
 
 # --- Retry helper for robust order posting ---
-def _post_with_retry(symbol, qty, price, stop, position_side, order_type, side, delays=(0.5, 1.0, 2.0)):
-    """Intenta colocar una orden con reintentos escalonados. Valida la respuesta JSON de BingX."""
+def _post_with_retry(
+    symbol,
+    qty,
+    price,
+    stop,
+    position_side,
+    order_type,
+    side,
+    delays=(0.5, 1.0, 2.0),
+    order_kwargs=None,
+    intended_entry_price=None,
+    return_details: bool = False,
+):
+    """Intenta colocar una orden con reintentos escalonados.
+
+    Por compatibilidad:
+    - return_details=False -> retorna bool.
+    - return_details=True  -> retorna (ok: bool, details: dict).
+    """
     last_err = None
-    for d in delays:
+    last_code = ''
+    last_msg = ''
+    last_order_id = ''
+    request_id = uuid.uuid4().hex
+    order_kwargs = dict(order_kwargs or {})
+
+    symbol_u = str(symbol).upper()
+    side_u = str(side).upper()
+    pside_u = str(position_side).upper()
+    otype_u = str(order_type).upper()
+
+    details = {
+        'request_id': request_id,
+        'order_id': '',
+        'symbol': symbol_u,
+        'side': side_u,
+        'position_side': pside_u,
+        'order_type': otype_u,
+        'submit_qty': _safe_float(qty, 0.0),
+        'submitted_price': _safe_float_or_none(price),
+        'stop_price': _safe_float_or_none(stop),
+        'intended_entry_price': _safe_float_or_none(intended_entry_price),
+        'submit_time_utc': '',
+        'attempt': 0,
+        'accepted': False,
+        'code': '',
+        'msg': '',
+    }
+
+    for idx, d in enumerate(delays, start=1):
         try:
-            resp = pkg.bingx.post_order(symbol, qty, price, stop, position_side, order_type, side)
+            resp = pkg.bingx.post_order(
+                symbol,
+                qty,
+                price,
+                stop,
+                position_side,
+                order_type,
+                side,
+                **order_kwargs,
+            )
+            code = None
+            msg = None
+            order_id = None
+            try:
+                parsed = json.loads(resp) if isinstance(resp, str) else resp
+                if isinstance(parsed, dict):
+                    code = parsed.get('code')
+                    msg = parsed.get('msg') or parsed.get('message') or ''
+                    order_id = _extract_order_id_from_payload(parsed.get('data', parsed))
+                else:
+                    msg = f"respuesta_no_dict:{type(parsed).__name__}"
+            except Exception as pe:
+                msg = f"respuesta_no_json:{pe}"
+
             ok, err_msg = _validate_order_response(resp)
+            _log_order_submit_attempt(
+                request_id=request_id,
+                symbol=symbol,
+                qty=qty,
+                price=price,
+                stop_price=stop,
+                position_side=position_side,
+                order_type=order_type,
+                side=side,
+                attempt=idx,
+                delay_s=d,
+                accepted=ok,
+                code=code,
+                msg=(err_msg or msg or ''),
+                order_id=order_id,
+                raw_response=resp,
+            )
             if ok:
+                submit_ts_utc = _utc_now_iso()
+                order_id_norm = _norm_order_id(order_id)
+                details.update(
+                    {
+                        'order_id': order_id_norm,
+                        'submit_time_utc': submit_ts_utc,
+                        'attempt': idx,
+                        'accepted': True,
+                        'code': '' if code is None else str(code),
+                        'msg': (err_msg or msg or ''),
+                    }
+                )
+                append_execution_ledger_event(
+                    "order_submitted",
+                    data_quality="actual",
+                    source="post_with_retry_accept",
+                    request_id=request_id,
+                    order_id=order_id_norm,
+                    symbol=symbol_u,
+                    side=side_u,
+                    position_side=pside_u,
+                    order_type=otype_u,
+                    intended_entry_price=_safe_float_or_none(intended_entry_price),
+                    submitted_price=_safe_float_or_none(price),
+                    stop_price=_safe_float_or_none(stop),
+                    submit_qty=_safe_float_or_none(qty),
+                    submit_time_utc=submit_ts_utc,
+                    raw_code=code,
+                    raw_msg=(err_msg or msg or ''),
+                    notes=f"attempt={idx}",
+                )
+                if otype_u == "MARKET":
+                    emit_lifecycle_event(
+                        "entry_order_submitted",
+                        "INFO",
+                        symbol=symbol_u,
+                        position_side=pside_u,
+                        side=side_u,
+                        qty=_safe_float(qty, 0.0),
+                        attempt=idx,
+                        request_id=request_id,
+                        order_id=order_id_norm,
+                        source="api_submit_accepted",
+                    )
+                if return_details:
+                    return True, details
                 return True
             last_err = err_msg
+            last_code = '' if code is None else str(code)
+            last_msg = (err_msg or msg or '')
+            last_order_id = _norm_order_id(order_id)
             print(f"post_order({order_type}) rechazado para {symbol}: {err_msg}")
         except Exception as e:
             last_err = e
+            last_code = 'EXCEPTION'
+            last_msg = str(e)
+            _log_order_submit_attempt(
+                request_id=request_id,
+                symbol=symbol,
+                qty=qty,
+                price=price,
+                stop_price=stop,
+                position_side=position_side,
+                order_type=order_type,
+                side=side,
+                attempt=idx,
+                delay_s=d,
+                accepted=False,
+                code='EXCEPTION',
+                msg=str(e),
+                order_id='',
+                raw_response='',
+            )
         time.sleep(d)
+
     print(f"Fallo post_order({order_type}) para {symbol}: {last_err}")
+    details.update(
+        {
+            'order_id': last_order_id,
+            'attempt': len(delays),
+            'accepted': False,
+            'code': last_code,
+            'msg': str(last_err)[:240] if last_err is not None else '',
+        }
+    )
+    append_execution_ledger_event(
+        "order_submit_failed",
+        data_quality="actual",
+        source="post_with_retry_exhausted",
+        request_id=request_id,
+        order_id=last_order_id,
+        symbol=symbol_u,
+        side=side_u,
+        position_side=pside_u,
+        order_type=otype_u,
+        intended_entry_price=_safe_float_or_none(intended_entry_price),
+        submitted_price=_safe_float_or_none(price),
+        stop_price=_safe_float_or_none(stop),
+        submit_qty=_safe_float_or_none(qty),
+        raw_code=last_code,
+        raw_msg=str(last_err)[:240] if last_err is not None else '',
+        cancel_reason="submit_rejected_or_exception",
+    )
+    if otype_u == "MARKET":
+        emit_lifecycle_event(
+            "entry_order_canceled_or_expired",
+            "WARN",
+            symbol=symbol_u,
+            position_side=pside_u,
+            side=side_u,
+            qty=_safe_float(qty, 0.0),
+            reason="entry_submit_rejected_or_exception",
+            detail=str(last_err)[:220] if last_err is not None else "unknown",
+            source="post_with_retry_exhausted",
+        )
+        append_execution_ledger_event(
+            "entry_order_canceled_or_expired",
+            data_quality="actual",
+            source="post_with_retry_exhausted",
+            request_id=request_id,
+            order_id=last_order_id,
+            symbol=symbol_u,
+            side=side_u,
+            position_side=pside_u,
+            order_type=otype_u,
+            intended_entry_price=_safe_float_or_none(intended_entry_price),
+            submitted_price=_safe_float_or_none(price),
+            submit_qty=_safe_float_or_none(qty),
+            cancel_reason="entry_submit_rejected_or_exception",
+            raw_code=last_code,
+            raw_msg=str(last_err)[:240] if last_err is not None else '',
+        )
+    if return_details:
+        return False, details
     return False
 
 
@@ -578,9 +1660,13 @@ def obteniendo_ordenes_pendientes():
         df = pd.DataFrame(orders)
 
     try:
+        prev_df = pd.read_csv(ORDER_PENDING_PREV_CSV) if os.path.exists(ORDER_PENDING_PREV_CSV) else pd.DataFrame(columns=['symbol','orderId','type','stopPrice','time'])
+        prev_df = _normalize_orders_df(prev_df)
         df = _normalize_orders_df(df)
         csv_file = './archivos/order_id_register.csv'
         df.to_csv(csv_file, index=False)
+        _log_pending_order_transitions(prev_df, df)
+        df.to_csv(ORDER_PENDING_PREV_CSV, index=False)
     except Exception as e:
         print("Error al guardar en CSV:", e)
 
@@ -589,6 +1675,8 @@ def obteniendo_ordenes_pendientes():
 
 def colocando_ordenes():
     pkg.monkey_bx.obteniendo_ordenes_pendientes()
+    if not is_entry_hour_allowed_utc():
+        return
     currencies = pkg.price_bingx_5m.currencies_list()
     # Cargar últimas señales de indicadores para mostrar TP escalonados en alertas
     latest_values = None
@@ -794,12 +1882,40 @@ def colocando_ordenes():
         # -----------------------------------------------------------------------
 
         # Colocando la orden
-        entry_ok = _post_with_retry(
-            currency, currency_amount, 0, 0, position_side, "MARKET", order_side
+        entry_ok, entry_details = _post_with_retry(
+            currency,
+            currency_amount,
+            0,
+            0,
+            position_side,
+            "MARKET",
+            order_side,
+            intended_entry_price=price_last,
+            return_details=True,
         )
         if not entry_ok:
             print(f"No se pudo abrir posición para {currency}; se omite configuración de TP/SL.")
             continue
+
+        _append_entry_watch(
+            symbol=currency,
+            position_side=position_side,
+            qty=_safe_float(currency_amount, 0.0),
+            request_id=entry_details.get('request_id', ''),
+            order_id=entry_details.get('order_id', ''),
+            side=order_side,
+            intended_entry_price=entry_details.get('intended_entry_price'),
+            submitted_price=entry_details.get('submitted_price'),
+            submit_time_utc=entry_details.get('submit_time_utc', ''),
+        )
+        upsert_tp_state(
+            currency,
+            position_side,
+            tp_mode=get_tp_mode(),
+            tp_stage="none",
+            break_even_state="inactive",
+            tp_fill_confirmation_mode=get_tp_fill_confirmation_mode(),
+        )
 
         # Guardando las posiciones
         nueva_fila = pd.DataFrame({
@@ -880,7 +1996,11 @@ def colocando_ordenes():
         for i, tp_px in enumerate(tps[:3], start=1):
             lines_tp.append(f"*TP{i}:* `{round(float(tp_px), 4)}` ({pct_to_str(float(tp_px))})")
         sl_pct_str = pct_to_str(float(sl_level))
-        splits_line = "TP splits: 40% / 40% / 20%" if len(tps) >= 3 else "TP split: 100%"
+        if len(tps) >= 3:
+            s1, s2, s3 = _runtime_tp_splits()
+            splits_line = f"TP splits: {s1*100:.0f}% / {s2*100:.0f}% / {s3*100:.0f}%"
+        else:
+            splits_line = "TP split: 100%"
 
         alert_lines = [
             "💎 *TRADE ALERT* 💎",
@@ -940,7 +2060,8 @@ def sync_cooldowns_from_sl_fills():
     now = datetime.utcnow()
 
     for _, row in df_watch.iterrows():
-        symbol = row.get('symbol')
+        symbol = str(row.get('symbol', '')).upper()
+        position_side = str(row.get('position_side', '')).upper()
         order_id = str(row.get('orderId', '')).strip()
         stop_price = None
         try:
@@ -966,6 +2087,37 @@ def sync_cooldowns_from_sl_fills():
 
         minutes = _cooldown_minutes_for_symbol(params_by_symbol, symbol, default=10)
         _write_cooldown(symbol, now, minutes)
+        fill_ts_utc = _utc_now_iso()
+        emit_lifecycle_event(
+            "stop_loss_hit",
+            "WARN",
+            symbol=symbol,
+            position_side=position_side,
+            order_id=_norm_order_id(order_id),
+            stop_price=stop_price if stop_price is not None else None,
+            cooldown_min=minutes,
+            source="inferred_sl_watch_disappeared",
+        )
+        append_execution_ledger_event(
+            "stop_loss_hit",
+            data_quality="inferred",
+            source="sl_watch_disappeared_inference",
+            ts_utc=fill_ts_utc,
+            order_id=_norm_order_id(order_id),
+            symbol=symbol,
+            position_side=position_side,
+            order_type="STOP_MARKET",
+            stop_price=stop_price if stop_price is not None else None,
+            submit_time_utc=str(row.get('ts', '')).strip(),
+            fill_time_utc=fill_ts_utc,
+            close_reason="stop_loss",
+            partial_fill_status="unknown",
+            notes=f"cooldown_applied_min={minutes}",
+        )
+        try:
+            clear_tp_state(symbol, position_side)
+        except Exception:
+            pass
 
     if remaining_rows:
         pd.DataFrame(remaining_rows).to_csv(SL_WATCH_CSV, index=False)
@@ -1014,6 +2166,10 @@ def colocando_TK_SL():
     except Exception as _e:
         params_by_symbol = {}
 
+    tp_mode_runtime = get_tp_mode()
+    tp_fill_mode = get_tp_fill_confirmation_mode()
+    tp_splits_runtime = _runtime_tp_splits()
+
     # Agrega un pequeño delay antes de buscar la posición en BingX para dar tiempo a que la posición MARKET aparezca
     time.sleep(2)
     for index, row in df_posiciones.iterrows():
@@ -1022,8 +2178,9 @@ def colocando_TK_SL():
 
         # Verificar si ya existen órdenes SL y TP pendientes para este símbolo
         symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
+        position_side_hint = str(row.get('tipo', '')).upper().strip()
         sl_exists = not symbol_orders[symbol_orders['type'] == 'STOP_MARKET'].empty
-        tp_exists = not symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET'].empty
+        tp_exists = not _extract_tp_orders(symbol_orders, position_side_hint, tp_mode_runtime).empty
 
         # Si ambos existen, ya está protegido: eliminamos la entrada y seguimos
         if sl_exists and tp_exists:
@@ -1035,6 +2192,7 @@ def colocando_TK_SL():
             try:
                 mask = (df_ordenes['symbol'] == symbol) if 'symbol' in df_ordenes.columns else pd.Series([], dtype=bool)
                 msg = ""
+                orderId = None
                 if mask.any():
                     df_sym = df_ordenes.loc[mask]
                     if 'orderId' in df_sym.columns and not df_sym['orderId'].isna().all():
@@ -1057,6 +2215,23 @@ def colocando_TK_SL():
                     pkg.monkey_bx.bot_send_text(msg)
                 except Exception:
                     pass
+                emit_lifecycle_event(
+                    "entry_order_canceled_or_expired",
+                    "WARN",
+                    symbol=str(symbol).upper(),
+                    reason="protection_timeout",
+                    source="colocando_TK_SL_counter",
+                    detail=str(msg)[:220],
+                )
+                append_execution_ledger_event(
+                    "entry_order_canceled_or_expired",
+                    data_quality="inferred",
+                    source="protection_timeout_counter",
+                    order_id=_norm_order_id(orderId),
+                    symbol=str(symbol).upper(),
+                    cancel_reason="protection_timeout",
+                    notes=str(msg)[:220],
+                )
                 continue  # Evita múltiples mensajes y cancelaciones para la misma orden
             except Exception as e:
                 print(f"Error al manejar timeout para {symbol}: {e}")
@@ -1077,6 +2252,14 @@ def colocando_TK_SL():
                 continue
 
             symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
+            upsert_tp_state(
+                symbol,
+                positionSide,
+                tp_mode=tp_mode_runtime,
+                tp_fill_confirmation_mode=tp_fill_mode,
+            )
+            if is_sl_guard_active(symbol, positionSide):
+                continue
             market_ref = _last_traded_price(symbol)
             if market_ref is None or market_ref <= 0:
                 try:
@@ -1088,6 +2271,45 @@ def colocando_TK_SL():
                 position_qty = abs(float(positionAmt))
             except Exception:
                 position_qty = 0.0
+
+            watch_hit = _consume_entry_watch(symbol, positionSide)
+            if watch_hit is not None:
+                fill_ts_utc = _utc_now_iso()
+                submit_ts_utc = str(watch_hit.get("submit_time_utc", "") or watch_hit.get("ts_utc", "")).strip()
+                watch_side = str(watch_hit.get("side", "")).upper().strip()
+                if not watch_side:
+                    watch_side = "BUY" if str(positionSide).upper() == "LONG" else "SELL"
+                emit_lifecycle_event(
+                    "entry_order_filled",
+                    "INFO",
+                    symbol=str(symbol).upper(),
+                    position_side=str(positionSide).upper(),
+                    qty=position_qty,
+                    avg_price=_safe_float(price, 0.0),
+                    source="inferred_position_seen",
+                    request_id=watch_hit.get("request_id", ""),
+                )
+                append_execution_ledger_event(
+                    "entry_order_filled",
+                    data_quality="inferred",
+                    source="position_seen_inference",
+                    ts_utc=fill_ts_utc,
+                    request_id=str(watch_hit.get("request_id", "")).strip(),
+                    order_id=_norm_order_id(watch_hit.get("order_id")),
+                    symbol=str(symbol).upper(),
+                    side=watch_side,
+                    position_side=str(positionSide).upper(),
+                    order_type="MARKET",
+                    intended_entry_price=_safe_float_or_none(watch_hit.get("intended_entry_price")),
+                    submitted_price=_safe_float_or_none(watch_hit.get("submitted_price")),
+                    actual_fill_price=_safe_float_or_none(price),
+                    submit_qty=_safe_float_or_none(watch_hit.get("qty")),
+                    fill_qty=position_qty,
+                    submit_time_utc=submit_ts_utc,
+                    fill_time_utc=fill_ts_utc,
+                    partial_fill_status="unknown",
+                    notes="fill de entrada inferido por aparicion de posicion",
+                )
 
             if positionSide == 'LONG':
                 # Niveles TP (escalonados si existen) y SL desde indicadores
@@ -1122,18 +2344,11 @@ def colocando_TK_SL():
 
                 # ¿Qué órdenes existen ya?
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
-                existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
+                existing_tp = _extract_tp_orders(symbol_orders, "LONG", tp_mode_runtime)
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 tick = _tick_size_for(symbol)
                 step_sz = _step_size_for(symbol)
-                existing_tp_prices = set()
-                if 'stopPrice' in existing_tp.columns:
-                    try:
-                        existing_tp_prices = set(
-                            _round_to_tick(float(x), tick) for x in existing_tp['stopPrice'].tolist() if pd.notna(x)
-                        )
-                    except Exception:
-                        existing_tp_prices = set()
+                existing_tp_prices = _extract_tp_price_set(existing_tp, symbol)
 
                 # Colocar SL si falta
                 exito_sl = not existing_sl.empty
@@ -1163,46 +2378,217 @@ def colocando_TK_SL():
                     pos_qty = abs(float(positionAmt))
                 except Exception:
                     pos_qty = 0.0
-                splits = TP_SPLITS if len(desired_tps) >= 3 else (1.0,)
+                splits = tp_splits_runtime if len(desired_tps) >= 3 else (1.0,)
                 split_qtys = _split_position_qtys(pos_qty, splits, step_sz)
 
-                # Colocar TPs faltantes (comparando por precio exacto)
+                # Colocar TP(s) faltantes
                 placed_all_tps = True
-                for idx, tp_px in enumerate(desired_tps[:len(split_qtys)]):
-                    tp_px = _sanitize_trigger_price(float(tp_px), symbol, "LONG", "TAKE_PROFIT_MARKET", market_ref)
-                    # ¿Existe un TP muy parecido ya? (tolerancia relativa ~1e-4)
-                    exists = any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
-                    if exists:
-                        continue
-                    tp_qty = split_qtys[idx]
-                    if tp_qty <= 0:
-                        continue
-                    ok = _post_with_retry(symbol, tp_qty, 0, tp_px, "LONG", "TAKE_PROFIT_MARKET", "SELL")
-                    if ok:
-                        time.sleep(0.3)
-                        existing_tp_prices.add(tp_px)
-                    else:
+                if tp_mode_runtime == "partial_limit_tp":
+                    st_curr = get_tp_state(symbol, "LONG")
+                    stage_idx_target = _next_tp_idx_from_stage(st_curr.get("tp_stage", "none"))
+                    stage_price_ref = None
+
+                    if stage_idx_target is not None and desired_tps:
+                        price_src_idx = min(stage_idx_target - 1, max(len(desired_tps) - 1, 0))
+                        stage_price_ref = _sanitize_tp_limit_price(
+                            float(desired_tps[price_src_idx]),
+                            symbol,
+                            "LONG",
+                            market_ref,
+                            offset_bps=get_tp_limit_offset_bps(),
+                        )
+                        exists = any(abs((stage_price_ref - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
+                        if not exists:
+                            stage_qty, qty_reason = _compute_partial_limit_stage_qty(
+                                position_qty_now=pos_qty,
+                                step_sz=step_sz,
+                                splits=splits,
+                                state=st_curr,
+                                stage_idx=stage_idx_target,
+                            )
+                            if stage_qty <= 0:
+                                _emit_tp_failed(
+                                    tp_idx=stage_idx_target,
+                                    symbol=symbol,
+                                    position_side="LONG",
+                                    reason=f"{_tp_stage_name(stage_idx_target)}_qty_invalid",
+                                    detail=str(qty_reason),
+                                    data_quality="inferred",
+                                    source="colocando_TK_SL",
+                                    tp_price=stage_price_ref,
+                                    tp_qty=stage_qty,
+                                )
+                                placed_all_tps = False
+                            else:
+                                ok, tp_details = _post_with_retry(
+                                    symbol,
+                                    stage_qty,
+                                    stage_price_ref,
+                                    0,
+                                    "LONG",
+                                    "LIMIT",
+                                    "SELL",
+                                    order_kwargs=_tp_limit_order_kwargs(symbol, "LONG", tp_idx=stage_idx_target),
+                                    return_details=True,
+                                )
+                                if ok:
+                                    time.sleep(0.3)
+                                    existing_tp_prices.add(stage_price_ref)
+                                    set_tp_submitted(
+                                        symbol,
+                                        "LONG",
+                                        tp_idx=stage_idx_target,
+                                        order_id=tp_details.get("order_id", ""),
+                                        qty=stage_qty,
+                                        price=stage_price_ref,
+                                        submit_position_qty=pos_qty,
+                                        tp_mode=tp_mode_runtime,
+                                        fill_confirmation_mode=tp_fill_mode,
+                                    )
+                                    emit_lifecycle_event(
+                                        f"tp{stage_idx_target}_submitted",
+                                        "INFO",
+                                        symbol=str(symbol).upper(),
+                                        position_side="LONG",
+                                        qty=stage_qty,
+                                        tp_price=stage_price_ref,
+                                        order_id=tp_details.get("order_id", ""),
+                                        source="colocando_TK_SL",
+                                    )
+                                    append_execution_ledger_event(
+                                        f"tp{stage_idx_target}_submitted",
+                                        data_quality="actual",
+                                        source="colocando_TK_SL_submit",
+                                        request_id=tp_details.get("request_id", ""),
+                                        order_id=tp_details.get("order_id", ""),
+                                        symbol=str(symbol).upper(),
+                                        side="SELL",
+                                        position_side="LONG",
+                                        order_type="LIMIT",
+                                        submitted_price=stage_price_ref,
+                                        stop_price=None,
+                                        submit_qty=stage_qty,
+                                        submit_time_utc=tp_details.get("submit_time_utc", ""),
+                                        partial_fill_status="unknown",
+                                    )
+                                else:
+                                    _emit_tp_failed(
+                                        tp_idx=stage_idx_target,
+                                        symbol=symbol,
+                                        position_side="LONG",
+                                        reason=f"{_tp_stage_name(stage_idx_target)}_submit_failed",
+                                        detail="limit_submit_rejected_or_exception",
+                                        order_id=tp_details.get("order_id", "") if isinstance(tp_details, dict) else "",
+                                        data_quality="actual",
+                                        source="colocando_TK_SL",
+                                        tp_price=stage_price_ref,
+                                        tp_qty=stage_qty,
+                                    )
+                                    if get_tp_legacy_fallback_on_error():
+                                        ok_fb = _submit_tp_legacy_fallback(
+                                            tp_idx=stage_idx_target,
+                                            symbol=symbol,
+                                            position_side="LONG",
+                                            market_ref=market_ref,
+                                            tp_price=stage_price_ref,
+                                            tp_qty=stage_qty,
+                                            tp_fill_mode=tp_fill_mode,
+                                            reason=f"{_tp_stage_name(stage_idx_target)}_limit_submit_failed",
+                                        )
+                                        if not ok_fb:
+                                            placed_all_tps = False
+                                    else:
+                                        placed_all_tps = False
+                    elif stage_idx_target is not None and not desired_tps:
                         placed_all_tps = False
 
-                # Recalcular si ya existen todos los TP deseados
-                # (vuelve a leer órdenes pendientes para asegurarse)
-                try:
-                    _orders = obteniendo_ordenes_pendientes()
-                    df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
-                    symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
-                    existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
-                    existing_tp_prices = set(
-                        _round_to_tick(float(x), tick) for x in existing_tp['stopPrice'].tolist() if pd.notna(x)
-                    ) if 'stopPrice' in existing_tp.columns else set()
-                    target_count = len(split_qtys)
-                    have_count = 0
-                    for tp_px in desired_tps[:target_count]:
-                        tp_px_round = _sanitize_trigger_price(float(tp_px), symbol, "LONG", "TAKE_PROFIT_MARKET", market_ref)
-                        if any(abs((tp_px_round - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices):
-                            have_count += 1
-                    placed_all_tps = (have_count >= target_count)
-                except Exception:
-                    pass
+                    # Revalidar si la etapa objetivo esta viva tras submit.
+                    try:
+                        _orders = obteniendo_ordenes_pendientes()
+                        df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+                        symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
+                        existing_tp = _extract_tp_orders(symbol_orders, "LONG", tp_mode_runtime)
+                        st_new = get_tp_state(symbol, "LONG")
+
+                        if stage_idx_target is None:
+                            placed_all_tps = True
+                        else:
+                            stage_live = False
+                            oid_target = _stage_order_id_from_state(st_new, stage_idx_target)
+                            if oid_target and "orderId" in existing_tp.columns:
+                                ids = existing_tp["orderId"].astype(str).str.strip().tolist()
+                                stage_live = oid_target in ids
+                            if not stage_live and stage_price_ref is not None:
+                                existing_tp_prices = _extract_tp_price_set(existing_tp, symbol)
+                                stage_live = any(abs((stage_price_ref - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
+                            # Si el estado ya avanzo (ej. tp1_filled -> tp2), no bloquear.
+                            next_idx_after = _next_tp_idx_from_stage(st_new.get("tp_stage", "none"))
+                            placed_all_tps = stage_live or (next_idx_after != stage_idx_target)
+                    except Exception:
+                        pass
+                else:
+                    target_tp_count = len(split_qtys)
+                    for idx, tp_px in enumerate(desired_tps[:target_tp_count]):
+                        tp_idx = idx + 1
+                        tp_px = _sanitize_trigger_price(float(tp_px), symbol, "LONG", "TAKE_PROFIT_MARKET", market_ref)
+                        exists = any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
+                        if exists:
+                            continue
+                        tp_qty = split_qtys[idx]
+                        if tp_qty <= 0:
+                            continue
+                        ok, tp_details = _post_with_retry(
+                            symbol,
+                            tp_qty,
+                            0,
+                            tp_px,
+                            "LONG",
+                            "TAKE_PROFIT_MARKET",
+                            "SELL",
+                            return_details=True,
+                        )
+                        if ok:
+                            time.sleep(0.3)
+                            existing_tp_prices.add(tp_px)
+                            set_tp_submitted(
+                                symbol,
+                                "LONG",
+                                tp_idx=tp_idx,
+                                order_id=tp_details.get("order_id", ""),
+                                qty=tp_qty,
+                                price=tp_px,
+                                submit_position_qty=pos_qty,
+                                tp_mode=tp_mode_runtime,
+                                fill_confirmation_mode=tp_fill_mode,
+                            )
+                            emit_lifecycle_event(
+                                f"tp{tp_idx}_submitted",
+                                "INFO",
+                                symbol=str(symbol).upper(),
+                                position_side="LONG",
+                                qty=tp_qty,
+                                tp_price=tp_px,
+                                order_id=tp_details.get("order_id", ""),
+                                source="colocando_TK_SL",
+                            )
+                            append_execution_ledger_event(
+                                f"tp{tp_idx}_submitted",
+                                data_quality="actual",
+                                source="colocando_TK_SL_submit",
+                                request_id=tp_details.get("request_id", ""),
+                                order_id=tp_details.get("order_id", ""),
+                                symbol=str(symbol).upper(),
+                                side="SELL",
+                                position_side="LONG",
+                                order_type="TAKE_PROFIT_MARKET",
+                                submitted_price=0,
+                                stop_price=tp_px,
+                                submit_qty=tp_qty,
+                                submit_time_utc=tp_details.get("submit_time_utc", ""),
+                                partial_fill_status="unknown",
+                            )
+                        else:
+                            placed_all_tps = False
 
                 # Si SL existe y todos los TP están listos, retirar de la cola
                 if exito_sl and placed_all_tps:
@@ -1210,7 +2596,7 @@ def colocando_TK_SL():
 
                 # Fallbacks adicionales: garantizar al menos una protección
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
-                existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
+                existing_tp = _extract_tp_orders(symbol_orders, "LONG", tp_mode_runtime)
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 if existing_sl.empty:
                     sl_px = _sanitize_trigger_price(float(sl_level), symbol, "LONG", "STOP_MARKET", market_ref)
@@ -1232,7 +2618,7 @@ def colocando_TK_SL():
                             _append_sl_watch(symbol, float(sl_px), 'LONG', order_id)
                         except Exception:
                             _append_sl_watch(symbol, float(sl_px), 'LONG', None)
-                if existing_tp.empty and desired_tps:
+                if tp_mode_runtime != "partial_limit_tp" and existing_tp.empty and desired_tps:
                     tp1_px = _sanitize_trigger_price(float(desired_tps[0]), symbol, "LONG", "TAKE_PROFIT_MARKET", market_ref)
                     try:
                         pos_qty = abs(float(positionAmt))
@@ -1240,7 +2626,27 @@ def colocando_TK_SL():
                         pos_qty = 0.0
                     tp_qty = _round_step(pos_qty, step_sz)
                     if tp_qty > 0:
-                        _post_with_retry(symbol, tp_qty, 0, tp1_px, "LONG", "TAKE_PROFIT_MARKET", "SELL")
+                        ok, tp_details = _post_with_retry(
+                            symbol,
+                            tp_qty,
+                            0,
+                            tp1_px,
+                            "LONG",
+                            "TAKE_PROFIT_MARKET",
+                            "SELL",
+                            return_details=True,
+                        )
+                        if ok:
+                            set_tp_submitted(
+                                symbol,
+                                "LONG",
+                                tp_idx=1,
+                                order_id=tp_details.get("order_id", ""),
+                                qty=tp_qty,
+                                price=tp1_px,
+                                tp_mode=tp_mode_runtime,
+                                fill_confirmation_mode=tp_fill_mode,
+                            )
                         time.sleep(0.3)
 
             elif positionSide == 'SHORT':
@@ -1275,18 +2681,11 @@ def colocando_TK_SL():
 
                 # ¿Qué órdenes existen ya?
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
-                existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
+                existing_tp = _extract_tp_orders(symbol_orders, "SHORT", tp_mode_runtime)
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 tick = _tick_size_for(symbol)
                 step_sz = _step_size_for(symbol)
-                existing_tp_prices = set()
-                if 'stopPrice' in existing_tp.columns:
-                    try:
-                        existing_tp_prices = set(
-                            _round_to_tick(float(x), tick) for x in existing_tp['stopPrice'].tolist() if pd.notna(x)
-                        )
-                    except Exception:
-                        existing_tp_prices = set()
+                existing_tp_prices = _extract_tp_price_set(existing_tp, symbol)
 
                 # SL si falta
                 sl_px = _sanitize_trigger_price(float(sl_level), symbol, "SHORT", "STOP_MARKET", market_ref)
@@ -1317,51 +2716,223 @@ def colocando_TK_SL():
                     pos_qty = abs(float(positionAmt))
                 except Exception:
                     pos_qty = 0.0
-                splits = TP_SPLITS if len(desired_tps) >= 3 else (1.0,)
+                splits = tp_splits_runtime if len(desired_tps) >= 3 else (1.0,)
                 split_qtys = _split_position_qtys(pos_qty, splits, step_sz)
 
                 # Colocar TPs faltantes
                 placed_all_tps = True
-                for idx, tp_px in enumerate(desired_tps[:len(split_qtys)]):
-                    tp_px = _sanitize_trigger_price(float(tp_px), symbol, "SHORT", "TAKE_PROFIT_MARKET", market_ref)
-                    exists = any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
-                    if exists:
-                        continue
-                    tp_qty = split_qtys[idx]
-                    if tp_qty <= 0:
-                        continue
-                    ok = _post_with_retry(symbol, tp_qty, 0, tp_px, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
-                    if ok:
-                        time.sleep(0.3)
-                        existing_tp_prices.add(tp_px)
-                    else:
+                if tp_mode_runtime == "partial_limit_tp":
+                    st_curr = get_tp_state(symbol, "SHORT")
+                    stage_idx_target = _next_tp_idx_from_stage(st_curr.get("tp_stage", "none"))
+                    stage_price_ref = None
+
+                    if stage_idx_target is not None and desired_tps:
+                        price_src_idx = min(stage_idx_target - 1, max(len(desired_tps) - 1, 0))
+                        stage_price_ref = _sanitize_tp_limit_price(
+                            float(desired_tps[price_src_idx]),
+                            symbol,
+                            "SHORT",
+                            market_ref,
+                            offset_bps=get_tp_limit_offset_bps(),
+                        )
+                        exists = any(abs((stage_price_ref - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
+                        if not exists:
+                            stage_qty, qty_reason = _compute_partial_limit_stage_qty(
+                                position_qty_now=pos_qty,
+                                step_sz=step_sz,
+                                splits=splits,
+                                state=st_curr,
+                                stage_idx=stage_idx_target,
+                            )
+                            if stage_qty <= 0:
+                                _emit_tp_failed(
+                                    tp_idx=stage_idx_target,
+                                    symbol=symbol,
+                                    position_side="SHORT",
+                                    reason=f"{_tp_stage_name(stage_idx_target)}_qty_invalid",
+                                    detail=str(qty_reason),
+                                    data_quality="inferred",
+                                    source="colocando_TK_SL",
+                                    tp_price=stage_price_ref,
+                                    tp_qty=stage_qty,
+                                )
+                                placed_all_tps = False
+                            else:
+                                ok, tp_details = _post_with_retry(
+                                    symbol,
+                                    stage_qty,
+                                    stage_price_ref,
+                                    0,
+                                    "SHORT",
+                                    "LIMIT",
+                                    "BUY",
+                                    order_kwargs=_tp_limit_order_kwargs(symbol, "SHORT", tp_idx=stage_idx_target),
+                                    return_details=True,
+                                )
+                                if ok:
+                                    time.sleep(0.3)
+                                    existing_tp_prices.add(stage_price_ref)
+                                    set_tp_submitted(
+                                        symbol,
+                                        "SHORT",
+                                        tp_idx=stage_idx_target,
+                                        order_id=tp_details.get("order_id", ""),
+                                        qty=stage_qty,
+                                        price=stage_price_ref,
+                                        submit_position_qty=pos_qty,
+                                        tp_mode=tp_mode_runtime,
+                                        fill_confirmation_mode=tp_fill_mode,
+                                    )
+                                    emit_lifecycle_event(
+                                        f"tp{stage_idx_target}_submitted",
+                                        "INFO",
+                                        symbol=str(symbol).upper(),
+                                        position_side="SHORT",
+                                        qty=stage_qty,
+                                        tp_price=stage_price_ref,
+                                        order_id=tp_details.get("order_id", ""),
+                                        source="colocando_TK_SL",
+                                    )
+                                    append_execution_ledger_event(
+                                        f"tp{stage_idx_target}_submitted",
+                                        data_quality="actual",
+                                        source="colocando_TK_SL_submit",
+                                        request_id=tp_details.get("request_id", ""),
+                                        order_id=tp_details.get("order_id", ""),
+                                        symbol=str(symbol).upper(),
+                                        side="BUY",
+                                        position_side="SHORT",
+                                        order_type="LIMIT",
+                                        submitted_price=stage_price_ref,
+                                        stop_price=None,
+                                        submit_qty=stage_qty,
+                                        submit_time_utc=tp_details.get("submit_time_utc", ""),
+                                        partial_fill_status="unknown",
+                                    )
+                                else:
+                                    _emit_tp_failed(
+                                        tp_idx=stage_idx_target,
+                                        symbol=symbol,
+                                        position_side="SHORT",
+                                        reason=f"{_tp_stage_name(stage_idx_target)}_submit_failed",
+                                        detail="limit_submit_rejected_or_exception",
+                                        order_id=tp_details.get("order_id", "") if isinstance(tp_details, dict) else "",
+                                        data_quality="actual",
+                                        source="colocando_TK_SL",
+                                        tp_price=stage_price_ref,
+                                        tp_qty=stage_qty,
+                                    )
+                                    if get_tp_legacy_fallback_on_error():
+                                        ok_fb = _submit_tp_legacy_fallback(
+                                            tp_idx=stage_idx_target,
+                                            symbol=symbol,
+                                            position_side="SHORT",
+                                            market_ref=market_ref,
+                                            tp_price=stage_price_ref,
+                                            tp_qty=stage_qty,
+                                            tp_fill_mode=tp_fill_mode,
+                                            reason=f"{_tp_stage_name(stage_idx_target)}_limit_submit_failed",
+                                        )
+                                        if not ok_fb:
+                                            placed_all_tps = False
+                                    else:
+                                        placed_all_tps = False
+                    elif stage_idx_target is not None and not desired_tps:
                         placed_all_tps = False
 
-                # Revalidar existencia de todos los TP
-                try:
-                    _orders = obteniendo_ordenes_pendientes()
-                    df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
-                    symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
-                    existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
-                    existing_tp_prices = set(
-                        _round_to_tick(float(x), tick) for x in existing_tp['stopPrice'].tolist() if pd.notna(x)
-                    ) if 'stopPrice' in existing_tp.columns else set()
-                    target_count = len(split_qtys)
-                    have_count = 0
-                    for tp_px in desired_tps[:target_count]:
-                        tp_px_round = _sanitize_trigger_price(float(tp_px), symbol, "SHORT", "TAKE_PROFIT_MARKET", market_ref)
-                        if any(abs((tp_px_round - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices):
-                            have_count += 1
-                    placed_all_tps = (have_count >= target_count)
-                except Exception:
-                    pass
+                    # Revalidar si la etapa objetivo esta viva tras submit.
+                    try:
+                        _orders = obteniendo_ordenes_pendientes()
+                        df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+                        symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
+                        existing_tp = _extract_tp_orders(symbol_orders, "SHORT", tp_mode_runtime)
+                        st_new = get_tp_state(symbol, "SHORT")
+
+                        if stage_idx_target is None:
+                            placed_all_tps = True
+                        else:
+                            stage_live = False
+                            oid_target = _stage_order_id_from_state(st_new, stage_idx_target)
+                            if oid_target and "orderId" in existing_tp.columns:
+                                ids = existing_tp["orderId"].astype(str).str.strip().tolist()
+                                stage_live = oid_target in ids
+                            if not stage_live and stage_price_ref is not None:
+                                existing_tp_prices = _extract_tp_price_set(existing_tp, symbol)
+                                stage_live = any(abs((stage_price_ref - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
+                            next_idx_after = _next_tp_idx_from_stage(st_new.get("tp_stage", "none"))
+                            placed_all_tps = stage_live or (next_idx_after != stage_idx_target)
+                    except Exception:
+                        pass
+                else:
+                    target_tp_count = len(split_qtys)
+                    for idx, tp_px in enumerate(desired_tps[:target_tp_count]):
+                        tp_idx = idx + 1
+                        tp_px = _sanitize_trigger_price(float(tp_px), symbol, "SHORT", "TAKE_PROFIT_MARKET", market_ref)
+                        exists = any(abs((tp_px - ex_px) / ex_px) < 1e-4 for ex_px in existing_tp_prices) if existing_tp_prices else False
+                        if exists:
+                            continue
+                        tp_qty = split_qtys[idx]
+                        if tp_qty <= 0:
+                            continue
+                        ok, tp_details = _post_with_retry(
+                            symbol,
+                            tp_qty,
+                            0,
+                            tp_px,
+                            "SHORT",
+                            "TAKE_PROFIT_MARKET",
+                            "BUY",
+                            return_details=True,
+                        )
+                        if ok:
+                            time.sleep(0.3)
+                            existing_tp_prices.add(tp_px)
+                            set_tp_submitted(
+                                symbol,
+                                "SHORT",
+                                tp_idx=tp_idx,
+                                order_id=tp_details.get("order_id", ""),
+                                qty=tp_qty,
+                                price=tp_px,
+                                submit_position_qty=pos_qty,
+                                tp_mode=tp_mode_runtime,
+                                fill_confirmation_mode=tp_fill_mode,
+                            )
+                            emit_lifecycle_event(
+                                f"tp{tp_idx}_submitted",
+                                "INFO",
+                                symbol=str(symbol).upper(),
+                                position_side="SHORT",
+                                qty=tp_qty,
+                                tp_price=tp_px,
+                                order_id=tp_details.get("order_id", ""),
+                                source="colocando_TK_SL",
+                            )
+                            append_execution_ledger_event(
+                                f"tp{tp_idx}_submitted",
+                                data_quality="actual",
+                                source="colocando_TK_SL_submit",
+                                request_id=tp_details.get("request_id", ""),
+                                order_id=tp_details.get("order_id", ""),
+                                symbol=str(symbol).upper(),
+                                side="BUY",
+                                position_side="SHORT",
+                                order_type="TAKE_PROFIT_MARKET",
+                                submitted_price=0,
+                                stop_price=tp_px,
+                                submit_qty=tp_qty,
+                                submit_time_utc=tp_details.get("submit_time_utc", ""),
+                                partial_fill_status="unknown",
+                            )
+                        else:
+                            placed_all_tps = False
 
                 if exito_sl and placed_all_tps:
                     df_posiciones.drop(index, inplace=True)
 
                 # Fallbacks adicionales: garantizar al menos una protección
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
-                existing_tp = symbol_orders[symbol_orders['type'] == 'TAKE_PROFIT_MARKET']
+                existing_tp = _extract_tp_orders(symbol_orders, "SHORT", tp_mode_runtime)
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 if existing_sl.empty:
                     sl_px = _sanitize_trigger_price(float(sl_level), symbol, "SHORT", "STOP_MARKET", market_ref)
@@ -1383,7 +2954,7 @@ def colocando_TK_SL():
                             _append_sl_watch(symbol, float(sl_px), 'SHORT', order_id)
                         except Exception:
                             _append_sl_watch(symbol, float(sl_px), 'SHORT', None)
-                if existing_tp.empty and desired_tps:
+                if tp_mode_runtime != "partial_limit_tp" and existing_tp.empty and desired_tps:
                     tp1_px = _sanitize_trigger_price(float(desired_tps[0]), symbol, "SHORT", "TAKE_PROFIT_MARKET", market_ref)
                     try:
                         pos_qty = abs(float(positionAmt))
@@ -1391,7 +2962,27 @@ def colocando_TK_SL():
                         pos_qty = 0.0
                     tp_qty = _round_step(pos_qty, step_sz)
                     if tp_qty > 0:
-                        _post_with_retry(symbol, tp_qty, 0, tp1_px, "SHORT", "TAKE_PROFIT_MARKET", "BUY")
+                        ok, tp_details = _post_with_retry(
+                            symbol,
+                            tp_qty,
+                            0,
+                            tp1_px,
+                            "SHORT",
+                            "TAKE_PROFIT_MARKET",
+                            "BUY",
+                            return_details=True,
+                        )
+                        if ok:
+                            set_tp_submitted(
+                                symbol,
+                                "SHORT",
+                                tp_idx=1,
+                                order_id=tp_details.get("order_id", ""),
+                                qty=tp_qty,
+                                price=tp1_px,
+                                tp_mode=tp_mode_runtime,
+                                fill_confirmation_mode=tp_fill_mode,
+                            )
                         time.sleep(0.3)
 
         except Exception as e:
@@ -1521,6 +3112,18 @@ def unrealized_profit_positions():
         except Exception:
             be_trigger = 0.0
         TINY_BE = 0.0002  # 2 bps para cubrir fees/ticks
+        tp_mode_runtime = get_tp_mode()
+        be_after_tp1 = is_break_even_after_tp1_enabled()
+        st_tp = get_tp_state(symbol, positionSide)
+        tp_stage = str(st_tp.get("tp_stage", "none")).lower()
+        tp1_confirmed = tp_stage in ("tp1_filled", "tp2_live", "tp2_filled", "tp3_live", "tp3_filled")
+        allow_be_overlay = True
+        if tp_mode_runtime == "partial_limit_tp" and be_after_tp1 and not tp1_confirmed:
+            allow_be_overlay = False
+            set_break_even_state(symbol, positionSide, "pending")
+        elif tp_mode_runtime == "partial_limit_tp" and be_after_tp1 and tp1_confirmed:
+            if str(st_tp.get("break_even_state", "inactive")).lower() != "active":
+                set_break_even_state(symbol, positionSide, "pending")
 
         # Obtener el último valor de 'stopPrice' y 'orderId' para el símbolo
         filtered_data = data_filtered[data_filtered['symbol'] == symbol]
@@ -1545,17 +3148,20 @@ def unrealized_profit_positions():
         if positionSide == 'LONG':
             stop_loss = symbol_data['Stop_Loss_Long'].iloc[0]
             potencial_nuevo_sl = stop_loss
+            be_applied = False
             # Break-Even: si el avance supera be_trigger, subir SL a entrada + tiny
-            if be_trigger > 0.0:
+            if allow_be_overlay and be_trigger > 0.0:
                 try:
                     be_price = float(price) * (1.0 + be_trigger)
                     if float(precio_actual) >= be_price:
                         be_stop = float(price) * (1.0 + TINY_BE)
                         potencial_nuevo_sl = max(potencial_nuevo_sl, be_stop)
+                        be_applied = bool(potencial_nuevo_sl >= be_stop)
                 except Exception:
                     pass
             if potencial_nuevo_sl > last_stop_price and potencial_nuevo_sl != last_stop_price:
                 try:
+                    set_sl_guard(symbol, positionSide, seconds=25)
                     pkg.bingx.cancel_order(symbol, orderId)
                     time.sleep(1)
                     _post_with_retry(symbol, position_qty, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
@@ -1574,6 +3180,25 @@ def unrealized_profit_positions():
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'LONG', order_id)
                     except Exception:
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'LONG', None)
+                    if be_applied:
+                        set_break_even_state(symbol, positionSide, "active")
+                        emit_lifecycle_event(
+                            "break_even_activated",
+                            "INFO",
+                            symbol=str(symbol).upper(),
+                            position_side="LONG",
+                            new_sl=float(potencial_nuevo_sl),
+                            source="unrealized_profit_positions",
+                        )
+                        append_execution_ledger_event(
+                            "break_even_activated",
+                            data_quality="inferred",
+                            source="unrealized_profit_positions",
+                            symbol=str(symbol).upper(),
+                            position_side="LONG",
+                            order_type="STOP_MARKET",
+                            stop_price=float(potencial_nuevo_sl),
+                        )
                     print(f"Stop Loss actualizado para {symbol} (LONG) a {potencial_nuevo_sl}")
                 except Exception as e:
                     print(f"Error al actualizar el Stop Loss para {symbol}: {e}")
@@ -1583,17 +3208,20 @@ def unrealized_profit_positions():
         elif positionSide == 'SHORT':
             stop_loss = symbol_data['Stop_Loss_Short'].iloc[0]
             potencial_nuevo_sl = stop_loss
+            be_applied = False
             # Break-Even: si la ganancia supera be_trigger, bajar SL a entrada - tiny
-            if be_trigger > 0.0:
+            if allow_be_overlay and be_trigger > 0.0:
                 try:
                     be_price = float(price) * (1.0 - be_trigger)
                     if float(precio_actual) <= be_price:
                         be_stop = float(price) * (1.0 - TINY_BE)
                         potencial_nuevo_sl = min(potencial_nuevo_sl, be_stop)
+                        be_applied = bool(potencial_nuevo_sl <= be_stop)
                 except Exception:
                     pass
             if potencial_nuevo_sl < last_stop_price and potencial_nuevo_sl != last_stop_price:
                 try:
+                    set_sl_guard(symbol, positionSide, seconds=25)
                     pkg.bingx.cancel_order(symbol, orderId)
                     time.sleep(1)
                     _post_with_retry(symbol, position_qty, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
@@ -1612,6 +3240,25 @@ def unrealized_profit_positions():
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'SHORT', order_id)
                     except Exception:
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'SHORT', None)
+                    if be_applied:
+                        set_break_even_state(symbol, positionSide, "active")
+                        emit_lifecycle_event(
+                            "break_even_activated",
+                            "INFO",
+                            symbol=str(symbol).upper(),
+                            position_side="SHORT",
+                            new_sl=float(potencial_nuevo_sl),
+                            source="unrealized_profit_positions",
+                        )
+                        append_execution_ledger_event(
+                            "break_even_activated",
+                            data_quality="inferred",
+                            source="unrealized_profit_positions",
+                            symbol=str(symbol).upper(),
+                            position_side="SHORT",
+                            order_type="STOP_MARKET",
+                            stop_price=float(potencial_nuevo_sl),
+                        )
 
                     print(f"Stop Loss actualizado para {symbol} (SHORT) a {potencial_nuevo_sl}")
                 except Exception as e:
