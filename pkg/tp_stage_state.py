@@ -7,7 +7,9 @@ para coordinar proteccion TP/SL y break-even.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
+import tempfile
 from typing import Dict, Optional
 
 import pandas as pd
@@ -15,6 +17,12 @@ import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TP_STAGE_STATE_CSV = REPO_ROOT / "archivos" / "tp_stage_state.csv"
+
+_PERSIST_STATUS: Dict[str, object] = {
+    "ok": True,
+    "error": "",
+    "ts_utc": "",
+}
 
 TP_STAGE_VALUES = (
     "none",
@@ -57,6 +65,20 @@ def _now_utc() -> datetime:
 
 def _now_iso_utc() -> str:
     return _now_utc().isoformat().replace("+00:00", "Z")
+
+
+def _set_persist_status(ok: bool, error: str = "") -> None:
+    _PERSIST_STATUS["ok"] = bool(ok)
+    _PERSIST_STATUS["error"] = str(error or "")
+    _PERSIST_STATUS["ts_utc"] = _now_iso_utc()
+
+
+def get_tp_state_persist_status() -> Dict[str, object]:
+    return dict(_PERSIST_STATUS)
+
+
+def is_tp_state_persist_healthy() -> bool:
+    return bool(_PERSIST_STATUS.get("ok", True))
 
 
 def _norm_symbol(symbol: object) -> str:
@@ -102,14 +124,36 @@ def _load_state_df() -> pd.DataFrame:
     return df[TP_STAGE_COLUMNS].copy()
 
 
-def _save_state_df(df: pd.DataFrame) -> None:
+def _save_state_df(df: pd.DataFrame) -> bool:
     TP_STAGE_STATE_CSV.parent.mkdir(parents=True, exist_ok=True)
     out = df.copy()
     for c in TP_STAGE_COLUMNS:
         if c not in out.columns:
             out[c] = ""
     out = out[TP_STAGE_COLUMNS]
-    out.to_csv(TP_STAGE_STATE_CSV, index=False)
+    tmp_path: Optional[Path] = None
+    try:
+        fd, tmp_raw = tempfile.mkstemp(
+            prefix=f".{TP_STAGE_STATE_CSV.stem}.",
+            suffix=".tmp",
+            dir=str(TP_STAGE_STATE_CSV.parent),
+        )
+        os.close(fd)
+        tmp_path = Path(tmp_raw)
+        out.to_csv(tmp_path, index=False)
+        os.replace(str(tmp_path), str(TP_STAGE_STATE_CSV))
+        _set_persist_status(True, "")
+        return True
+    except Exception as exc:
+        _set_persist_status(False, str(exc))
+        print(f"Error persistiendo tp_stage_state.csv: {exc}")
+        if tmp_path is not None:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+        return False
 
 
 def _default_row(symbol: str, position_side: str) -> Dict:
@@ -233,7 +277,9 @@ def upsert_tp_state(
 
     row["updated_at_utc"] = _now_iso_utc()
     df.loc[len(df)] = {c: row.get(c, "") for c in TP_STAGE_COLUMNS}
-    _save_state_df(df)
+    save_ok = _save_state_df(df)
+    row["persist_ok"] = bool(save_ok)
+    row["persist_error"] = str(get_tp_state_persist_status().get("error", ""))
     return row
 
 

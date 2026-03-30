@@ -60,3 +60,25 @@ def test_tp_stage_fill_progression(temp_tp_state):
     assert st1["break_even_state"] == "pending"
     assert st2["tp_stage"] == "tp2_filled"
     assert st3["tp_stage"] == "tp3_filled"
+
+
+def test_tp_stage_state_save_failure_is_non_fatal(temp_tp_state, monkeypatch):
+    import pkg.tp_stage_state as tps
+
+    def _raise_replace(*_args, **_kwargs):
+        raise PermissionError("denied_for_test")
+
+    monkeypatch.setattr(tps.os, "replace", _raise_replace)
+
+    row = tps.upsert_tp_state(
+        "XMR-USDT",
+        "LONG",
+        tp_mode="partial_limit_tp",
+        tp_stage="tp1_live",
+        break_even_state="inactive",
+    )
+    status = tps.get_tp_state_persist_status()
+
+    assert row["persist_ok"] is False
+    assert status["ok"] is False
+    assert "denied_for_test" in str(status.get("error", ""))

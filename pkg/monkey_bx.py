@@ -31,6 +31,7 @@ from .lifecycle_events import emit_lifecycle_event
 from .execution_ledger import append_execution_ledger_event
 from .tp_stage_state import (
     get_tp_state,
+    get_tp_state_persist_status,
     upsert_tp_state,
     set_tp_submitted,
     set_tp_filled,
@@ -48,6 +49,8 @@ ORDER_SUBMIT_LOG_CSV = './archivos/order_submit_log.csv'
 ORDER_LIFECYCLE_LOG_CSV = './archivos/order_lifecycle_log.csv'
 ORDER_PENDING_PREV_CSV = './archivos/order_pending_prev.csv'
 ENTRY_WATCH_CSV = './archivos/entry_watch.csv'
+RUNTIME_STORAGE_ALERT_COOLDOWN_SEC = 300
+_RUNTIME_STORAGE_ALERT_LAST_TS = {}
 
 
 def _norm_order_id(value) -> str:
@@ -66,6 +69,54 @@ def _norm_order_id(value) -> str:
         if base.isdigit():
             return base
     return text
+
+
+def _emit_runtime_storage_warning(
+    *,
+    symbol: str,
+    position_side: str,
+    source: str,
+    reason: str,
+    detail: str,
+    severity: str = "CRITICAL",
+    cooldown_sec: int = RUNTIME_STORAGE_ALERT_COOLDOWN_SEC,
+) -> bool:
+    key = "|".join(
+        [
+            str(source or "").strip(),
+            str(symbol or "").upper().strip(),
+            str(position_side or "").upper().strip(),
+            str(reason or "").strip(),
+        ]
+    )
+    now = time.time()
+    last = _RUNTIME_STORAGE_ALERT_LAST_TS.get(key, 0.0)
+    if (now - float(last)) < max(1, int(cooldown_sec)):
+        return False
+    _RUNTIME_STORAGE_ALERT_LAST_TS[key] = now
+
+    symbol_u = str(symbol or "").upper().strip()
+    pside_u = str(position_side or "").upper().strip()
+    detail_txt = str(detail or "")[:220]
+    emit_lifecycle_event(
+        "runtime_storage_warning",
+        severity,
+        symbol=symbol_u,
+        position_side=pside_u,
+        reason=str(reason or "").strip(),
+        detail=detail_txt,
+        source=str(source or "").strip(),
+    )
+    append_execution_ledger_event(
+        "tp_state_persist_error",
+        data_quality="actual",
+        source=str(source or "").strip(),
+        symbol=symbol_u,
+        position_side=pside_u,
+        cancel_reason=str(reason or "").strip(),
+        raw_msg=detail_txt,
+    )
+    return True
 
 
 def _utc_now_iso() -> str:
@@ -1740,13 +1791,59 @@ def extract_tp_sl_from_latest(latest_values: pd.DataFrame, symbol: str, side: st
 
 #Funcion Enviar Mensajes
 def bot_send_text(bot_message):
+    text = str(bot_message or "")
+    bot_token = str(getattr(pkg.credentials, "token", "") or "").strip()
+    bot_chatID = str(getattr(pkg.credentials, "chatID", "") or "").strip()
+    if not bot_token or not bot_chatID:
+        print("Telegram no configurado: token/chat_id vacios para bot_send_text.")
+        emit_lifecycle_event(
+            "execution_quality_warning",
+            "WARN",
+            reason="telegram_missing_credentials",
+            source="bot_send_text",
+            detail="token_or_chat_id_empty",
+        )
+        return False
 
-    bot_token = pkg.credentials.token
-    bot_chatID = pkg.credentials.chatID
-    send_text = pkg.credentials.send + bot_message
-    response = requests.get(send_text)
- 
-    return response
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": bot_chatID,
+        "text": text,
+        "parse_mode": "Markdown",
+    }
+    try:
+        response = requests.post(url, data=payload, timeout=12)
+        if response.ok:
+            return True
+        # Fallback sin parse_mode (por errores de markdown/formato).
+        payload_plain = {
+            "chat_id": bot_chatID,
+            "text": text,
+        }
+        response_plain = requests.post(url, data=payload_plain, timeout=12)
+        if response_plain.ok:
+            return True
+        detail = f"telegram_status={response_plain.status_code}:{(response_plain.text or '')[:180]}"
+        print(f"Error enviando Telegram (plain fallback): {detail}")
+        emit_lifecycle_event(
+            "execution_quality_warning",
+            "WARN",
+            reason="telegram_send_failed",
+            source="bot_send_text",
+            detail=detail,
+        )
+        return False
+    except Exception as exc:
+        detail = str(exc)[:220]
+        print(f"Error enviando Telegram: {detail}")
+        emit_lifecycle_event(
+            "execution_quality_warning",
+            "WARN",
+            reason="telegram_request_error",
+            source="bot_send_text",
+            detail=detail,
+        )
+        return False
 
 def total_monkey():
     """
@@ -2307,7 +2404,19 @@ def colocando_ordenes():
         ]
         alert = "\n".join(alert_lines)
         # -------------------------------------------------------------------------------
-        pkg.monkey_bx.bot_send_text(alert)
+        sent_ok = bool(pkg.monkey_bx.bot_send_text(alert))
+        if not sent_ok:
+            emit_lifecycle_event(
+                "trade_signal_detected",
+                "INFO",
+                force=True,
+                symbol=str(currency).upper(),
+                position_side=str(position_side).upper(),
+                entry=round(float(price_last), 6),
+                tp1=round(float(tps[0]), 6) if tps else None,
+                sl=round(float(sl_level), 6) if sl_level is not None else None,
+                source="colocando_ordenes_signal_fallback",
+            )
 
     # Guardando Posiciones fuera del bucle
     df_positions.to_csv('./archivos/position_id_register.csv', index=False)
@@ -2540,12 +2649,75 @@ def colocando_TK_SL():
                 continue
 
             symbol_result, positionSide, price, positionAmt, unrealizedProfit = result
-            upsert_tp_state(
-                symbol,
-                positionSide,
-                tp_mode=tp_mode_runtime,
-                tp_fill_confirmation_mode=tp_fill_mode,
-            )
+            tp_mode_effective = tp_mode_runtime
+            tp_mode_detect = "partial_limit_tp" if tp_mode_runtime == "partial_limit_tp" else tp_mode_runtime
+            try:
+                upsert_tp_state(
+                    symbol,
+                    positionSide,
+                    tp_mode=tp_mode_runtime,
+                    tp_fill_confirmation_mode=tp_fill_mode,
+                )
+                tp_state_status = get_tp_state_persist_status()
+                if not bool(tp_state_status.get("ok", True)):
+                    err_detail = str(tp_state_status.get("error", "tp_state_persist_unknown_error"))
+                    warned = _emit_runtime_storage_warning(
+                        symbol=symbol,
+                        position_side=positionSide,
+                        source="colocando_TK_SL_state_upsert",
+                        reason="tp_state_persist_unhealthy",
+                        detail=err_detail,
+                        severity="CRITICAL",
+                    )
+                    if tp_mode_runtime == "partial_limit_tp":
+                        tp_mode_effective = "legacy_market_tp"
+                        if warned:
+                            emit_lifecycle_event(
+                                "legacy_fallback_used",
+                                "WARN",
+                                symbol=str(symbol).upper(),
+                                position_side=str(positionSide).upper(),
+                                reason="tp_state_persist_unhealthy",
+                                source="colocando_TK_SL_state_guard",
+                            )
+                            append_execution_ledger_event(
+                                "legacy_fallback_used",
+                                data_quality="inferred",
+                                source="colocando_TK_SL_state_guard",
+                                symbol=str(symbol).upper(),
+                                position_side=str(positionSide).upper(),
+                                close_reason="tp_state_persist_unhealthy",
+                                notes="forced_legacy_market_tp_for_symbol_cycle",
+                            )
+            except Exception as state_exc:
+                warned = _emit_runtime_storage_warning(
+                    symbol=symbol,
+                    position_side=positionSide,
+                    source="colocando_TK_SL_state_upsert_exception",
+                    reason="tp_state_upsert_exception",
+                    detail=str(state_exc),
+                    severity="CRITICAL",
+                )
+                if tp_mode_runtime == "partial_limit_tp":
+                    tp_mode_effective = "legacy_market_tp"
+                    if warned:
+                        emit_lifecycle_event(
+                            "legacy_fallback_used",
+                            "WARN",
+                            symbol=str(symbol).upper(),
+                            position_side=str(positionSide).upper(),
+                            reason="tp_state_upsert_exception",
+                            source="colocando_TK_SL_state_guard",
+                        )
+                        append_execution_ledger_event(
+                            "legacy_fallback_used",
+                            data_quality="inferred",
+                            source="colocando_TK_SL_state_guard",
+                            symbol=str(symbol).upper(),
+                            position_side=str(positionSide).upper(),
+                            close_reason="tp_state_upsert_exception",
+                            notes=str(state_exc)[:220],
+                        )
             if is_sl_guard_active(symbol, positionSide):
                 continue
             market_ref = _last_traded_price(symbol)
@@ -2632,7 +2804,7 @@ def colocando_TK_SL():
 
                 # ¿Qué órdenes existen ya?
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
-                existing_tp = _extract_tp_orders(symbol_orders, "LONG", tp_mode_runtime)
+                existing_tp = _extract_tp_orders(symbol_orders, "LONG", tp_mode_detect)
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 tick = _tick_size_for(symbol)
                 step_sz = _step_size_for(symbol)
@@ -2671,7 +2843,7 @@ def colocando_TK_SL():
 
                 # Colocar TP(s) faltantes
                 placed_all_tps = True
-                if tp_mode_runtime == "partial_limit_tp":
+                if tp_mode_effective == "partial_limit_tp":
                     st_curr = get_tp_state(symbol, "LONG")
                     stage_idx_target = _next_tp_idx_from_stage(st_curr.get("tp_stage", "none"))
                     stage_price_ref = None
@@ -2730,7 +2902,7 @@ def colocando_TK_SL():
                                         qty=stage_qty,
                                         price=stage_price_ref,
                                         submit_position_qty=pos_qty,
-                                        tp_mode=tp_mode_runtime,
+                                        tp_mode=tp_mode_effective,
                                         fill_confirmation_mode=tp_fill_mode,
                                     )
                                     emit_lifecycle_event(
@@ -2795,7 +2967,7 @@ def colocando_TK_SL():
                         _orders = obteniendo_ordenes_pendientes()
                         df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
                         symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
-                        existing_tp = _extract_tp_orders(symbol_orders, "LONG", tp_mode_runtime)
+                        existing_tp = _extract_tp_orders(symbol_orders, "LONG", tp_mode_detect)
                         st_new = get_tp_state(symbol, "LONG")
 
                         if stage_idx_target is None:
@@ -2846,7 +3018,7 @@ def colocando_TK_SL():
                                 qty=tp_qty,
                                 price=tp_px,
                                 submit_position_qty=pos_qty,
-                                tp_mode=tp_mode_runtime,
+                                tp_mode=tp_mode_effective,
                                 fill_confirmation_mode=tp_fill_mode,
                             )
                             emit_lifecycle_event(
@@ -2890,7 +3062,7 @@ def colocando_TK_SL():
                     pass
                 df_ordenes = _load_orders_register_df()
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
-                existing_tp = _extract_tp_orders(symbol_orders, "LONG", tp_mode_runtime)
+                existing_tp = _extract_tp_orders(symbol_orders, "LONG", tp_mode_detect)
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 if existing_sl.empty:
                     sl_px = _sanitize_trigger_price(float(sl_level), symbol, "LONG", "STOP_MARKET", market_ref)
@@ -2912,7 +3084,7 @@ def colocando_TK_SL():
                             _append_sl_watch(symbol, float(sl_px), 'LONG', order_id)
                         except Exception:
                             _append_sl_watch(symbol, float(sl_px), 'LONG', None)
-                if tp_mode_runtime != "partial_limit_tp" and existing_tp.empty and desired_tps:
+                if tp_mode_effective != "partial_limit_tp" and existing_tp.empty and desired_tps:
                     tp1_px = _sanitize_trigger_price(float(desired_tps[0]), symbol, "LONG", "TAKE_PROFIT_MARKET", market_ref)
                     try:
                         pos_qty = abs(float(positionAmt))
@@ -2938,7 +3110,7 @@ def colocando_TK_SL():
                                 order_id=tp_details.get("order_id", ""),
                                 qty=tp_qty,
                                 price=tp1_px,
-                                tp_mode=tp_mode_runtime,
+                                tp_mode=tp_mode_effective,
                                 fill_confirmation_mode=tp_fill_mode,
                             )
                         time.sleep(0.3)
@@ -2975,7 +3147,7 @@ def colocando_TK_SL():
 
                 # ¿Qué órdenes existen ya?
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
-                existing_tp = _extract_tp_orders(symbol_orders, "SHORT", tp_mode_runtime)
+                existing_tp = _extract_tp_orders(symbol_orders, "SHORT", tp_mode_detect)
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 tick = _tick_size_for(symbol)
                 step_sz = _step_size_for(symbol)
@@ -3015,7 +3187,7 @@ def colocando_TK_SL():
 
                 # Colocar TPs faltantes
                 placed_all_tps = True
-                if tp_mode_runtime == "partial_limit_tp":
+                if tp_mode_effective == "partial_limit_tp":
                     st_curr = get_tp_state(symbol, "SHORT")
                     stage_idx_target = _next_tp_idx_from_stage(st_curr.get("tp_stage", "none"))
                     stage_price_ref = None
@@ -3074,7 +3246,7 @@ def colocando_TK_SL():
                                         qty=stage_qty,
                                         price=stage_price_ref,
                                         submit_position_qty=pos_qty,
-                                        tp_mode=tp_mode_runtime,
+                                        tp_mode=tp_mode_effective,
                                         fill_confirmation_mode=tp_fill_mode,
                                     )
                                     emit_lifecycle_event(
@@ -3139,7 +3311,7 @@ def colocando_TK_SL():
                         _orders = obteniendo_ordenes_pendientes()
                         df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
                         symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
-                        existing_tp = _extract_tp_orders(symbol_orders, "SHORT", tp_mode_runtime)
+                        existing_tp = _extract_tp_orders(symbol_orders, "SHORT", tp_mode_detect)
                         st_new = get_tp_state(symbol, "SHORT")
 
                         if stage_idx_target is None:
@@ -3189,7 +3361,7 @@ def colocando_TK_SL():
                                 qty=tp_qty,
                                 price=tp_px,
                                 submit_position_qty=pos_qty,
-                                tp_mode=tp_mode_runtime,
+                                tp_mode=tp_mode_effective,
                                 fill_confirmation_mode=tp_fill_mode,
                             )
                             emit_lifecycle_event(
@@ -3232,7 +3404,7 @@ def colocando_TK_SL():
                     pass
                 df_ordenes = _load_orders_register_df()
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
-                existing_tp = _extract_tp_orders(symbol_orders, "SHORT", tp_mode_runtime)
+                existing_tp = _extract_tp_orders(symbol_orders, "SHORT", tp_mode_detect)
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
                 if existing_sl.empty:
                     sl_px = _sanitize_trigger_price(float(sl_level), symbol, "SHORT", "STOP_MARKET", market_ref)
@@ -3254,7 +3426,7 @@ def colocando_TK_SL():
                             _append_sl_watch(symbol, float(sl_px), 'SHORT', order_id)
                         except Exception:
                             _append_sl_watch(symbol, float(sl_px), 'SHORT', None)
-                if tp_mode_runtime != "partial_limit_tp" and existing_tp.empty and desired_tps:
+                if tp_mode_effective != "partial_limit_tp" and existing_tp.empty and desired_tps:
                     tp1_px = _sanitize_trigger_price(float(desired_tps[0]), symbol, "SHORT", "TAKE_PROFIT_MARKET", market_ref)
                     try:
                         pos_qty = abs(float(positionAmt))
@@ -3280,7 +3452,7 @@ def colocando_TK_SL():
                                 order_id=tp_details.get("order_id", ""),
                                 qty=tp_qty,
                                 price=tp1_px,
-                                tp_mode=tp_mode_runtime,
+                                tp_mode=tp_mode_effective,
                                 fill_confirmation_mode=tp_fill_mode,
                             )
                         time.sleep(0.3)

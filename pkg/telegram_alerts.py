@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -62,19 +63,58 @@ def _load_monitor_cfg(config_path: Path) -> Dict[str, Any]:
     return cfg if isinstance(cfg, dict) else {}
 
 
+def _env(*names: str) -> str:
+    for name in names:
+        v = os.getenv(name, "").strip()
+        if v:
+            return v
+    return ""
+
+
+def _read_credentials_from_env_or_aws() -> Tuple[Optional[str], Optional[str]]:
+    token = _env("TROBOT_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN")
+    chat_id = _env("TROBOT_TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID")
+    if token and chat_id:
+        return token, chat_id
+
+    secret_id = _env("TROBOT_AWS_SECRET_ID")
+    region_name = _env("TROBOT_AWS_REGION", "AWS_DEFAULT_REGION") or "us-east-1"
+    if not secret_id:
+        return (token or None), (chat_id or None)
+
+    try:
+        import boto3  # type: ignore
+        client = boto3.client("secretsmanager", region_name=region_name)
+        resp = client.get_secret_value(SecretId=secret_id)
+        secret_string = resp.get("SecretString", "")
+        data = json.loads(secret_string) if secret_string else {}
+        if isinstance(data, dict):
+            token = token or str(data.get("TELEGRAM_BOT_TOKEN", "") or "").strip()
+            chat_id = chat_id or str(data.get("TELEGRAM_CHAT_ID", "") or "").strip()
+    except Exception:
+        pass
+    return (token or None), (chat_id or None)
+
+
 def _read_credentials_from_file(repo_root: Path) -> Tuple[Optional[str], Optional[str]]:
+    token, chat_id = _read_credentials_from_env_or_aws()
+    if token and chat_id:
+        return token, chat_id
+
     cred_path = repo_root / "pkg" / "credentials.py"
     if not cred_path.exists():
-        return None, None
+        return token, chat_id
     ns: Dict[str, Any] = {}
     try:
         code = cred_path.read_text(encoding="utf-8")
         exec(compile(code, str(cred_path), "exec"), ns, ns)
     except Exception:
-        return None, None
-    token = ns.get("token")
-    chat_id = ns.get("chatID") or ns.get("chat_id")
-    return (str(token) if token else None, str(chat_id) if chat_id else None)
+        return token, chat_id
+    file_token = ns.get("token")
+    file_chat_id = ns.get("chatID") or ns.get("chat_id")
+    token = token or (str(file_token).strip() if file_token else None)
+    chat_id = chat_id or (str(file_chat_id).strip() if file_chat_id else None)
+    return token, chat_id
 
 
 def _msg_hash(text: str) -> str:
@@ -102,6 +142,7 @@ def _default_telegram_cfg() -> Dict[str, Any]:
             "bot_stopped": True,
             "entry_order_submitted": True,
             "entry_order_filled": True,
+            "trade_signal_detected": True,
             "take_profit_hit": True,
             "stop_loss_hit": True,
             "entry_order_canceled_or_expired": True,
@@ -139,6 +180,7 @@ def _default_telegram_cfg() -> Dict[str, Any]:
                 "bot_stopped": 60,
                 "entry_order_submitted": 20,
                 "entry_order_filled": 20,
+                "trade_signal_detected": 20,
                 "take_profit_hit": 45,
                 "stop_loss_hit": 45,
                 "entry_order_canceled_or_expired": 90,
@@ -178,6 +220,7 @@ class TelegramAlerter:
         full_cfg = _load_monitor_cfg(self.config_path)
 
         cfg_raw = _deep_get(full_cfg, "telegram", default={}) or {}
+        self._explicit_enabled = isinstance(cfg_raw, dict) and ("enabled" in cfg_raw)
         cfg = _default_telegram_cfg()
         if isinstance(cfg_raw, dict):
             for k, v in cfg_raw.items():
@@ -199,7 +242,11 @@ class TelegramAlerter:
 
     @property
     def enabled(self) -> bool:
-        return bool(self.cfg.get("enabled", False))
+        if self._explicit_enabled:
+            return bool(self.cfg.get("enabled", False))
+        # Si no existe configuracion explicita, habilitar automaticamente cuando
+        # hay secretos validos disponibles.
+        return bool(self.token and self.chat_id)
 
     @property
     def profile_name(self) -> str:

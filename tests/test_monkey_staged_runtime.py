@@ -407,3 +407,55 @@ def test_break_even_not_activated_before_tp1_confirmation(
     mb.unrealized_profit_positions()
     categories = [x["category"] for x in runtime_event_spy["lifecycle"]]
     assert "break_even_activated" not in categories
+
+
+def test_colocando_tk_sl_forces_legacy_tp_when_tp_state_unhealthy(
+    isolated_workspace, runtime_event_spy, temp_tp_state, monkeypatch
+):
+    import pkg.monkey_bx as mb
+
+    symbol = "DOT-USDT"
+    _write_runtime_files(isolated_workspace, symbol=symbol, side="LONG")
+
+    monkeypatch.setattr(mb, "get_tp_mode", lambda: "partial_limit_tp")
+    monkeypatch.setattr(mb, "get_tp_fill_confirmation_mode", lambda: "inferred")
+    monkeypatch.setattr(mb, "get_tp_state_persist_status", lambda: {"ok": False, "error": "permission_denied"})
+    monkeypatch.setattr(mb, "upsert_tp_state", lambda *_a, **_k: {"persist_ok": False})
+    monkeypatch.setattr(mb, "obteniendo_ordenes_pendientes", lambda: [])
+    monkeypatch.setattr(mb, "_last_traded_price", lambda _symbol: 100.0)
+    monkeypatch.setattr(
+        mb,
+        "total_positions",
+        lambda _symbol: (symbol, "LONG", 100.0, 15.0, 0.0),
+    )
+
+    calls = []
+
+    def _post(symbol, qty, price, stop, position_side, order_type, side, **kwargs):
+        calls.append(
+            {
+                "symbol": symbol,
+                "qty": float(qty),
+                "price": float(price),
+                "stop": float(stop),
+                "position_side": position_side,
+                "order_type": order_type,
+                "side": side,
+                "kwargs": kwargs,
+            }
+        )
+        if kwargs.get("return_details"):
+            return True, {"order_id": f"oid-{len(calls)}", "request_id": "r", "submit_time_utc": "2026-01-01T00:00:00Z"}
+        return True
+
+    monkeypatch.setattr(mb, "_post_with_retry", _post)
+    mb.colocando_TK_SL()
+
+    order_types = [c["order_type"] for c in calls]
+    assert "STOP_MARKET" in order_types
+    assert "TAKE_PROFIT_MARKET" in order_types
+    assert "LIMIT" not in order_types
+
+    categories = [x["category"] for x in runtime_event_spy["lifecycle"]]
+    assert "runtime_storage_warning" in categories
+    assert "legacy_fallback_used" in categories

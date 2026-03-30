@@ -2,11 +2,84 @@ import warnings
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 
 import os
+import atexit
+import signal
 import pkg.price_bingx_5m
 import schedule
 import time
 import threading
 import pkg
+from pkg.lifecycle_events import emit_lifecycle_event
+
+
+_BOT_STOP_EVENT_SENT = False
+RUNTIME_CRITICAL_FILES = (
+    "./archivos/tp_stage_state.csv",
+    "./archivos/execution_ledger.csv",
+    "./archivos/lifecycle_event_log.csv",
+    "./archivos/order_submit_log.csv",
+    "./archivos/order_lifecycle_log.csv",
+)
+
+
+def _runtime_storage_preflight() -> list[str]:
+    issues: list[str] = []
+    for rel_path in RUNTIME_CRITICAL_FILES:
+        abs_path = os.path.abspath(rel_path)
+        parent = os.path.dirname(abs_path)
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except Exception as exc:
+            issues.append(f"{rel_path}:parent_mkdir_failed:{exc}")
+            continue
+
+        if os.path.exists(abs_path):
+            if not os.access(abs_path, os.W_OK):
+                issues.append(f"{rel_path}:not_writable")
+            continue
+
+        if not os.access(parent, os.W_OK):
+            issues.append(f"{rel_path}:parent_not_writable")
+            continue
+
+        try:
+            with open(abs_path, "a", encoding="utf-8"):
+                pass
+        except Exception as exc:
+            issues.append(f"{rel_path}:touch_failed:{exc}")
+    return issues
+
+
+def _emit_bot_started() -> None:
+    symbols = []
+    try:
+        symbols = pkg.price_bingx_5m.currencies_list()
+    except Exception:
+        symbols = []
+    emit_lifecycle_event(
+        "bot_started",
+        "INFO",
+        symbols_count=len(symbols),
+        symbols=",".join(symbols),
+    )
+
+
+def _emit_bot_stopped(reason: str, severity: str = "WARN", force: bool = False) -> None:
+    global _BOT_STOP_EVENT_SENT
+    if _BOT_STOP_EVENT_SENT:
+        return
+    _BOT_STOP_EVENT_SENT = True
+    emit_lifecycle_event(
+        "bot_stopped",
+        severity,
+        force=force,
+        reason=reason,
+    )
+
+
+def _handle_shutdown_signal(sig_num, _frame):
+    _emit_bot_stopped(reason=f"signal_{sig_num}", severity="WARN", force=True)
+    raise SystemExit(0)
 
 def monkey_result():
     balance_actual, diferencia_hora, diferencia_dia, diferencia_semana = pkg.monkey_bx.monkey_result()
@@ -35,6 +108,21 @@ def posiciones_antiguas():
 
 
 if __name__ == '__main__':
+    preflight_issues = _runtime_storage_preflight()
+    if preflight_issues:
+        detail = "; ".join(preflight_issues)
+        print(f"⚠️ Runtime storage preflight con fallas: {detail}")
+        emit_lifecycle_event(
+            "runtime_storage_warning",
+            "CRITICAL",
+            source="startup_preflight",
+            reason="runtime_storage_not_writable",
+            detail=detail[:500],
+        )
+    _emit_bot_started()
+    atexit.register(lambda: _emit_bot_stopped(reason="process_exit", severity="INFO"))
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
 
     for minute in range(1, 60, 5):
         schedule.every().hour.at(f":{minute:02d}").do(pkg.price_bingx_5m.price_bingx_5m)
@@ -56,6 +144,10 @@ if __name__ == '__main__':
     # Reporte de resultados cada hora al minuto 59, ejecutado en un hilo independiente
     schedule.every().hour.at(":59").do(lambda: threading.Thread(target=monkey_result).start())
 
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+    try:
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+    except Exception as exc:
+        _emit_bot_stopped(reason=f"runtime_exception:{str(exc)[:200]}", severity="CRITICAL", force=True)
+        raise
