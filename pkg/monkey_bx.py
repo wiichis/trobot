@@ -14,6 +14,11 @@ from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from .live_runtime_config import (
     get_cooldown_minutes_override,
     is_entry_hour_allowed_utc,
+    get_entry_mode,
+    get_entry_limit_offset_bps,
+    get_entry_time_in_force,
+    is_entry_post_only_enabled,
+    is_entry_market_fallback_on_error_enabled,
     get_tp_mode,
     get_tp_partial_distribution,
     get_tp_fill_confirmation_mode,
@@ -246,6 +251,36 @@ def _sanitize_tp_limit_price(
             px = _round_to_tick(ref + tick, tick, rounding=ROUND_UP)
         if side == "SHORT" and px >= ref:
             px = _round_to_tick(max(ref - tick, ref * 0.999), tick, rounding=ROUND_DOWN)
+    if px <= 0:
+        px = min_px
+    return float(px)
+
+
+def _sanitize_entry_limit_price(
+    ref_price: float,
+    symbol: str,
+    position_side: str,
+    *,
+    offset_bps: float = 2.0,
+) -> float:
+    """Calcula precio LIMIT para entrada maker (post-only) sin cruzar el book."""
+    side = str(position_side or "").upper().strip()
+    tick = _tick_size_for(symbol)
+    min_px = tick if tick and tick > 0 else 1e-8
+    ref = max(float(ref_price), min_px)
+    bps = max(0.0, _safe_float(offset_bps, 2.0))
+
+    if side == "LONG":
+        raw = ref * (1.0 - (bps / 10000.0))
+        px = _round_to_tick(raw, tick, rounding=ROUND_DOWN)
+        if px >= ref:
+            px = _round_to_tick(max(ref - tick, ref * 0.999), tick, rounding=ROUND_DOWN)
+    else:
+        raw = ref * (1.0 + (bps / 10000.0))
+        px = _round_to_tick(raw, tick, rounding=ROUND_UP)
+        if px <= ref:
+            px = _round_to_tick(ref + tick, tick, rounding=ROUND_UP)
+
     if px <= 0:
         px = min_px
     return float(px)
@@ -677,33 +712,39 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
             continue
 
         if otype == 'TAKE_PROFIT_MARKET':
-            emit_lifecycle_event(
-                "take_profit_hit",
-                "INFO",
-                symbol=symbol_u,
-                position_side=pside_u,
-                side=side_u,
-                order_id=order_id_norm,
-                source="inferred_pending_gone",
+            tp_idx = _infer_tp_idx_from_state(symbol_u, pside_u, order_id_norm)
+            confirmed, confirm_reason, current_qty, reduction = _infer_tp_fill_from_position(
+                symbol_u,
+                pside_u,
+                st_tp,
+                tp_idx=tp_idx,
             )
-            append_execution_ledger_event(
-                "take_profit_hit",
-                data_quality="inferred",
-                source="pending_gone_inference",
-                ts_utc=ts,
-                order_id=order_id_norm,
-                symbol=symbol_u,
-                side=side_u,
-                position_side=pside_u,
-                order_type=otype,
-                stop_price=_safe_float_or_none(r.get('stopPrice')),
-                fill_time_utc=ts,
-                close_reason="take_profit",
-                partial_fill_status="unknown",
-                notes="TP inferido por desaparicion de orden pendiente",
-            )
-            try:
-                tp_idx = _infer_tp_idx_from_state(symbol_u, pside_u, order_id_norm)
+            if confirmed:
+                emit_lifecycle_event(
+                    "take_profit_hit",
+                    "INFO",
+                    symbol=symbol_u,
+                    position_side=pside_u,
+                    side=side_u,
+                    order_id=order_id_norm,
+                    source="inferred_pending_gone_plus_position_reduction",
+                )
+                append_execution_ledger_event(
+                    "take_profit_hit",
+                    data_quality="inferred",
+                    source="pending_gone_plus_position_reduction",
+                    ts_utc=ts,
+                    order_id=order_id_norm,
+                    symbol=symbol_u,
+                    side=side_u,
+                    position_side=pside_u,
+                    order_type=otype,
+                    stop_price=_safe_float_or_none(r.get('stopPrice')),
+                    fill_time_utc=ts,
+                    close_reason="take_profit",
+                    partial_fill_status="inferred",
+                    notes=f"tp{tp_idx}|{confirm_reason}",
+                )
                 st = set_tp_filled(symbol_u, pside_u, tp_idx=tp_idx)
                 emit_lifecycle_event(
                     f"tp{tp_idx}_filled",
@@ -711,13 +752,15 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
                     symbol=symbol_u,
                     position_side=pside_u,
                     order_id=order_id_norm,
-                    source="inferred_pending_gone",
+                    source="inferred_pending_gone_plus_position_reduction",
                     tp_stage=str(st.get("tp_stage", "")),
+                    reduction_qty=_safe_float_or_none(reduction),
+                    remaining_qty=_safe_float_or_none(current_qty),
                 )
                 append_execution_ledger_event(
                     f"tp{tp_idx}_filled",
                     data_quality="inferred",
-                    source="pending_gone_inference",
+                    source="pending_gone_plus_position_reduction",
                     order_id=order_id_norm,
                     symbol=symbol_u,
                     side=side_u,
@@ -725,10 +768,37 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
                     order_type=otype,
                     fill_time_utc=ts,
                     close_reason=f"tp{tp_idx}",
-                    partial_fill_status="unknown",
+                    partial_fill_status="inferred",
+                    notes=confirm_reason,
                 )
-            except Exception:
-                pass
+            else:
+                emit_lifecycle_event(
+                    "execution_quality_warning",
+                    "WARN",
+                    symbol=symbol_u,
+                    position_side=pside_u,
+                    side=side_u,
+                    order_id=order_id_norm,
+                    reason="tp_pending_gone_not_confirmed",
+                    detail=str(confirm_reason)[:220],
+                    source="pending_gone_confirmation_guard",
+                )
+                append_execution_ledger_event(
+                    "tp_confirmation_failed",
+                    data_quality="inferred",
+                    source="pending_gone_confirmation_guard",
+                    ts_utc=ts,
+                    order_id=order_id_norm,
+                    symbol=symbol_u,
+                    side=side_u,
+                    position_side=pside_u,
+                    order_type=otype,
+                    stop_price=_safe_float_or_none(r.get('stopPrice')),
+                    fill_time_utc=ts,
+                    close_reason=f"tp{tp_idx}_not_confirmed",
+                    partial_fill_status="unknown",
+                    notes=str(confirm_reason)[:220],
+                )
 
 def _normalize_orders_df(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -760,6 +830,17 @@ def _normalize_orders_df(df: pd.DataFrame) -> pd.DataFrame:
     if 'stopPrice' in df.columns:
         df['stopPrice'] = pd.to_numeric(df['stopPrice'], errors='coerce')
     return df
+
+
+def _load_orders_register_df() -> pd.DataFrame:
+    """Carga `order_id_register.csv` normalizado con fallback a DataFrame vacío."""
+    try:
+        df = pd.read_csv('./archivos/order_id_register.csv')
+    except FileNotFoundError:
+        df = pd.DataFrame(columns=['symbol', 'orderId', 'type', 'stopPrice', 'time'])
+    except Exception:
+        df = pd.DataFrame(columns=['symbol', 'orderId', 'type', 'stopPrice', 'time'])
+    return _normalize_orders_df(df)
 
 def _cooldown_minutes_for_symbol(params_by_symbol: dict, symbol: str, default: int = 10) -> int:
     fixed_cd = get_cooldown_minutes_override()
@@ -1190,6 +1271,7 @@ def _post_with_retry(
     delays=(0.5, 1.0, 2.0),
     order_kwargs=None,
     intended_entry_price=None,
+    emit_entry_lifecycle: bool = False,
     return_details: bool = False,
 ):
     """Intenta colocar una orden con reintentos escalonados.
@@ -1304,7 +1386,7 @@ def _post_with_retry(
                     raw_msg=(err_msg or msg or ''),
                     notes=f"attempt={idx}",
                 )
-                if otype_u == "MARKET":
+                if otype_u == "MARKET" or emit_entry_lifecycle:
                     emit_lifecycle_event(
                         "entry_order_submitted",
                         "INFO",
@@ -1431,7 +1513,7 @@ def _post_with_retry(
                             raw_msg=(err_msg2 or msg2 or ''),
                             notes=f"attempt={idx},retry_without_reduce_only=1",
                         )
-                        if otype_u == "MARKET":
+                        if otype_u == "MARKET" or emit_entry_lifecycle:
                             emit_lifecycle_event(
                                 "entry_order_submitted",
                                 "INFO",
@@ -1530,7 +1612,7 @@ def _post_with_retry(
         raw_msg=str(last_err)[:240] if last_err is not None else '',
         cancel_reason="submit_rejected_or_exception",
     )
-    if otype_u == "MARKET":
+    if otype_u == "MARKET" or emit_entry_lifecycle:
         emit_lifecycle_event(
             "entry_order_canceled_or_expired",
             "WARN",
@@ -1868,11 +1950,7 @@ def colocando_ordenes():
     if whitelist:
         currencies = [c for c in currencies if str(c).upper() in whitelist]
     # ---------------------------------------------------
-    try:
-        df_orders = pd.read_csv('./archivos/order_id_register.csv')
-    except FileNotFoundError:
-        df_orders = pd.DataFrame(columns=['symbol','orderId','type','stopPrice','time'])
-    df_orders = _normalize_orders_df(df_orders)
+    df_orders = _load_orders_register_df()
 
     # Actualizar cooldowns a partir de SL ejecutados
     sync_cooldowns_from_sl_fills()
@@ -2044,18 +2122,69 @@ def colocando_ordenes():
                 sl_price = price_last * 1.005  # +0.5% como fallback textual
         # -----------------------------------------------------------------------
 
-        # Colocando la orden
-        entry_ok, entry_details = _post_with_retry(
-            currency,
-            currency_amount,
-            0,
-            0,
-            position_side,
-            "MARKET",
-            order_side,
-            intended_entry_price=price_last,
-            return_details=True,
-        )
+        # Colocando la orden de entrada (benchmark: LIMIT + POST_ONLY; fallback opcional a MARKET).
+        entry_mode = get_entry_mode()
+        entry_ok = False
+        entry_details = {}
+        if entry_mode == "limit_post_only":
+            entry_limit_price = _sanitize_entry_limit_price(
+                price_last,
+                currency,
+                position_side,
+                offset_bps=get_entry_limit_offset_bps(),
+            )
+            entry_kwargs = {}
+            if is_entry_post_only_enabled():
+                entry_kwargs["timeInForce"] = get_entry_time_in_force()
+                entry_kwargs["postOnly"] = True
+            entry_ok, entry_details = _post_with_retry(
+                currency,
+                currency_amount,
+                entry_limit_price,
+                0,
+                position_side,
+                "LIMIT",
+                order_side,
+                order_kwargs=entry_kwargs,
+                intended_entry_price=price_last,
+                emit_entry_lifecycle=True,
+                return_details=True,
+            )
+            if (not entry_ok) and is_entry_market_fallback_on_error_enabled():
+                emit_lifecycle_event(
+                    "execution_quality_warning",
+                    "WARN",
+                    symbol=str(currency).upper(),
+                    position_side=str(position_side).upper(),
+                    side=str(order_side).upper(),
+                    reason="entry_limit_post_only_failed_fallback_market",
+                    source="colocando_ordenes_entry_fallback",
+                )
+                entry_ok, entry_details = _post_with_retry(
+                    currency,
+                    currency_amount,
+                    0,
+                    0,
+                    position_side,
+                    "MARKET",
+                    order_side,
+                    intended_entry_price=price_last,
+                    emit_entry_lifecycle=True,
+                    return_details=True,
+                )
+        else:
+            entry_ok, entry_details = _post_with_retry(
+                currency,
+                currency_amount,
+                0,
+                0,
+                position_side,
+                "MARKET",
+                order_side,
+                intended_entry_price=price_last,
+                emit_entry_lifecycle=True,
+                return_details=True,
+            )
         if not entry_ok:
             print(f"No se pudo abrir posición para {currency}; se omite configuración de TP/SL.")
             continue
@@ -2303,11 +2432,7 @@ def colocando_TK_SL():
     if not df_posiciones.empty:
         df_posiciones['counter'] += 1
 
-    try:
-        df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
-    except FileNotFoundError:
-        df_ordenes = pd.DataFrame(columns=['symbol','orderId','type','stopPrice','time'])
-    df_ordenes = _normalize_orders_df(df_ordenes)
+    df_ordenes = _load_orders_register_df()
     df_posiciones = _bootstrap_position_queue(df_posiciones, df_ordenes)
 
     # Leer los últimos valores de indicadores
@@ -2757,7 +2882,13 @@ def colocando_TK_SL():
                 if exito_sl and placed_all_tps:
                     df_posiciones.drop(index, inplace=True)
 
-                # Fallbacks adicionales: garantizar al menos una protección
+                # Fallbacks adicionales: garantizar al menos una protección.
+                # Refrescar snapshot para evitar duplicar envíos con estado stale.
+                try:
+                    _ = obteniendo_ordenes_pendientes()
+                except Exception:
+                    pass
+                df_ordenes = _load_orders_register_df()
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
                 existing_tp = _extract_tp_orders(symbol_orders, "LONG", tp_mode_runtime)
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']
@@ -3093,7 +3224,13 @@ def colocando_TK_SL():
                 if exito_sl and placed_all_tps:
                     df_posiciones.drop(index, inplace=True)
 
-                # Fallbacks adicionales: garantizar al menos una protección
+                # Fallbacks adicionales: garantizar al menos una protección.
+                # Refrescar snapshot para evitar duplicar envíos con estado stale.
+                try:
+                    _ = obteniendo_ordenes_pendientes()
+                except Exception:
+                    pass
+                df_ordenes = _load_orders_register_df()
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
                 existing_tp = _extract_tp_orders(symbol_orders, "SHORT", tp_mode_runtime)
                 existing_sl = symbol_orders[symbol_orders['type'] == 'STOP_MARKET']

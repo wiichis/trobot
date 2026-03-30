@@ -58,3 +58,32 @@ def test_invalid_tp_mode_falls_back_to_legacy(tmp_path, monkeypatch):
     assert lrc.get_tp_mode() == "legacy_market_tp"
     assert lrc.get_tp_partial_distribution() == (0.33, 0.33, 0.34)
     assert lrc.get_tp_fill_confirmation_mode() == "inferred"
+
+
+def test_entry_runtime_config_normalization(tmp_path, monkeypatch):
+    import pkg.live_runtime_config as lrc
+
+    cfg_path = tmp_path / "runtime_entry.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "execution_entry": {
+                    "entry_mode": "LIMIT_POST_ONLY",
+                    "entry_limit_offset_bps": "3.5",
+                    "entry_time_in_force": "PostOnly",
+                    "entry_post_only": True,
+                    "entry_market_fallback_on_error": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(lrc, "DEFAULT_CONFIG_PATH", cfg_path)
+    lrc.reload_live_runtime_config()
+
+    assert lrc.get_entry_mode() == "limit_post_only"
+    assert lrc.get_entry_limit_offset_bps() == pytest.approx(3.5, rel=1e-9)
+    assert lrc.get_entry_time_in_force() == "PostOnly"
+    assert lrc.is_entry_post_only_enabled() is True
+    assert lrc.is_entry_market_fallback_on_error_enabled() is False

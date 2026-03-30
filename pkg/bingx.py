@@ -85,7 +85,19 @@ def get_balance():
     return send_request(methed, path, paramsStr, payload)
 
 # Colocar una orden
-def post_order(symbol, quantity, price, stopPrice, position_side, type, side):
+def post_order(
+    symbol,
+    quantity,
+    price,
+    stopPrice,
+    position_side,
+    type,
+    side,
+    reduceOnly=None,
+    timeInForce=None,
+    postOnly=None,
+    clientOrderId=None,
+):
     payload = {}
     path = '/openApi/swap/v2/trade/order'
     methed = "POST"
@@ -99,6 +111,14 @@ def post_order(symbol, quantity, price, stopPrice, position_side, type, side):
         "side": side,
         "timestamp": int(time.time() * 1000)
     }
+    if reduceOnly is not None:
+        paramsMap["reduceOnly"] = str(bool(reduceOnly)).lower()
+    if timeInForce is not None and str(timeInForce).strip():
+        paramsMap["timeInForce"] = str(timeInForce).strip()
+    if postOnly is not None:
+        paramsMap["postOnly"] = str(bool(postOnly)).lower()
+    if clientOrderId is not None and str(clientOrderId).strip():
+        paramsMap["clientOrderId"] = str(clientOrderId).strip()
     paramsStr = praseParam(paramsMap)
     return send_request(methed, path, paramsStr, payload)
 
@@ -173,6 +193,4 @@ def get_candle(symbol, interval, limit=2):
     }
     paramsStr = praseParam(paramsMap)
     return send_request(method, path, paramsStr, payload)
-
-
 

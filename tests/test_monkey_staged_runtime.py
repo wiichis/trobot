@@ -73,6 +73,11 @@ def test_legacy_pending_gone_regression_marks_tp_fill(
         ]
     )
     curr_df = make_orders_df([])
+    monkeypatch.setattr(
+        mb,
+        "total_positions",
+        lambda _symbol: ("HBAR-USDT", "LONG", 0.2, 19.0, 0.0),  # reducción suficiente vs qty TP1=10
+    )
     mb._log_pending_order_transitions(prev_df, curr_df)
 
     categories = [x["category"] for x in runtime_event_spy["lifecycle"]]
@@ -321,6 +326,53 @@ def test_pending_transition_idempotency_no_duplicate_tp_fill(
 
     filled = [x for x in runtime_event_spy["lifecycle"] if x["category"] == "tp1_filled"]
     assert len(filled) == 1
+
+
+def test_market_tp_pending_gone_requires_position_reduction_confirmation(
+    isolated_workspace, runtime_event_spy, temp_tp_state, monkeypatch
+):
+    import pkg.monkey_bx as mb
+    import pkg.tp_stage_state as tps
+
+    tps.set_tp_submitted(
+        "HBAR-USDT",
+        "LONG",
+        tp_idx=1,
+        order_id="501",
+        qty=2.0,
+        price=0.21,
+        submit_position_qty=10.0,
+        tp_mode="legacy_market_tp",
+        fill_confirmation_mode="inferred",
+    )
+    prev_df = make_orders_df(
+        [
+            {
+                "symbol": "HBAR-USDT",
+                "orderId": "501",
+                "type": "TAKE_PROFIT_MARKET",
+                "side": "SELL",
+                "positionSide": "LONG",
+                "stopPrice": 0.21,
+            }
+        ]
+    )
+    curr_df = make_orders_df([])
+    monkeypatch.setattr(
+        mb,
+        "total_positions",
+        lambda _symbol: ("HBAR-USDT", "LONG", 0.2, 9.4, 0.0),  # reducción insuficiente
+    )
+
+    mb._log_pending_order_transitions(prev_df, curr_df)
+
+    categories = [x["category"] for x in runtime_event_spy["lifecycle"]]
+    assert "take_profit_hit" not in categories
+    assert "tp1_filled" not in categories
+    assert "execution_quality_warning" in categories
+
+    event_types = [x["event_type"] for x in runtime_event_spy["ledger"]]
+    assert "tp_confirmation_failed" in event_types
 
 
 def test_break_even_not_activated_before_tp1_confirmation(

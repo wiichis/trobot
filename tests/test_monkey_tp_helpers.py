@@ -105,3 +105,13 @@ def test_infer_tp_fill_from_position_not_confirmed(monkeypatch):
 
     assert ok is False
     assert reason.startswith("reduction_too_low:")
+
+
+def test_sanitize_entry_limit_price_stays_maker_side():
+    import pkg.monkey_bx as mb
+
+    px_long = mb._sanitize_entry_limit_price(100.0, "BNB-USDT", "LONG", offset_bps=2.0)
+    px_short = mb._sanitize_entry_limit_price(100.0, "BNB-USDT", "SHORT", offset_bps=2.0)
+
+    assert px_long < 100.0
+    assert px_short > 100.0
