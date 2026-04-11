@@ -166,26 +166,27 @@ def pesos_ok():
         cambio = row['cambio']
         print(f"{symbol}: Peso = {peso*100:.2f}%, {cambio}")
 
-    # Preparar el mensaje para enviar con formato y emoticonos
-    mensaje = "*📊 Pesos actualizados basados en el rendimiento de los últimos 30 días:*\n"
-    for index, row in df_pesos_actualizados.iterrows():
-        symbol = row['symbol']
-        # Remover el sufijo '-USDT' del símbolo
-        symbol_clean = symbol.replace('-USDT', '')
+    # Preparar mensaje de pesos actualizado
+    lineas = [
+        f"{'━' * 20}",
+        "⚖️ *REBALANCEO SEMANAL*",
+        f"{'━' * 20}",
+        "Pesos recalculados según rendimiento de los últimos 30 días:",
+        "",
+    ]
+    for _, row in df_pesos_actualizados.iterrows():
+        symbol_clean = row['symbol'].replace('-USDT', '')
         peso = row['peso_actualizado']
         cambio = row['cambio']
         if cambio == 'Subió':
-            emoji = '📈'  # Flecha hacia arriba
+            emoji = '📈'
         elif cambio == 'Bajó':
-            emoji = '📉'  # Flecha hacia abajo
+            emoji = '📉'
         else:
-            emoji = '➡️'  # Sin cambio
+            emoji = '➡️'
+        lineas.append(f"{emoji} *{symbol_clean}* — `{peso*100:.1f}%` ({cambio})")
 
-        # Aplicar formato en negrita y añadir emoticonos
-        mensaje += f"{emoji} *{symbol_clean}*: Peso = *{peso*100:.2f}%*, {cambio}\n"
-
-    # Enviar el mensaje usando bot_send_text
-    pkg.monkey_bx.bot_send_text(mensaje)
+    pkg.monkey_bx.bot_send_text("\n".join(lineas))
 
     # Guardar los pesos actualizados para referencia futura
     df_pesos_actualizados[['symbol', 'peso_actualizado']].to_csv(PESOS_ACTUALIZADOS_PATH, index=False)

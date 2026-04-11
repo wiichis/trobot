@@ -58,6 +58,12 @@ except Exception:
     except Exception:
         _indicadores = None
 
+LimitFillPolicy = None
+should_fill_tp_limit = None
+compute_initial_stop_from_entry = None
+compute_tp_prices_from_r_multiples = None
+parse_positive_floats = None
+
 #
 # ==========================
 # Rutas por defecto
@@ -67,6 +73,8 @@ DEFAULT_OUT_DIR = 'archivos/backtesting'
 SYMBOLS_FILE = os.path.join(os.path.dirname(__file__), 'symbols.json')
 TP_LADDER_FACTORS = (0.6, 1.0, 1.6)
 TP_SPLITS_DEFAULT = (0.40, 0.40, 0.20)
+TP_SPLITS_R_DEFAULT = (0.33, 0.33, 0.34)
+TP_R_MULTIPLES_DEFAULT = (1.0, 2.0, 3.0)
 TP1_DEFAULT_FACTOR = 0.70
 FUNDING_EVENTS_CACHE: Dict[str, Dict[str, List[Tuple[int, float]]]] = {}
 STEP_SIZE_DEFAULT = 0.001
@@ -192,6 +200,8 @@ def _build_simple_argv(cfg: Dict[str, object]) -> list:
         add('--export_best', cfg.get('EXPORT_BEST'))
     if cfg.get('EXPORT_POSITIVE_ONLY'):
         argv.append('--export_positive_only')
+    if cfg.get('SYNC_BEST_TO_PKG'):
+        argv.append('--sync_best_to_pkg')
 
     # Añadir flags de búsqueda random/grid si están presentes
     if cfg.get('SEARCH_MODE'):
@@ -228,9 +238,19 @@ def _build_simple_argv(cfg: Dict[str, object]) -> list:
                 add('--symbols', symbols)
         for k in ['tp','tp_mode','tp_atr_mult','atr_mult','sl_mode','sl_pct',
                   'ema_fast','ema_slow','rsi_buy','rsi_sell','adx_min',
-                  'min_atr_pct','max_atr_pct','be_trigger','cooldown','logic']:
+                  'min_atr_pct','max_atr_pct','be_trigger','cooldown','logic',
+                  'tp_r_multiples','be_mode','be_offset','entry_hours_utc',
+                  'entry_tf','htf_tf','htf_ema_fast','htf_ema_slow','htf_adx_min','htf_adx_period']:
             if k in sp and sp[k] is not None:
                 add('--' + k, sp[k])
+        if sp.get('htf_filter_enabled'):
+            argv.append('--htf_filter_enabled')
+        if sp.get('use_r_multiple_tps'):
+            argv.append('--use_r_multiple_tps')
+        if sp.get('lock_initial_atr_sl'):
+            argv.append('--lock_initial_atr_sl')
+        if sp.get('cooldown_on_trade_close'):
+            argv.append('--cooldown_on_trade_close')
     # 'BEST_FROM_FILE' branch omitted as not needed for minimal config
 
     return argv
@@ -436,6 +456,116 @@ def _as_int(value, default: int) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _as_positive_float_list(raw, default: Tuple[float, ...]) -> List[float]:
+    if parse_positive_floats is not None:
+        try:
+            vals = parse_positive_floats(raw, default)
+            return [float(v) for v in vals if float(v) > 0]
+        except Exception:
+            pass
+    vals: List[float] = []
+    if raw is None:
+        return [float(x) for x in default if float(x) > 0]
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.split(',') if p.strip()]
+        for p in parts:
+            try:
+                v = float(p)
+            except Exception:
+                continue
+            if v > 0:
+                vals.append(v)
+    elif isinstance(raw, (list, tuple)):
+        for item in raw:
+            try:
+                v = float(item)
+            except Exception:
+                continue
+            if v > 0:
+                vals.append(v)
+    else:
+        try:
+            v = float(raw)
+            if v > 0:
+                vals.append(v)
+        except Exception:
+            pass
+    if not vals:
+        vals = [float(x) for x in default if float(x) > 0]
+    return vals or [1.0]
+
+
+def _as_hour_list(raw) -> Optional[List[int]]:
+    """Normaliza una configuracion de horas UTC permitidas para entrada.
+
+    Soporta:
+    - string CSV: "0,1,2,13,14"
+    - lista/tupla de enteros
+    - None / "" / "all" -> sin filtro horario (24/7)
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        txt = raw.strip().lower()
+        if txt in ("", "all", "24x7", "24/7"):
+            return None
+        items = [p.strip() for p in raw.split(",") if p.strip()]
+    elif isinstance(raw, (list, tuple, set)):
+        items = list(raw)
+    else:
+        items = [raw]
+
+    out: List[int] = []
+    for item in items:
+        try:
+            h = int(item)
+        except Exception:
+            continue
+        if 0 <= h <= 23:
+            out.append(h)
+    if not out:
+        return None
+    return sorted(set(out))
+
+
+def _normalize_timeframe_alias(raw: object) -> str:
+    """Normaliza alias de timeframe para resample de pandas."""
+    if raw is None:
+        return ''
+    txt = str(raw).strip().lower()
+    if txt in ('', 'none', 'off', 'false', '0'):
+        return ''
+    mapping = {
+        '1m': '1min',
+        '3m': '3min',
+        '5m': '5min',
+        '15m': '15min',
+        '30m': '30min',
+        '45m': '45min',
+        '1h': '1h',
+        '2h': '2h',
+        '4h': '4h',
+        '6h': '6h',
+        '8h': '8h',
+        '12h': '12h',
+        '1d': '1d',
+        'd': '1d',
+    }
+    if txt in mapping:
+        return mapping[txt]
+    m = re.match(r'^(\d+)\s*([mhd])$', txt)
+    if m:
+        n = int(m.group(1))
+        u = m.group(2)
+        if u == 'm':
+            return f'{n}min'
+        if u == 'h':
+            return f'{n}h'
+        if u == 'd':
+            return f'{n}d'
+    return txt
 
 
 def _load_best_params(path: str) -> List[Dict[str, object]]:
@@ -703,6 +833,26 @@ def _run_portfolio_from_best(best_path: str, args, funding_map: Dict[str, List[T
             adx_slope_len=_as_int(params.get('adx_slope_len', args.adx_slope_len), args.adx_slope_len),
             adx_slope_min=_as_float(params.get('adx_slope_min', args.adx_slope_min), args.adx_slope_min),
             fresh_breakout_only=_as_bool(params.get('fresh_breakout_only', args.fresh_breakout_only), args.fresh_breakout_only),
+            conservative_limit_fills=_as_bool(params.get('conservative_limit_fills', args.conservative_limit_fills), args.conservative_limit_fills),
+            limit_fill_buffer_bps=_as_float(params.get('limit_fill_buffer_bps', args.limit_fill_buffer_bps), args.limit_fill_buffer_bps),
+            limit_fill_require_close_confirmation=_as_bool(
+                params.get('limit_fill_require_close_confirmation', args.limit_fill_require_close_confirmation),
+                args.limit_fill_require_close_confirmation,
+            ),
+            entry_tf=params.get('entry_tf', args.entry_tf),
+            htf_filter_enabled=_as_bool(params.get('htf_filter_enabled', args.htf_filter_enabled), args.htf_filter_enabled),
+            htf_tf=params.get('htf_tf', args.htf_tf),
+            htf_ema_fast=_as_int(params.get('htf_ema_fast', args.htf_ema_fast), args.htf_ema_fast),
+            htf_ema_slow=_as_int(params.get('htf_ema_slow', args.htf_ema_slow), args.htf_ema_slow),
+            htf_adx_min=_as_float(params.get('htf_adx_min', args.htf_adx_min), args.htf_adx_min),
+            htf_adx_period=_as_int(params.get('htf_adx_period', args.htf_adx_period), args.htf_adx_period),
+            use_r_multiple_tps=_as_bool(params.get('use_r_multiple_tps', args.use_r_multiple_tps), args.use_r_multiple_tps),
+            tp_r_multiples=params.get('tp_r_multiples', args.tp_r_multiples),
+            be_mode=str(params.get('be_mode', args.be_mode)),
+            be_offset=_as_float(params.get('be_offset', args.be_offset), args.be_offset),
+            lock_initial_atr_sl=_as_bool(params.get('lock_initial_atr_sl', args.lock_initial_atr_sl), args.lock_initial_atr_sl),
+            cooldown_on_trade_close=_as_bool(params.get('cooldown_on_trade_close', args.cooldown_on_trade_close), args.cooldown_on_trade_close),
+            allowed_entry_hours_utc=_as_hour_list(params.get('entry_hours_utc', args.entry_hours_utc)),
             tp_splits=params.get('tp_splits'),
             tp_ladder_factors=params.get('tp_factors') or params.get('tp_ladder_factors'),
             tp1_factor=params.get('tp1_factor'),
@@ -1060,6 +1210,9 @@ class LivePosition:
     sl_price: float
     tp_plan: List[Dict[str, float]]
     be_trigger: float
+    be_mode: str
+    be_offset: float
+    tp1_filled: bool
     cooldown_bars: int
     position_id: int
 
@@ -1126,12 +1279,46 @@ def _prepare_live_tp_plan(row: pd.Series, side: str, entry_price: float, qty: fl
     tp_cols = ['TP1_L', 'TP2_L', 'TP3_L'] if side == 'long' else ['TP1_S', 'TP2_S', 'TP3_S']
     tps = [float(row[c]) for c in tp_cols if c in row and pd.notna(row[c])]
     if not tps:
-        try:
-            tp_pct = float(params.get('tp', 0.015))
-        except Exception:
-            tp_pct = 0.015
-        direction = 1.0 if side == 'long' else -1.0
-        tps = [entry_price * (1 + direction * tp_pct)]
+        use_r = _as_bool(params.get('use_r_multiple_tps', False), False)
+        if use_r and compute_tp_prices_from_r_multiples is not None:
+            sl_col = 'SL_L' if side == 'long' else 'SL_S'
+            sl_candidate = None
+            if sl_col in row and pd.notna(row.get(sl_col)):
+                try:
+                    sl_candidate = float(row.get(sl_col))
+                except Exception:
+                    sl_candidate = None
+            if sl_candidate is None:
+                try:
+                    sl_candidate = compute_initial_stop_from_entry(
+                        entry_price=float(entry_price),
+                        side=side,
+                        sl_mode=str(params.get('sl_mode', 'atr_then_trailing')),
+                        sl_pct=float(params.get('sl_pct', 0.0) or 0.0),
+                        atr_abs=float(row.get('ATR', 0.0) or 0.0),
+                        atr_mult_sl=float(params.get('atr_mult', 2.0) or 2.0),
+                    )
+                except Exception:
+                    sl_candidate = None
+            if sl_candidate is not None:
+                mults = _as_positive_float_list(params.get('tp_r_multiples', TP_R_MULTIPLES_DEFAULT), TP_R_MULTIPLES_DEFAULT)
+                try:
+                    tps = compute_tp_prices_from_r_multiples(
+                        entry_price=float(entry_price),
+                        initial_stop=float(sl_candidate),
+                        side=side,
+                        multiples=mults,
+                    )
+                except Exception:
+                    tps = []
+
+        if not tps:
+            try:
+                tp_pct = float(params.get('tp', 0.015))
+            except Exception:
+                tp_pct = 0.015
+            direction = 1.0 if side == 'long' else -1.0
+            tps = [entry_price * (1 + direction * tp_pct)]
 
     tp1_factor = params.get('tp1_factor', None)
     tp1_pct_override = params.get('tp1_pct_override', None)
@@ -1144,12 +1331,18 @@ def _prepare_live_tp_plan(row: pd.Series, side: str, entry_price: float, qty: fl
     except Exception:
         tp1_pct_override = None
 
-    if tps:
+    if tps and not _as_bool(params.get('use_r_multiple_tps', False), False):
         tps[0] = _adjust_tp1(entry_price, float(tps[0]), side, tp1_factor, tp1_pct_override)
 
     tick = _tick_size_for(symbol)
     tps = [_round_to_tick(float(tp), tick) for tp in tps]
-    splits = TP_SPLITS_DEFAULT if len(tps) >= 3 else (1.0,)
+    if len(tps) >= 3:
+        if _as_bool(params.get('use_r_multiple_tps', False), False):
+            splits = TP_SPLITS_R_DEFAULT
+        else:
+            splits = TP_SPLITS_DEFAULT
+    else:
+        splits = (1.0,)
     step = _step_size_for(symbol)
     split_qtys = _split_position_qtys(qty, splits, step)
     plan = []
@@ -1192,14 +1385,24 @@ def _update_live_sl(position: LivePosition, row: pd.Series, price: float) -> Non
     else:
         indicator_sl = _round_to_tick(indicator_sl, _tick_size_for(position.symbol))
 
+    be_mode = str(getattr(position, 'be_mode', 'price_trigger')).lower()
     be_trigger = float(position.be_trigger) if position.be_trigger is not None else 0.0
-    tiny_be = 0.0002
-    if side == 'long' and be_trigger > 0:
-        if price >= position.entry_price * (1 + be_trigger):
-            indicator_sl = max(indicator_sl, position.entry_price * (1 + tiny_be))
-    if side == 'short' and be_trigger > 0:
-        if price <= position.entry_price * (1 - be_trigger):
-            indicator_sl = min(indicator_sl, position.entry_price * (1 - tiny_be))
+    tiny_be = float(getattr(position, 'be_offset', 0.0002))
+    tp1_filled = bool(getattr(position, 'tp1_filled', False))
+
+    if be_mode == 'after_tp1':
+        if tp1_filled:
+            if side == 'long':
+                indicator_sl = max(indicator_sl, position.entry_price * (1 + tiny_be))
+            else:
+                indicator_sl = min(indicator_sl, position.entry_price * (1 - tiny_be))
+    else:
+        if side == 'long' and be_trigger > 0:
+            if price >= position.entry_price * (1 + be_trigger):
+                indicator_sl = max(indicator_sl, position.entry_price * (1 + tiny_be))
+        if side == 'short' and be_trigger > 0:
+            if price <= position.entry_price * (1 - be_trigger):
+                indicator_sl = min(indicator_sl, position.entry_price * (1 - tiny_be))
 
     if side == 'long':
         position.sl_price = max(position.sl_price, indicator_sl)
@@ -1227,6 +1430,7 @@ class Backtester:
                  rsi_sell: int = 45,
                  adx_min: int = 15,
                  taker_fee: float = 0.0005,       # 0.05%
+                 slippage_mult: float = 1.0,      # multiplicador para stress de ejecución
                  funding_8h: float = 0.0001,      # 0.01% por 8h
                  min_atr_pct: float = 0.0012,     # 0.12%
                  max_atr_pct: float = 0.012,      # 1.2%
@@ -1246,6 +1450,28 @@ class Backtester:
                  adx_slope_len: int = 3,
                  adx_slope_min: float = 0.4,
                  fresh_breakout_only: bool = False,
+                 conservative_limit_fills: bool = False,
+                 limit_fill_buffer_bps: float = 2.0,
+                 limit_fill_require_close_confirmation: bool = True,
+                 entry_tf: str = '5m',
+                 htf_filter_enabled: bool = False,
+                 htf_tf: str = '',
+                 htf_ema_fast: int = 50,
+                 htf_ema_slow: int = 200,
+                 htf_adx_min: float = 20.0,
+                 htf_adx_period: int = 14,
+                 enable_long_entries: bool = True,
+                 enable_short_entries: bool = True,
+                 long_adx_min: Optional[float] = None,
+                 long_min_vol_ratio: Optional[float] = None,
+                 long_require_rsi_and_breakout: bool = False,
+                 use_r_multiple_tps: bool = False,
+                 tp_r_multiples: Optional[List[float]] = None,
+                 be_mode: str = 'price_trigger',   # 'price_trigger' | 'after_tp1'
+                 be_offset: float = 0.0002,        # 2 bps por encima/debajo de entrada para BE
+                 lock_initial_atr_sl: bool = False,
+                 cooldown_on_trade_close: bool = False,
+                 allowed_entry_hours_utc: Optional[List[int]] = None,
                  tp_splits: Optional[List[float]] = None,
                  tp_ladder_factors: Optional[List[float]] = None,
                  tp1_factor: Optional[float] = None,
@@ -1268,6 +1494,13 @@ class Backtester:
         self.rsi_sell = rsi_sell
         self.adx_min = adx_min
         self.taker_fee = taker_fee
+        try:
+            sm = float(slippage_mult)
+        except Exception:
+            sm = 1.0
+        if not math.isfinite(sm) or sm < 0:
+            sm = 1.0
+        self.slippage_mult = sm
         self.funding_8h = funding_8h
         self.min_atr_pct = min_atr_pct
         self.max_atr_pct = max_atr_pct
@@ -1277,8 +1510,12 @@ class Backtester:
         self.open_trade: Optional[Trade] = None
         self.last_exec_bar: Optional[pd.Timestamp] = None
 
-        self.be_trigger = be_trigger    # 0.45% para activar BE
+        self.be_trigger = be_trigger    # 0.45% para activar BE en modo price_trigger
+        self.be_mode = str(be_mode).lower() if str(be_mode).lower() in ('price_trigger', 'after_tp1') else 'price_trigger'
+        self.be_offset = float(be_offset)
         self.cooldown_bars = cooldown_bars
+        self.cooldown_on_trade_close = bool(cooldown_on_trade_close)
+        self.allowed_entry_hours_utc = tuple(_as_hour_list(allowed_entry_hours_utc) or [])
         self.cooldown = 0               # barras de enfriamiento tras SL
         self.be_active = False          # bandera de breakeven del trade actual
         self.logic = logic
@@ -1295,10 +1532,48 @@ class Backtester:
         self.adx_slope_len = int(adx_slope_len)
         self.adx_slope_min = float(adx_slope_min)
         self.fresh_breakout_only = bool(fresh_breakout_only)
-        self.tp_splits = tuple(tp_splits) if tp_splits else TP_SPLITS_DEFAULT
+        self.conservative_limit_fills = bool(conservative_limit_fills)
+        self.entry_tf = _normalize_timeframe_alias(entry_tf) or '5min'
+        self.htf_tf = _normalize_timeframe_alias(htf_tf)
+        self.htf_filter_enabled = bool(htf_filter_enabled) and bool(self.htf_tf)
+        self.htf_ema_fast = int(htf_ema_fast)
+        self.htf_ema_slow = int(htf_ema_slow)
+        self.htf_adx_min = float(htf_adx_min)
+        self.htf_adx_period = max(2, int(htf_adx_period))
+        self.enable_long_entries = bool(enable_long_entries)
+        self.enable_short_entries = bool(enable_short_entries)
+        try:
+            self.long_adx_min = float(long_adx_min) if long_adx_min is not None else None
+            if self.long_adx_min is not None and not math.isfinite(self.long_adx_min):
+                self.long_adx_min = None
+        except Exception:
+            self.long_adx_min = None
+        try:
+            self.long_min_vol_ratio = float(long_min_vol_ratio) if long_min_vol_ratio is not None else None
+            if self.long_min_vol_ratio is not None and not math.isfinite(self.long_min_vol_ratio):
+                self.long_min_vol_ratio = None
+        except Exception:
+            self.long_min_vol_ratio = None
+        self.long_require_rsi_and_breakout = bool(long_require_rsi_and_breakout)
+        if LimitFillPolicy is not None:
+            self.limit_fill_policy = LimitFillPolicy(
+                buffer_bps=float(limit_fill_buffer_bps),
+                require_close_confirmation=bool(limit_fill_require_close_confirmation),
+            )
+        else:
+            self.limit_fill_policy = None
+        self.use_r_multiple_tps = bool(use_r_multiple_tps)
+        self.tp_r_multiples = tuple(_as_positive_float_list(tp_r_multiples, TP_R_MULTIPLES_DEFAULT))
+        if tp_splits:
+            self.tp_splits = tuple(tp_splits)
+        elif self.use_r_multiple_tps:
+            self.tp_splits = TP_SPLITS_R_DEFAULT
+        else:
+            self.tp_splits = TP_SPLITS_DEFAULT
         self.tp_ladder_factors = tuple(tp_ladder_factors) if tp_ladder_factors else TP_LADDER_FACTORS
         self.tp1_factor = tp1_factor if tp1_factor is not None else TP1_DEFAULT_FACTOR
         self.tp1_pct_override = tp1_pct_override
+        self.lock_initial_atr_sl = bool(lock_initial_atr_sl)
         self.funding_events = sorted(funding_events, key=lambda x: x[0]) if funding_events else []
         self.funding_idx = 0
 
@@ -1309,77 +1584,160 @@ class Backtester:
         self.position_entry_fee_remaining = 0.0
         self.position_slippage_in_remaining = 0.0
         self.position_funding_remaining = 0.0
+        self.position_initial_sl: Optional[float] = None
+        self.position_entry_atr: Optional[float] = None
         self.tp_plan: List[Dict[str, float]] = []
         self._pos_counter = 0
         self._current_pos_id = None
 
     def _prepare_features(self):
-        df = self.df5m
-        df = ensure_dt_utc(df)
-        # Indicadores 5m
+        df_exec = ensure_dt_utc(self.df5m).sort_values('date').reset_index(drop=True)
+        sig = df_exec[['date', 'open', 'high', 'low', 'close', 'volume']].copy()
+
+        entry_tf = self.entry_tf or '5min'
+        if entry_tf != '5min':
+            try:
+                sig = (
+                    sig.set_index('date')
+                    .resample(entry_tf, label='right', closed='right')
+                    .agg({
+                        'open': 'first',
+                        'high': 'max',
+                        'low': 'min',
+                        'close': 'last',
+                        'volume': 'sum',
+                    })
+                    .dropna()
+                    .reset_index()
+                )
+                if sig.empty:
+                    raise ValueError("Resample entry_tf sin datos")
+            except Exception:
+                # Fallback seguro a 5m si el timeframe no es válido.
+                entry_tf = '5min'
+                self.entry_tf = '5min'
+                sig = df_exec[['date', 'open', 'high', 'low', 'close', 'volume']].copy()
+
+        # Indicadores en timeframe de señal (entry_tf)
         ema_fn = _ta_ema if _ta_ema is not None else ema
         rsi_fn = _ta_rsi if _ta_rsi is not None else rsi
         atr_fn = _ta_atr if _ta_atr is not None else atr
         adx_fn = _ta_adx if _ta_adx is not None else adx
-        df['ema_f'] = ema_fn(df['close'], self.ema_fast)
-        df['ema_s'] = ema_fn(df['close'], self.ema_slow)
-        df['rsi'] = rsi_fn(df['close'], 14)
+        sig['ema_f'] = ema_fn(sig['close'], self.ema_fast)
+        sig['ema_s'] = ema_fn(sig['close'], self.ema_slow)
+        sig['rsi'] = rsi_fn(sig['close'], 14)
         if _ta_atr is not None:
-            df['atr'] = atr_fn(df['high'], df['low'], df['close'], 14)
+            sig['atr'] = atr_fn(sig['high'], sig['low'], sig['close'], 14)
         else:
-            df['atr'] = atr_fn(df, 14)
-        df['atr_pct'] = (df['atr'] / df['close']).clip(lower=0)
+            sig['atr'] = atr_fn(sig, 14)
+        sig['atr_pct'] = (sig['atr'] / sig['close']).clip(lower=0)
         if _ta_adx is not None:
-            df['adx'] = adx_fn(df['high'], df['low'], df['close'], 14)
+            sig['adx'] = adx_fn(sig['high'], sig['low'], sig['close'], 14)
         else:
-            df['adx'] = adx_fn(df, 14)
+            sig['adx'] = adx_fn(sig, 14)
         # Señales de volumen y tendencia ADX (pendiente)
         try:
             vlen = max(2, int(self.vol_ma_len))
         except Exception:
             vlen = 50
-        df['vol_ma'] = df['volume'].rolling(vlen, min_periods=vlen).mean()
+        sig['vol_ma'] = sig['volume'].rolling(vlen, min_periods=vlen).mean()
         try:
             alen = max(1, int(self.adx_slope_len))
         except Exception:
             alen = 3
-        df['adx_slope'] = df['adx'] - df['adx'].shift(alen)
+        sig['adx_slope'] = sig['adx'] - sig['adx'].shift(alen)
         # High/Low recientes (price action) con lookback configurable
         lookback = int(self.hhll_lookback) if self.hhll_lookback is not None else 0
         if lookback > 0:
-            df['hh'] = df['high'].rolling(lookback, min_periods=lookback).max().shift(1)
-            df['ll'] = df['low'].rolling(lookback, min_periods=lookback).min().shift(1)
+            sig['hh'] = sig['high'].rolling(lookback, min_periods=lookback).max().shift(1)
+            sig['ll'] = sig['low'].rolling(lookback, min_periods=lookback).min().shift(1)
             # Breakouts frescos (primera ruptura del rango hh/ll)
-            df['fresh_long_break'] = (df['close'] > df['hh']) & (df['close'].shift(1) <= df['hh'].shift(1))
-            df['fresh_short_break'] = (df['close'] < df['ll']) & (df['close'].shift(1) >= df['ll'].shift(1))
+            sig['fresh_long_break'] = (sig['close'] > sig['hh']) & (sig['close'].shift(1) <= sig['hh'].shift(1))
+            sig['fresh_short_break'] = (sig['close'] < sig['ll']) & (sig['close'].shift(1) >= sig['ll'].shift(1))
         else:
-            df['hh'] = np.nan
-            df['ll'] = np.nan
-            df['fresh_long_break'] = False
-            df['fresh_short_break'] = False
+            sig['hh'] = np.nan
+            sig['ll'] = np.nan
+            sig['fresh_long_break'] = False
+            sig['fresh_short_break'] = False
 
         # Cruces EMA/RSI recientes (alineado a indicadores.py)
-        ema_up_evt = (df['ema_f'] > df['ema_s']) & (df['ema_f'].shift(1) <= df['ema_s'].shift(1))
-        ema_dn_evt = (df['ema_f'] < df['ema_s']) & (df['ema_f'].shift(1) >= df['ema_s'].shift(1))
-        df['ema_up_bars'] = bars_since(ema_up_evt)
-        df['ema_dn_bars'] = bars_since(ema_dn_evt)
+        ema_up_evt = (sig['ema_f'] > sig['ema_s']) & (sig['ema_f'].shift(1) <= sig['ema_s'].shift(1))
+        ema_dn_evt = (sig['ema_f'] < sig['ema_s']) & (sig['ema_f'].shift(1) >= sig['ema_s'].shift(1))
+        sig['ema_up_bars'] = bars_since(ema_up_evt)
+        sig['ema_dn_bars'] = bars_since(ema_dn_evt)
 
-        rsi_up_evt = (df['rsi'] >= self.rsi_buy) & (df['rsi'].shift(1) < self.rsi_buy)
-        rsi_dn_evt = (df['rsi'] <= self.rsi_sell) & (df['rsi'].shift(1) > self.rsi_sell)
-        df['rsi_up_bars'] = bars_since(rsi_up_evt)
-        df['rsi_dn_bars'] = bars_since(rsi_dn_evt)
+        rsi_up_evt = (sig['rsi'] >= self.rsi_buy) & (sig['rsi'].shift(1) < self.rsi_buy)
+        rsi_dn_evt = (sig['rsi'] <= self.rsi_sell) & (sig['rsi'].shift(1) > self.rsi_sell)
+        sig['rsi_up_bars'] = bars_since(rsi_up_evt)
+        sig['rsi_dn_bars'] = bars_since(rsi_dn_evt)
 
         look = int(self.fresh_cross_max_bars) if self.fresh_cross_max_bars is not None else 0
         if look > 0:
-            df['ema_cross_up_recent'] = ema_up_evt.rolling(look, min_periods=1).max().astype(bool)
-            df['ema_cross_dn_recent'] = ema_dn_evt.rolling(look, min_periods=1).max().astype(bool)
-            df['rsi_cross_up_recent'] = rsi_up_evt.rolling(look, min_periods=1).max().astype(bool)
-            df['rsi_cross_dn_recent'] = rsi_dn_evt.rolling(look, min_periods=1).max().astype(bool)
+            sig['ema_cross_up_recent'] = ema_up_evt.rolling(look, min_periods=1).max().astype(bool)
+            sig['ema_cross_dn_recent'] = ema_dn_evt.rolling(look, min_periods=1).max().astype(bool)
+            sig['rsi_cross_up_recent'] = rsi_up_evt.rolling(look, min_periods=1).max().astype(bool)
+            sig['rsi_cross_dn_recent'] = rsi_dn_evt.rolling(look, min_periods=1).max().astype(bool)
         else:
-            df['ema_cross_up_recent'] = df['ema_f'] > df['ema_s']
-            df['ema_cross_dn_recent'] = df['ema_f'] < df['ema_s']
-            df['rsi_cross_up_recent'] = df['rsi'] >= self.rsi_buy
-            df['rsi_cross_dn_recent'] = df['rsi'] <= self.rsi_sell
+            sig['ema_cross_up_recent'] = sig['ema_f'] > sig['ema_s']
+            sig['ema_cross_dn_recent'] = sig['ema_f'] < sig['ema_s']
+            sig['rsi_cross_up_recent'] = sig['rsi'] >= self.rsi_buy
+            sig['rsi_cross_dn_recent'] = sig['rsi'] <= self.rsi_sell
+
+        feature_cols = [
+            'ema_f', 'ema_s', 'rsi', 'atr', 'atr_pct', 'adx', 'vol_ma', 'adx_slope',
+            'hh', 'll', 'fresh_long_break', 'fresh_short_break',
+            'ema_up_bars', 'ema_dn_bars', 'rsi_up_bars', 'rsi_dn_bars',
+            'ema_cross_up_recent', 'ema_cross_dn_recent', 'rsi_cross_up_recent', 'rsi_cross_dn_recent',
+        ]
+
+        if entry_tf == '5min':
+            df = sig.copy()
+            df['entry_bar_close'] = df['date']
+            df['entry_tf_is_close'] = True
+        else:
+            sig_feats = sig[['date'] + feature_cols].copy().rename(columns={'date': 'entry_bar_close'})
+            df = pd.merge_asof(
+                df_exec.sort_values('date'),
+                sig_feats.sort_values('entry_bar_close'),
+                left_on='date',
+                right_on='entry_bar_close',
+                direction='backward',
+            )
+            df['entry_tf_is_close'] = df['date'] == df['entry_bar_close']
+            for c in ('fresh_long_break', 'fresh_short_break', 'ema_cross_up_recent', 'ema_cross_dn_recent', 'rsi_cross_up_recent', 'rsi_cross_dn_recent'):
+                if c in df.columns:
+                    df[c] = pd.Series(df[c], index=df.index, dtype='boolean').fillna(False).astype(bool)
+
+        # Filtro HTF opcional (EMA50/EMA200 + ADX) alineado por cierre de vela HTF.
+        if self.htf_filter_enabled and self.htf_tf:
+            try:
+                htf = (
+                    df[['date', 'open', 'high', 'low', 'close']]
+                    .set_index('date')
+                    .resample(self.htf_tf, label='right', closed='right')
+                    .agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'})
+                    .dropna()
+                )
+                if not htf.empty:
+                    htf['htf_ema_f'] = ema_fn(htf['close'], self.htf_ema_fast)
+                    htf['htf_ema_s'] = ema_fn(htf['close'], self.htf_ema_slow)
+                    if _ta_adx is not None:
+                        htf['htf_adx'] = adx_fn(htf['high'], htf['low'], htf['close'], self.htf_adx_period)
+                    else:
+                        htf['htf_adx'] = adx_fn(htf, self.htf_adx_period)
+                    htf_feats = htf[['htf_ema_f', 'htf_ema_s', 'htf_adx']].reset_index().sort_values('date')
+                    df = pd.merge_asof(
+                        df.sort_values('date'),
+                        htf_feats,
+                        on='date',
+                        direction='backward',
+                    )
+            except Exception:
+                # Si falla la construcción HTF, desactiva filtro para no romper el backtest.
+                self.htf_filter_enabled = False
+        for c in ('htf_ema_f', 'htf_ema_s', 'htf_adx'):
+            if c not in df.columns:
+                df[c] = np.nan
 
         self.df5m = df
 
@@ -1403,10 +1761,26 @@ class Backtester:
             self.funding_idx += 1
         return applied
 
-    def _compute_tp_prices(self, entry_price: float, atr_abs: float, side: str) -> List[float]:
+    def _compute_tp_prices(
+        self,
+        entry_price: float,
+        atr_abs: float,
+        side: str,
+        initial_sl: Optional[float] = None,
+    ) -> List[float]:
         prices: List[float] = []
         direction = 1.0 if side == 'long' else -1.0
-        if self.tp_mode == 'fixed' and self.tp_pct > 0:
+        if self.use_r_multiple_tps and compute_tp_prices_from_r_multiples is not None and initial_sl is not None:
+            try:
+                prices = compute_tp_prices_from_r_multiples(
+                    entry_price=float(entry_price),
+                    initial_stop=float(initial_sl),
+                    side=side,
+                    multiples=self.tp_r_multiples,
+                )
+            except Exception:
+                prices = []
+        elif self.tp_mode == 'fixed' and self.tp_pct > 0:
             for mult in self.tp_ladder_factors:
                 prices.append(entry_price * (1 + direction * self.tp_pct * float(mult)))
         elif self.tp_mode == 'atrx' and atr_abs > 0 and self.tp_atr_mult > 0:
@@ -1426,13 +1800,21 @@ class Backtester:
         prices[0] = entry_price + (base - entry_price) * float(factor)
         return prices
 
-    def _prepare_tp_plan(self, qty: float, entry_price: float, atr_abs: float, side: str) -> List[Dict[str, float]]:
+    def _prepare_tp_plan(
+        self,
+        qty: float,
+        entry_price: float,
+        atr_abs: float,
+        side: str,
+        initial_sl: Optional[float] = None,
+    ) -> List[Dict[str, float]]:
         if qty <= 0:
             return []
-        prices = self._compute_tp_prices(entry_price, atr_abs, side)
+        prices = self._compute_tp_prices(entry_price, atr_abs, side, initial_sl=initial_sl)
         if not prices:
             return []
-        prices = self._apply_tp1_adjustment(prices, entry_price, side)
+        if not self.use_r_multiple_tps:
+            prices = self._apply_tp1_adjustment(prices, entry_price, side)
         count = len(prices)
         splits = self.tp_splits[:count]
         if not splits or sum(splits) <= 0:
@@ -1457,20 +1839,60 @@ class Backtester:
             plan[-1]['qty'] = max(0.0, plan[-1]['qty'] + remaining)
         return plan
 
+    def _initial_stop_from_entry(self, entry_price: float, side: str, atr_abs: float) -> float:
+        if compute_initial_stop_from_entry is not None:
+            try:
+                return float(
+                    compute_initial_stop_from_entry(
+                        entry_price=float(entry_price),
+                        side=side,
+                        sl_mode=self.sl_mode,
+                        sl_pct=float(self.sl_pct),
+                        atr_abs=float(atr_abs),
+                        atr_mult_sl=float(self.atr_mult_sl),
+                    )
+                )
+            except Exception:
+                pass
+        # Fallback interno si risk_engine no disponible.
+        direction = 1.0 if side == 'long' else -1.0
+        if self.sl_mode == 'percent' and self.sl_pct > 0:
+            return float(entry_price) * (1.0 - direction * float(self.sl_pct))
+        if atr_abs > 0 and self.atr_mult_sl > 0:
+            return float(entry_price) - direction * (float(self.atr_mult_sl) * float(atr_abs))
+        return float(entry_price) * (1.0 - direction * 0.005)
+
     def _tp_targets_hit(self, row: pd.Series) -> List[Dict[str, float]]:
         hits: List[Dict[str, float]] = []
         if not self.tp_plan or self.open_trade is None:
             return hits
+        high = float(row.get('high', np.nan))
+        low = float(row.get('low', np.nan))
+        close = float(row.get('close', np.nan))
         for target in self.tp_plan:
             if target.get('filled') or target.get('qty', 0.0) <= 0:
                 continue
             price = float(target['price'])
-            if self.open_trade.side == 'long':
-                if row['high'] >= price:
-                    hits.append(target)
+            hit = False
+            if self.conservative_limit_fills and self.limit_fill_policy is not None and should_fill_tp_limit is not None:
+                try:
+                    hit = should_fill_tp_limit(
+                        position_side=self.open_trade.side,
+                        limit_price=price,
+                        bar_high=high,
+                        bar_low=low,
+                        bar_close=close,
+                        policy=self.limit_fill_policy,
+                    )
+                except Exception:
+                    hit = False
             else:
-                if row['low'] <= price:
-                    hits.append(target)
+                if self.open_trade.side == 'long':
+                    hit = high >= price
+                else:
+                    hit = low <= price
+            if hit:
+                hits.append(target)
         return hits
 
     def _allocate_entry_cost(self, qty_close: float) -> Tuple[float, float, float]:
@@ -1493,7 +1915,7 @@ class Backtester:
         if qty_close <= 0:
             return 0.0, 0.0, 0.0
         entry_fee_share, slip_in_share, funding_share = self._allocate_entry_cost(qty_close)
-        slip_rate = calc_slippage_rate(atr_pct)
+        slip_rate = self._slippage_rate(atr_pct)
         if self.open_trade.side == 'long':
             actual_exit_notional = exit_price * (1 - slip_rate) * qty_close
         else:
@@ -1527,6 +1949,8 @@ class Backtester:
         self.position_entry_fee_remaining = 0.0
         self.position_slippage_in_remaining = 0.0
         self.position_funding_remaining = 0.0
+        self.position_initial_sl = None
+        self.position_entry_atr = None
         self.tp_plan = []
         self.be_active = False
         self._current_pos_id = None
@@ -1537,6 +1961,15 @@ class Backtester:
     def _allow_new_trade(self, row: pd.Series) -> bool:
         ts = row['date']
         atr_pct = float(row.get('atr_pct', np.nan))
+        if not bool(row.get('entry_tf_is_close', True)):
+            return False
+        if self.allowed_entry_hours_utc:
+            try:
+                hour_utc = int(pd.Timestamp(ts).hour)
+            except Exception:
+                hour_utc = None
+            if hour_utc is None or hour_utc not in self.allowed_entry_hours_utc:
+                return False
         if in_funding_window(ts, 30):
             return False
         if not (self.min_atr_pct <= atr_pct <= self.max_atr_pct):
@@ -1564,7 +1997,23 @@ class Backtester:
         trend_up = row['ema_f'] > row['ema_s']
         trend_dn = row['ema_f'] < row['ema_s']
         # Fuerza
-        strong = row['adx'] >= self.adx_min
+        adx_now = float(row.get('adx', np.nan))
+        strong_short = adx_now >= float(self.adx_min)
+        long_adx_thr = float(self.long_adx_min) if self.long_adx_min is not None else float(self.adx_min)
+        strong_long = adx_now >= long_adx_thr
+        htf_long_ok = True
+        htf_short_ok = True
+        if self.htf_filter_enabled:
+            try:
+                htf_ema_f = float(row.get('htf_ema_f', np.nan))
+                htf_ema_s = float(row.get('htf_ema_s', np.nan))
+                htf_adx = float(row.get('htf_adx', np.nan))
+            except Exception:
+                return None
+            if math.isnan(htf_ema_f) or math.isnan(htf_ema_s) or math.isnan(htf_adx):
+                return None
+            htf_long_ok = (htf_ema_f > htf_ema_s) and (htf_adx >= self.htf_adx_min)
+            htf_short_ok = (htf_ema_f < htf_ema_s) and (htf_adx >= self.htf_adx_min)
         # Price action: cierre fuera de hh/ll
         long_break = (row['close'] > row['hh']) if not math.isnan(row['hh']) else False
         short_break = (row['close'] < row['ll']) if not math.isnan(row['ll']) else False
@@ -1583,11 +2032,15 @@ class Backtester:
             rsi_trig_short = row['rsi'] <= self.rsi_sell
 
         if self.logic == 'strict':
-            long_ok = trend_up and strong and rsi_trig_long and long_break
-            short_ok = trend_dn and strong and rsi_trig_short and short_break
+            long_ok = trend_up and strong_long and rsi_trig_long and long_break
+            short_ok = trend_dn and strong_short and rsi_trig_short and short_break
         else:
-            long_ok = trend_up and strong and (rsi_trig_long or long_break)
-            short_ok = trend_dn and strong and (rsi_trig_short or short_break)
+            if self.long_require_rsi_and_breakout:
+                long_trigger = rsi_trig_long and long_break
+            else:
+                long_trigger = rsi_trig_long or long_break
+            long_ok = trend_up and strong_long and long_trigger
+            short_ok = trend_dn and strong_short and (rsi_trig_short or short_break)
 
         # --- Gate por recencia de cruces ---
         ema_long_recent = bool(row.get('ema_cross_up_recent', False))
@@ -1630,24 +2083,41 @@ class Backtester:
                 adx_slope_ok = False
 
         # 4) Filtro de volumen: volumen actual por encima de su media
-        vol_ok = True
-        if self.min_vol_ratio > 0:
+        vol_long_ok = True
+        vol_short_ok = True
+        if self.min_vol_ratio > 0 or (self.long_min_vol_ratio is not None and self.long_min_vol_ratio > 0):
             try:
                 vma = float(row.get('vol_ma', np.nan))
-                vol_ok = (not math.isnan(vma) and vma > 0 and float(row.get('volume', 0.0)) >= self.min_vol_ratio * vma)
+                vol = float(row.get('volume', 0.0))
+                if not math.isnan(vma) and vma > 0:
+                    short_ratio = float(self.min_vol_ratio)
+                    long_ratio = float(self.long_min_vol_ratio) if self.long_min_vol_ratio is not None else short_ratio
+                    vol_short_ok = vol >= short_ratio * vma
+                    vol_long_ok = vol >= long_ratio * vma
+                else:
+                    vol_short_ok = False
+                    vol_long_ok = False
             except Exception:
-                vol_ok = False
+                vol_short_ok = False
+                vol_long_ok = False
 
         if long_ok:
+            if not htf_long_ok: long_ok = False
             if not ema_spread_ok: long_ok = False
             if not adx_slope_ok: long_ok = False
-            if not vol_ok: long_ok = False
+            if not vol_long_ok: long_ok = False
             if not price_long_ok: long_ok = False
         if short_ok:
+            if not htf_short_ok: short_ok = False
             if not ema_spread_ok: short_ok = False
             if not adx_slope_ok: short_ok = False
-            if not vol_ok: short_ok = False
+            if not vol_short_ok: short_ok = False
             if not price_short_ok: short_ok = False
+
+        if not self.enable_long_entries:
+            long_ok = False
+        if not self.enable_short_entries:
+            short_ok = False
 
         if long_ok and not short_ok:
             return 'long'
@@ -1666,6 +2136,13 @@ class Backtester:
 
     def _apply_commission(self, notional: float) -> float:
         return abs(notional) * self.taker_fee
+
+    def _slippage_rate(self, atr_pct: float) -> float:
+        base_rate = calc_slippage_rate(atr_pct)
+        val = base_rate * self.slippage_mult
+        if not math.isfinite(val) or val < 0:
+            return 0.0
+        return float(val)
 
     def _update_trailing_sl(self, row: pd.Series, direction: str, entry_price: float, atr_abs: float, anchor: float) -> float:
         # trailing basado en ATR
@@ -1727,8 +2204,8 @@ class Backtester:
             # Cierre (TP / SL)
             if self.open_trade is not None:
                 t = self.open_trade
-                # Activación de breakeven cuando el precio avanza a favor
-                if not self.be_active:
+                # Activación de break-even por avance de precio (modo legacy).
+                if (not self.be_active) and self.be_mode == 'price_trigger':
                     if t.side == 'long' and row['high'] >= t.entry_price * (1 + self.be_trigger):
                         self.be_active = True
                     elif t.side == 'short' and row['low'] <= t.entry_price * (1 - self.be_trigger):
@@ -1743,11 +2220,11 @@ class Backtester:
                     if t.side == 'long':
                         sl_price = t.entry_price * (1 - max(self.sl_pct, 0.0))
                         if self.be_active:
-                            sl_price = max(sl_price, t.entry_price)
+                            sl_price = max(sl_price, t.entry_price * (1 + self.be_offset))
                     else:
                         sl_price = t.entry_price * (1 + max(self.sl_pct, 0.0))
                         if self.be_active:
-                            sl_price = min(sl_price, t.entry_price)
+                            sl_price = min(sl_price, t.entry_price * (1 - self.be_offset))
                 else:
                     # Modos basados en ATR
                     if (self.sl_mode == 'atr_trailing_only') or (self.be_active and self.sl_mode == 'atr_then_trailing'):
@@ -1756,12 +2233,14 @@ class Backtester:
                         anchor_price = max(anchor_price, price) if t.side == 'long' else min(anchor_price, price)
                         # Nunca peor que la entrada una vez activo
                         if t.side == 'long':
-                            sl_price = max(sl_price, t.entry_price)
+                            sl_price = max(sl_price, t.entry_price * (1 + self.be_offset))
                         else:
-                            sl_price = min(sl_price, t.entry_price)
+                            sl_price = min(sl_price, t.entry_price * (1 - self.be_offset))
                     else:
                         # SL fijo inicial por ATR (antes de BE)
-                        if t.side == 'long':
+                        if self.lock_initial_atr_sl and self.position_initial_sl is not None:
+                            sl_price = float(self.position_initial_sl)
+                        elif t.side == 'long':
                             sl_price = t.entry_price - self.atr_mult_sl * atr_abs
                         else:
                             sl_price = t.entry_price + self.atr_mult_sl * atr_abs
@@ -1785,6 +2264,8 @@ class Backtester:
                         self.equity += pnl_tp
                         target['filled'] = True
                         target['qty'] = 0.0
+                        if self.be_mode == 'after_tp1' and str(target.get('label', '')).upper() == 'TP1':
+                            self.be_active = True
                         if self.position_open_qty <= 0:
                             self.last_exec_bar = ts
                             anchor_price = None
@@ -1824,7 +2305,7 @@ class Backtester:
                     self.last_exec_bar = ts  # una ejecución por vela
                     anchor_price = None
                     open_bar_idx = None
-                    if exit_reason == 'SL':
+                    if exit_reason == 'SL' or self.cooldown_on_trade_close:
                         self.cooldown = self.cooldown_bars
                     self._flatten_position()
                     # Track equity stepwise per barra
@@ -1859,7 +2340,7 @@ class Backtester:
                     equity_time.append(ts)
                     continue
 
-                slip_rate = calc_slippage_rate(atr_pct)
+                slip_rate = self._slippage_rate(atr_pct)
                 entry_price = price
                 sl_in = price * slip_rate * qty
                 if signal == 'long':
@@ -1884,9 +2365,18 @@ class Backtester:
                 self.position_entry_fee_remaining = fee
                 self.position_slippage_in_remaining = sl_in
                 self.position_funding_remaining = 0.0
-                self.tp_plan = self._prepare_tp_plan(qty, entry_price, atr_abs, signal)
+                self.position_entry_atr = float(atr_abs) if atr_abs > 0 else None
+                self.position_initial_sl = self._initial_stop_from_entry(entry_price, signal, atr_abs)
+                self.tp_plan = self._prepare_tp_plan(
+                    qty,
+                    entry_price,
+                    atr_abs,
+                    signal,
+                    initial_sl=self.position_initial_sl,
+                )
                 self.last_exec_bar = ts
                 open_bar_idx = i
+                self.be_active = False
                 # Si el SL es 'atr_trailing_only', activar trailing desde el inicio
                 if self.sl_mode == 'atr_trailing_only':
                     self.be_active = True
@@ -2209,6 +2699,8 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                         slippages += slip_tp
                         target['filled'] = True
                         target['qty'] = 0.0
+                        if str(getattr(pos, 'be_mode', 'price_trigger')).lower() == 'after_tp1' and str(target.get('label', '')).upper() == 'TP1':
+                            pos.tp1_filled = True
                     if pos.remaining_qty <= 0:
                         open_positions.pop(sym, None)
                         closed_this_bar.add(sym)
@@ -2292,6 +2784,10 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                 sym_u = str(sym).upper()
                 p = params_by_symbol.get(sym_u) or params_norm.get(_norm_symbol(sym_u)) or {}
                 be_trigger = float(p.get('be_trigger', 0.0)) if p.get('be_trigger') is not None else 0.0
+                be_mode = str(p.get('be_mode', 'price_trigger')).lower()
+                if be_mode not in ('price_trigger', 'after_tp1'):
+                    be_mode = 'price_trigger'
+                be_offset = _as_float(p.get('be_offset', 0.0002), 0.0002)
                 tp_plan = _prepare_live_tp_plan(cand['row'], cand['side'], entry_price, qty, sym, p)
                 sl_price = _initial_sl_from_row(cand['row'], cand['side'], entry_price, sym)
                 cooldown_bars = cooldown_map.get(sym, 0)
@@ -2310,6 +2806,9 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                     sl_price=sl_price,
                     tp_plan=tp_plan,
                     be_trigger=be_trigger,
+                    be_mode=be_mode,
+                    be_offset=be_offset,
+                    tp1_filled=False,
                     cooldown_bars=cooldown_bars,
                     position_id=pos_counter,
                 )
@@ -2745,6 +3244,23 @@ def run_job(job):
             adx_slope_len=p.get('adx_slope_len', 3),
             adx_slope_min=p.get('adx_slope_min', 0.0),
             fresh_breakout_only=p.get('fresh_breakout_only', False),
+            conservative_limit_fills=_as_bool(p.get('conservative_limit_fills', False), False),
+            limit_fill_buffer_bps=_as_float(p.get('limit_fill_buffer_bps', 2.0), 2.0),
+            limit_fill_require_close_confirmation=_as_bool(p.get('limit_fill_require_close_confirmation', True), True),
+            entry_tf=p.get('entry_tf', '5m'),
+            htf_filter_enabled=_as_bool(p.get('htf_filter_enabled', False), False),
+            htf_tf=p.get('htf_tf', ''),
+            htf_ema_fast=_as_int(p.get('htf_ema_fast', 50), 50),
+            htf_ema_slow=_as_int(p.get('htf_ema_slow', 200), 200),
+            htf_adx_min=_as_float(p.get('htf_adx_min', 20.0), 20.0),
+            htf_adx_period=_as_int(p.get('htf_adx_period', 14), 14),
+            use_r_multiple_tps=_as_bool(p.get('use_r_multiple_tps', False), False),
+            tp_r_multiples=p.get('tp_r_multiples', TP_R_MULTIPLES_DEFAULT),
+            be_mode=str(p.get('be_mode', 'price_trigger')),
+            be_offset=_as_float(p.get('be_offset', 0.0002), 0.0002),
+            lock_initial_atr_sl=_as_bool(p.get('lock_initial_atr_sl', False), False),
+            cooldown_on_trade_close=_as_bool(p.get('cooldown_on_trade_close', False), False),
+            allowed_entry_hours_utc=_as_hour_list(p.get('entry_hours_utc')),
             tp_splits=p.get('tp_splits'),
             tp_ladder_factors=p.get('tp_factors') or p.get('tp_ladder_factors'),
             tp1_factor=p.get('tp1_factor'),
@@ -2773,7 +3289,7 @@ def main():
     parser.add_argument('--capital', type=float, default=1000.0)
     parser.add_argument('--train_ratio', type=float, default=0.7, help='Proporción de datos usada como entrenamiento (0 = usar todo)')
     parser.add_argument('--lookback_days', type=int, default=None, help='Limitar el histórico a los últimos N días (None = todo)')
-    parser.add_argument('--tp', type=float, default=0.01, help='Take Profit en fracción (0.01 = 1%)')
+    parser.add_argument('--tp', type=float, default=0.01, help='Take Profit en fracción (0.01 = 1%%)')
     parser.add_argument('--atr_mult', type=float, default=2.0)
     parser.add_argument('--ema_fast', type=int, default=20)
     parser.add_argument('--ema_slow', type=int, default=50)
@@ -2781,28 +3297,53 @@ def main():
     parser.add_argument('--rsi_sell', type=int, default=45)
     parser.add_argument('--adx_min', type=int, default=15)
     parser.add_argument('--logic', type=str, default='any', choices=['strict','any'], help="'strict' = tendencia & fuerza & momentum & cierre fuera; 'any' = tendencia & fuerza & (momentum OR cierre fuera)")
-    parser.add_argument('--min_atr_pct', type=float, default=0.0012, help='Límite inferior de ATR% (0.0012 = 0.12%)')
-    parser.add_argument('--max_atr_pct', type=float, default=0.012, help='Límite superior de ATR% (0.012 = 1.2%)')
-    parser.add_argument('--be_trigger', type=float, default=0.0045, help='Activación de breakeven (fracción, 0.0045 = 0.45%)')
+    parser.add_argument('--min_atr_pct', type=float, default=0.0012, help='Límite inferior de ATR%% (0.0012 = 0.12%%)')
+    parser.add_argument('--max_atr_pct', type=float, default=0.012, help='Límite superior de ATR%% (0.012 = 1.2%%)')
+    parser.add_argument('--be_trigger', type=float, default=0.0045, help='Activación de breakeven (fracción, 0.0045 = 0.45%%)')
     parser.add_argument('--cooldown', type=int, default=10, help='Barras de enfriamiento tras SL')
     parser.add_argument('--hhll_lookback', type=int, default=10, help='Lookback para HH/LL en velas 5m (rupturas)')
     parser.add_argument('--time_exit_bars', type=int, default=30, help='Barras máximas a mantener una posición OOS antes de cerrarla (0 desactiva)')
-    parser.add_argument('--max_dist_emaslow', type=float, default=0.010, help='Distancia máxima relativa a EMA_slow para abrir (0.010 = 1.0%)')
+    parser.add_argument('--max_dist_emaslow', type=float, default=0.010, help='Distancia máxima relativa a EMA_slow para abrir (0.010 = 1.0%%)')
     parser.add_argument('--fresh_cross_max_bars', type=int, default=3, help='Máximo de barras para considerar cruce EMA/RSI como reciente')
     parser.add_argument('--require_rsi_cross', dest='require_rsi_cross', action='store_true', help='Exigir cruce reciente de RSI (ON)')
     parser.add_argument('--no_require_rsi_cross', dest='require_rsi_cross', action='store_false', help='No exigir cruce reciente de RSI')
     parser.set_defaults(require_rsi_cross=True)
-    parser.add_argument('--min_ema_spread', type=float, default=0.001, help='Mínima separación relativa entre EMA_f y EMA_s (0.001 = 0.1%)')
+    parser.add_argument('--min_ema_spread', type=float, default=0.001, help='Mínima separación relativa entre EMA_f y EMA_s (0.001 = 0.1%%)')
     parser.add_argument('--require_close_vs_emas', dest='require_close_vs_emas', action='store_true', help='Exigir close>EMA_f>EMA_s (long) o close<EMA_f<EMA_s (short)')
     parser.add_argument('--no_require_close_vs_emas', dest='require_close_vs_emas', action='store_false', help='No exigir relación close/EMAs')
     parser.set_defaults(require_close_vs_emas=True)
-    parser.add_argument('--min_vol_ratio', type=float, default=1.1, help='Volumen mínimo como múltiplo de su media (1.2 = 120%)')
+    parser.add_argument('--min_vol_ratio', type=float, default=1.1, help='Volumen mínimo como múltiplo de su media (1.2 = 120%%)')
     parser.add_argument('--vol_ma_len', type=int, default=30, help='Ventana para media de volumen')
     parser.add_argument('--adx_slope_len', type=int, default=3, help='Barras para calcular pendiente de ADX')
     parser.add_argument('--adx_slope_min', type=float, default=0.4, help='Pendiente mínima de ADX requerida')
     parser.add_argument('--fresh_breakout_only', dest='fresh_breakout_only', action='store_true', help='Exigir que el breakout HH/LL sea el primero (fresco)')
     parser.add_argument('--no_fresh_breakout_only', dest='fresh_breakout_only', action='store_false', help='Permitir rupturas no frescas')
     parser.set_defaults(fresh_breakout_only=False)
+    parser.add_argument('--conservative_limit_fills', action='store_true', help='Activa fill conservador para TP limite (evita fill por simple toque).')
+    parser.add_argument('--limit_fill_buffer_bps', type=float, default=2.0, help='Buffer (bps) de penetracion para considerar fill limite conservador.')
+    parser.add_argument('--limit_fill_require_close_confirmation', dest='limit_fill_require_close_confirmation', action='store_true', help='Exige cierre a favor del limite para marcar fill conservador.')
+    parser.add_argument('--no_limit_fill_require_close_confirmation', dest='limit_fill_require_close_confirmation', action='store_false', help='No exigir confirmacion por cierre para fill limite conservador.')
+    parser.set_defaults(limit_fill_require_close_confirmation=True)
+    parser.add_argument('--entry_tf', type=str, default='5m', help='Timeframe de señal/entrada (ej: 5m,15m,30m,1h).')
+    parser.add_argument('--htf_filter_enabled', dest='htf_filter_enabled', action='store_true', help='Activa filtro de tendencia HTF (EMA50/EMA200 + ADX).')
+    parser.add_argument('--no_htf_filter_enabled', dest='htf_filter_enabled', action='store_false', help='Desactiva filtro HTF.')
+    parser.set_defaults(htf_filter_enabled=False)
+    parser.add_argument('--htf_tf', type=str, default='', help='Timeframe HTF para el filtro (ej: 1h,4h,30m).')
+    parser.add_argument('--htf_ema_fast', type=int, default=50, help='EMA rapida para filtro HTF.')
+    parser.add_argument('--htf_ema_slow', type=int, default=200, help='EMA lenta para filtro HTF.')
+    parser.add_argument('--htf_adx_min', type=float, default=20.0, help='ADX minimo en HTF para habilitar entradas.')
+    parser.add_argument('--htf_adx_period', type=int, default=14, help='Periodo de ADX en HTF.')
+    parser.add_argument('--use_r_multiple_tps', action='store_true', help='Usa ladder de take profits por multiplos de R (ej. 1R,2R,3R).')
+    parser.add_argument('--tp_r_multiples', type=str, default='1,2,3', help='Multiplicadores R para TP cuando --use_r_multiple_tps (CSV, ejemplo: 1,2,3).')
+    parser.add_argument('--be_mode', type=str, default='price_trigger', choices=['price_trigger', 'after_tp1'], help="Modo de breakeven: 'price_trigger' por avance de precio o 'after_tp1' luego de TP1.")
+    parser.add_argument('--be_offset', type=float, default=0.0002, help='Offset aplicado al mover SL a BE (0.0002 = 2 bps).')
+    parser.add_argument('--lock_initial_atr_sl', dest='lock_initial_atr_sl', action='store_true', help='Mantiene SL inicial por ATR fijo hasta activar trailing/BE.')
+    parser.add_argument('--no_lock_initial_atr_sl', dest='lock_initial_atr_sl', action='store_false', help='Permite recalcular SL ATR barra a barra antes de trailing/BE.')
+    parser.set_defaults(lock_initial_atr_sl=False)
+    parser.add_argument('--cooldown_on_trade_close', dest='cooldown_on_trade_close', action='store_true', help='Aplica cooldown despues de cualquier cierre (TP/SL/TIME/EOD).')
+    parser.add_argument('--no_cooldown_on_trade_close', dest='cooldown_on_trade_close', action='store_false', help='Aplica cooldown solo tras SL (comportamiento legacy).')
+    parser.set_defaults(cooldown_on_trade_close=False)
+    parser.add_argument('--entry_hours_utc', type=str, default='', help='Horas UTC permitidas para abrir posiciones (CSV 0-23). Vacio/all = 24/7.')
     parser.add_argument('--portfolio_mode', action='store_true', help='Simular todos los símbolos compartiendo el mismo capital')
     parser.add_argument('--live_parity', action='store_true', help='Simulación live-parity usando indicadores/TP/SL del bot')
     parser.add_argument('--parity_days', type=int, default=None, help='Limitar live-parity a los últimos N días (None = todo)')
@@ -2810,14 +3351,14 @@ def main():
     parser.add_argument('--parity_per_symbol', action='store_true', help='Imprime resumen por símbolo en live-parity')
     parser.add_argument('--weights_csv', type=str, default='archivos/pesos_actualizados.csv', help='CSV de pesos (symbol,peso_actualizado)')
     parser.add_argument('--portfolio_max_positions', type=int, default=3, help='Máximo de posiciones abiertas simultáneas (0 = sin límite)')
-    parser.add_argument('--portfolio_alloc_pct', type=float, default=0.30, help='Fracción máxima del equity que puede asignar cada trade (0.30 = 30%)')
+    parser.add_argument('--portfolio_alloc_pct', type=float, default=0.30, help='Fracción máxima del equity que puede asignar cada trade (0.30 = 30%%)')
     parser.add_argument('--portfolio_eval_best', action='store_true', help='Después de un sweep, evalúa el portafolio usando el archivo exportado en --export_best')
     parser.add_argument('--funding_csv', type=str, default=None, help='CSV opcional con historial de funding (symbol,time,rate)')
     parser.add_argument('--sweep', type=str, default=None, help='Ruta a JSON con listas de parámetros para barrido (grid)')
-    parser.add_argument('--tp_mode', type=str, default='fixed', choices=['fixed','atrx','none'], help="Modo de TP: 'fixed'=% , 'atrx'=k*ATR, 'none'=sin TP")
+    parser.add_argument('--tp_mode', type=str, default='fixed', choices=['fixed','atrx','none'], help="Modo de TP: 'fixed'=%% , 'atrx'=k*ATR, 'none'=sin TP")
     parser.add_argument('--tp_atr_mult', type=float, default=0.0, help='Multiplicador de ATR para TP cuando tp_mode=atrx')
     parser.add_argument('--sl_mode', type=str, default='atr_then_trailing', choices=['atr_then_trailing','atr_trailing_only','percent'], help="Modo de SL: ATR fijo y luego trailing, solo trailing por ATR, o porcentaje fijo")
-    parser.add_argument('--sl_pct', type=float, default=0.0, help='SL en porcentaje (0.01 = 1%) cuando sl_mode=percent')
+    parser.add_argument('--sl_pct', type=float, default=0.0, help='SL en porcentaje (0.01 = 1%%) cuando sl_mode=percent')
     parser.add_argument('--out_dir', type=str, default=DEFAULT_OUT_DIR)
     parser.add_argument('--rank_by', type=str, default='pnl_net', choices=['pnl_net','pnl_net_per_trade','sharpe_annual','profit_factor','winrate_pct','cost_ratio','max_dd_pct','calmar'], help="Métrica para ranking y selección por símbolo. 'calmar' = pnl_net / |max_dd_pct|")
     parser.add_argument('--min_trades', type=int, default=0, help='Filtra combinaciones con menos de este número de trades')
@@ -2826,9 +3367,10 @@ def main():
     parser.add_argument('--max_daily_sl_streak', type=int, default=None, help='Filtra combinaciones con racha diaria de SL consecutivos > a este valor')
     parser.add_argument('--min_winrate', type=float, default=0.0, help='Filtra combinaciones con winrate &lt; a este porcentaje')
     parser.add_argument('--max_cost_ratio', type=float, default=None, help='Filtra combinaciones con cost_ratio &gt; a este valor')
-    parser.add_argument('--max_dd', type=float, default=None, help='Filtra combinaciones con drawdown máximo absoluto mayor a este valor (ej. 0.3 para 30%)')
+    parser.add_argument('--max_dd', type=float, default=None, help='Filtra combinaciones con drawdown máximo absoluto mayor a este valor (ej. 0.3 para 30%%)')
     parser.add_argument('--export_best', type=str, default=None, help='Ruta a JSON para exportar el mejor set por símbolo listo para producción')
     parser.add_argument('--export_positive_only', action='store_true', help='Exporta solo símbolos con pnl_net &gt; 0')
+    parser.add_argument('--sync_best_to_pkg', action='store_true', help='Copia --export_best a pkg/best_prod.json y refresca indicadores.csv')
     parser.add_argument('--search_mode', type=str, default='grid', choices=['grid','random'], help='Estrategia de búsqueda: grid completo o muestreo aleatorio')
     parser.add_argument('--n_trials', type=int, default=None, help='Número de combinaciones aleatorias por símbolo (solo search_mode=random)')
     parser.add_argument('--random_seed', type=int, default=42, help='Semilla para el muestreo aleatorio')
@@ -2953,6 +3495,23 @@ def main():
                 adx_slope_len=args.adx_slope_len,
                 adx_slope_min=args.adx_slope_min,
                 fresh_breakout_only=args.fresh_breakout_only,
+                conservative_limit_fills=args.conservative_limit_fills,
+                limit_fill_buffer_bps=args.limit_fill_buffer_bps,
+                limit_fill_require_close_confirmation=args.limit_fill_require_close_confirmation,
+                entry_tf=args.entry_tf,
+                htf_filter_enabled=args.htf_filter_enabled,
+                htf_tf=args.htf_tf,
+                htf_ema_fast=args.htf_ema_fast,
+                htf_ema_slow=args.htf_ema_slow,
+                htf_adx_min=args.htf_adx_min,
+                htf_adx_period=args.htf_adx_period,
+                use_r_multiple_tps=args.use_r_multiple_tps,
+                tp_r_multiples=args.tp_r_multiples,
+                be_mode=args.be_mode,
+                be_offset=args.be_offset,
+                lock_initial_atr_sl=args.lock_initial_atr_sl,
+                cooldown_on_trade_close=args.cooldown_on_trade_close,
+                allowed_entry_hours_utc=_as_hour_list(args.entry_hours_utc),
                 funding_events=_normalize_funding_events_for(sym, funding_map),
             )
             res_sym = bt.run(train_ratio=args.train_ratio)
@@ -3060,6 +3619,23 @@ def main():
             ('adx_slope_len', as_list(cfg.get('adx_slope_len', args.adx_slope_len))),
             ('adx_slope_min', as_list(cfg.get('adx_slope_min', args.adx_slope_min))),
             ('fresh_breakout_only', as_list(cfg.get('fresh_breakout_only', args.fresh_breakout_only))),
+            ('conservative_limit_fills', as_list(cfg.get('conservative_limit_fills', args.conservative_limit_fills))),
+            ('limit_fill_buffer_bps', as_list(cfg.get('limit_fill_buffer_bps', args.limit_fill_buffer_bps))),
+            ('limit_fill_require_close_confirmation', as_list(cfg.get('limit_fill_require_close_confirmation', args.limit_fill_require_close_confirmation))),
+            ('entry_tf', as_list(cfg.get('entry_tf', args.entry_tf))),
+            ('htf_filter_enabled', as_list(cfg.get('htf_filter_enabled', args.htf_filter_enabled))),
+            ('htf_tf', as_list(cfg.get('htf_tf', args.htf_tf))),
+            ('htf_ema_fast', as_list(cfg.get('htf_ema_fast', args.htf_ema_fast))),
+            ('htf_ema_slow', as_list(cfg.get('htf_ema_slow', args.htf_ema_slow))),
+            ('htf_adx_min', as_list(cfg.get('htf_adx_min', args.htf_adx_min))),
+            ('htf_adx_period', as_list(cfg.get('htf_adx_period', args.htf_adx_period))),
+            ('use_r_multiple_tps', as_list(cfg.get('use_r_multiple_tps', args.use_r_multiple_tps))),
+            ('tp_r_multiples', as_list(cfg.get('tp_r_multiples', args.tp_r_multiples))),
+            ('be_mode', as_list(cfg.get('be_mode', args.be_mode))),
+            ('be_offset', as_list(cfg.get('be_offset', args.be_offset))),
+            ('lock_initial_atr_sl', as_list(cfg.get('lock_initial_atr_sl', args.lock_initial_atr_sl))),
+            ('cooldown_on_trade_close', as_list(cfg.get('cooldown_on_trade_close', args.cooldown_on_trade_close))),
+            ('entry_hours_utc', as_list(cfg.get('entry_hours_utc', args.entry_hours_utc))),
         ]
 
         # Modo de búsqueda: grid vs random
@@ -3202,15 +3778,16 @@ def main():
                     with open(outp, 'w') as f:
                         json.dump(prod, f, indent=2)
                     print(f"[SWEEP] Config de producción exportada en {outp}")
-                    # Copia a pkg/best_prod.json para que el runtime lo lea directo
-                    try:
-                        _pkg_best = os.path.join(os.path.dirname(__file__), 'best_prod.json')
-                        with open(_pkg_best, 'w') as _pf:
-                            json.dump(prod, _pf, indent=2)
-                        print(f"[SWEEP] Copia de producción para pkg en {_pkg_best}")
-                        _refresh_indicators_from_best()
-                    except Exception as _e:
-                        print(f"[SWEEP][WARN] No se pudo escribir copia en pkg: {_e}")
+                    # Sincronización opcional al runtime local (opt-in explícito).
+                    if args.sync_best_to_pkg:
+                        try:
+                            _pkg_best = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+                            with open(_pkg_best, 'w') as _pf:
+                                json.dump(prod, _pf, indent=2)
+                            print(f"[SWEEP] Copia de producción para pkg en {_pkg_best}")
+                            _refresh_indicators_from_best()
+                        except Exception as _e:
+                            print(f"[SWEEP][WARN] No se pudo escribir copia en pkg: {_e}")
                 # ---- Resumen en consola (ganancia por portafolio usando best por símbolo) ----
                 try:
                     tot_pnl = float(symbol_best['pnl_net'].astype(float).sum()) if 'pnl_net' in symbol_best.columns else float('nan')
@@ -3420,15 +3997,16 @@ def main():
                                 with open(outp2, 'w') as f:
                                     json.dump(prod2, f, indent=2)
                                 print(f"[SECOND] Refinamiento completado. Config de producción actualizada en {outp2}")
-                                # Copia a pkg/best_prod.json tras refinamiento
-                                try:
-                                    _pkg_best2 = os.path.join(os.path.dirname(__file__), 'best_prod.json')
-                                    with open(_pkg_best2, 'w') as _pf2:
-                                        json.dump(prod2, _pf2, indent=2)
-                                    print(f"[SECOND] Copia de producción para pkg en {_pkg_best2}")
-                                    _refresh_indicators_from_best()
-                                except Exception as _e:
-                                    print(f"[SECOND][WARN] No se pudo escribir copia en pkg: {_e}")
+                                # Sincronización opcional al runtime local (opt-in explícito).
+                                if args.sync_best_to_pkg:
+                                    try:
+                                        _pkg_best2 = os.path.join(os.path.dirname(__file__), 'best_prod.json')
+                                        with open(_pkg_best2, 'w') as _pf2:
+                                            json.dump(prod2, _pf2, indent=2)
+                                        print(f"[SECOND] Copia de producción para pkg en {_pkg_best2}")
+                                        _refresh_indicators_from_best()
+                                    except Exception as _e:
+                                        print(f"[SECOND][WARN] No se pudo escribir copia en pkg: {_e}")
                             # Resumen consola post-second
                             try:
                                 tot_pnl2 = float(symbol_best['pnl_net'].astype(float).sum()) if 'pnl_net' in symbol_best.columns else float('nan')
@@ -3493,6 +4071,23 @@ def main():
             'adx_slope_len': args.adx_slope_len,
             'adx_slope_min': args.adx_slope_min,
             'fresh_breakout_only': args.fresh_breakout_only,
+            'conservative_limit_fills': args.conservative_limit_fills,
+            'limit_fill_buffer_bps': args.limit_fill_buffer_bps,
+            'limit_fill_require_close_confirmation': args.limit_fill_require_close_confirmation,
+            'entry_tf': args.entry_tf,
+            'htf_filter_enabled': args.htf_filter_enabled,
+            'htf_tf': args.htf_tf,
+            'htf_ema_fast': args.htf_ema_fast,
+            'htf_ema_slow': args.htf_ema_slow,
+            'htf_adx_min': args.htf_adx_min,
+            'htf_adx_period': args.htf_adx_period,
+            'use_r_multiple_tps': args.use_r_multiple_tps,
+            'tp_r_multiples': args.tp_r_multiples,
+            'be_mode': args.be_mode,
+            'be_offset': args.be_offset,
+            'lock_initial_atr_sl': args.lock_initial_atr_sl,
+            'cooldown_on_trade_close': args.cooldown_on_trade_close,
+            'entry_hours_utc': args.entry_hours_utc,
         }
         
         bt = Backtester(
@@ -3527,6 +4122,23 @@ def main():
             adx_slope_len=p['adx_slope_len'],
             adx_slope_min=p['adx_slope_min'],
             fresh_breakout_only=p['fresh_breakout_only'],
+            conservative_limit_fills=p['conservative_limit_fills'],
+            limit_fill_buffer_bps=p['limit_fill_buffer_bps'],
+            limit_fill_require_close_confirmation=p['limit_fill_require_close_confirmation'],
+            entry_tf=p['entry_tf'],
+            htf_filter_enabled=p['htf_filter_enabled'],
+            htf_tf=p['htf_tf'],
+            htf_ema_fast=p['htf_ema_fast'],
+            htf_ema_slow=p['htf_ema_slow'],
+            htf_adx_min=p['htf_adx_min'],
+            htf_adx_period=p['htf_adx_period'],
+            use_r_multiple_tps=p['use_r_multiple_tps'],
+            tp_r_multiples=p['tp_r_multiples'],
+            be_mode=p['be_mode'],
+            be_offset=p['be_offset'],
+            lock_initial_atr_sl=p['lock_initial_atr_sl'],
+            cooldown_on_trade_close=p['cooldown_on_trade_close'],
+            allowed_entry_hours_utc=_as_hour_list(p.get('entry_hours_utc')),
         )
         res = bt.run(train_ratio=args.train_ratio)
         summary.append(res)

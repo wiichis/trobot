@@ -301,10 +301,45 @@ class TelegramAlerter:
             return False, f"throttled_{int(cd - elapsed)}s"
         return True, "ok_cooldown_pass"
 
+    _SEVERITY_EMOJI = {
+        "INFO": "ℹ️",
+        "WARN": "⚠️",
+        "CRITICAL": "🚨",
+        "ERROR": "🚨",
+    }
+
+    _CATEGORY_LABEL = {
+        "bot_started": "Bot iniciado",
+        "bot_stopped": "Bot detenido",
+        "trade_signal_detected": "Señal detectada",
+        "entry_order_submitted": "Orden de entrada enviada",
+        "entry_order_filled": "Orden de entrada ejecutada",
+        "entry_order_canceled_or_expired": "Orden cancelada/expirada",
+        "take_profit_hit": "Take Profit alcanzado",
+        "stop_loss_hit": "Stop Loss alcanzado",
+        "tp1_submitted": "TP1 enviado",
+        "tp1_filled": "TP1 ejecutado",
+        "tp2_submitted": "TP2 enviado",
+        "tp2_filled": "TP2 ejecutado",
+        "tp3_submitted": "TP3 enviado",
+        "tp3_filled": "TP3 ejecutado",
+        "tp1_failed": "TP1 falló",
+        "tp2_failed": "TP2 falló",
+        "tp3_failed": "TP3 falló",
+        "break_even_activated": "Break-even activado",
+        "legacy_fallback_used": "Fallback legacy usado",
+        "runtime_storage_warning": "Problema de almacenamiento",
+        "execution_quality_warning": "Alerta de ejecución",
+        "concentration_warning": "Alerta de concentración",
+        "monitoring_run_completed": "Monitoreo completado",
+        "monitoring_run_failed": "Monitoreo fallido",
+    }
+
     def _build_header(self, *, severity: str, category: str, ts_utc: str) -> str:
         sev = str(severity).upper()
-        cat = str(category).upper()
-        return f"{sev} | {cat} | {ts_utc} | profile={self.profile_name}"
+        emoji = self._SEVERITY_EMOJI.get(sev, "📌")
+        label = self._CATEGORY_LABEL.get(category, category.replace("_", " ").title())
+        return f"{emoji} *{label}*"
 
     def send(self, *, category: str, severity: str, body: str, ts_utc: str, force: bool = False) -> TelegramSendResult:
         if not self.enabled:
@@ -316,7 +351,7 @@ class TelegramAlerter:
 
         text = self._build_header(severity=severity, category=category, ts_utc=ts_utc)
         if body:
-            text = text + " | " + body
+            text = text + "\n" + body
         if len(text) > 3900:
             text = text[:3900] + "..."
 

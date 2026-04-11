@@ -37,13 +37,37 @@ def _fmt_value(value: Any) -> str:
     return str(value).strip()
 
 
+_FIELD_LABELS = {
+    "symbol": "Par",
+    "position_side": "Lado",
+    "entry": "Entrada",
+    "sl": "Stop Loss",
+    "tp1": "TP1",
+    "tp2": "TP2",
+    "tp3": "TP3",
+    "reason": "Razón",
+    "source": "Origen",
+    "detail": "Detalle",
+    "order_id": "Orden",
+    "qty": "Cantidad",
+    "price": "Precio",
+    "pnl": "PnL",
+    "symbols_count": "Pares activos",
+    "symbols": "Pares",
+    "force": None,  # ocultar
+}
+
+
 def _build_body(fields: Dict[str, Any]) -> str:
     parts = []
     for key, value in fields.items():
         if value is None:
             continue
-        parts.append(f"{key}={_fmt_value(value)}")
-    body = " | ".join(parts)
+        label = _FIELD_LABELS.get(key, key.replace("_", " ").capitalize())
+        if label is None:
+            continue
+        parts.append(f"▸ {label}: {_fmt_value(value)}")
+    body = "\n".join(parts)
     if len(body) > 1400:
         body = body[:1400] + "..."
     return body

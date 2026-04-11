@@ -82,9 +82,31 @@ def _handle_shutdown_signal(sig_num, _frame):
     raise SystemExit(0)
 
 def monkey_result():
-    balance_actual, diferencia_hora, diferencia_dia, diferencia_semana = pkg.monkey_bx.monkey_result()
-    monkey_USD = f'*📊===RESULTADOS===* \n Balance Actual: *{round(balance_actual,2)}* \n Resultado Última Hora: *{round(diferencia_hora,2)}* \n Resultado Día: *{round(diferencia_dia,2)}* \n Resultado Semana: *{round(diferencia_semana,2)}*'
-    pkg.monkey_bx.bot_send_text(monkey_USD)
+    try:
+        balance_actual, diferencia_hora, diferencia_dia, diferencia_semana = pkg.monkey_bx.monkey_result()
+
+        def _fmt_delta(val):
+            signo = "+" if val >= 0 else ""
+            emoji = "🟢" if val >= 0 else "🔴"
+            return f"{emoji} `{signo}{round(val, 2)} USD`"
+
+        monkey_USD = "\n".join([
+            f"{'━' * 20}",
+            f"📊 *RESUMEN DE RENDIMIENTO*",
+            f"{'━' * 20}",
+            f"💰 *Balance actual:* `{round(balance_actual, 2)} USD`",
+            "",
+            f"▸ *Última hora:* {_fmt_delta(diferencia_hora)}",
+            f"▸ *Hoy:* {_fmt_delta(diferencia_dia)}",
+            f"▸ *Últimos 7 días:* {_fmt_delta(diferencia_semana)}",
+        ])
+        pkg.monkey_bx.bot_send_text(monkey_USD)
+    except Exception as exc:
+        print(f"⚠️ Error en monkey_result: {exc}")
+        try:
+            pkg.monkey_bx.bot_send_text(f"🚨 *Error en reporte de resultados*\n`{exc}`")
+        except Exception:
+            pass
     
 def run_bingx():
     pkg.indicadores.update_indicators() 

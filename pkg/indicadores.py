@@ -11,6 +11,12 @@ from .cfg_loader import load_best_symbols
 from .settings import BEST_PROD_PATH
 from datetime import datetime, timedelta  # NUEVO: para purgar registros antiguos
 from .ta_shared import ema, rsi, atr, adx
+from .live_runtime_config import (
+    get_entry_style_overrides,
+    get_long_filter_overrides,
+    get_side_mode_flags,
+    get_timeframe_overrides,
+)
 
 # === Parámetros base (alineados al backtest) ===
 # === Parámetros base (alineados al backtest) ===
@@ -117,10 +123,13 @@ try:
       PARAMS_BY_SYMBOL = params_map
       if wl:
           TRADE_SYMBOLS = [str(sym).upper() for sym in wl if sym]
-      # Si no hay whitelist explícita, usa la derivada del best_prod.json
-      if not ALLOWED_SYMBOLS and wl:
-          ALLOWED_SYMBOLS = wl
-          print(f"✅ Whitelist derivada de best_prod.json ({len(ALLOWED_SYMBOLS)})")
+      # En runtime live, BEST_PROD_PATH es la fuente de verdad para trading.
+      if wl:
+          if ALLOWED_SYMBOLS:
+              ALLOWED_SYMBOLS = [s for s in ALLOWED_SYMBOLS if s in TRADE_SYMBOLS]
+          else:
+              ALLOWED_SYMBOLS = list(TRADE_SYMBOLS)
+          print(f"✅ Whitelist runtime (BEST_PROD_PATH) ({len(ALLOWED_SYMBOLS)})")
 except Exception as _e:
     PARAMS_BY_SYMBOL = {}
     TRADE_SYMBOLS = []
@@ -134,6 +143,21 @@ def _apply_whitelist(df: pd.DataFrame) -> pd.DataFrame:
     if isinstance(df, pd.DataFrame) and 'symbol' in df.columns and ALLOWED_SYMBOLS:
         return df[df['symbol'].isin(ALLOWED_SYMBOLS)].copy()
     return df
+
+
+def _normalize_resample_tf(value: object) -> str:
+    txt = str(value or "").strip().lower()
+    mapping = {
+        "5m": "5min",
+        "15m": "15min",
+        "30m": "30min",
+        "1h": "1h",
+        "4h": "4h",
+        "5min": "5min",
+        "15min": "15min",
+        "30min": "30min",
+    }
+    return mapping.get(txt, txt if txt else "30min")
 
 # Parámetros para confirmación de 5 m
 EMA_S_5M, EMA_L_5M, RSI_5M = 3, 7, 14
@@ -229,16 +253,20 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
     df = df.sort_values("date").copy()
     c, h, l, v = df["close"], df["high"], df["low"], df["volume"]
 
-    # Params por símbolo (fallbacks sensatos)
+    # Params por símbolo (fallbacks sensatos) + freeze runtime benchmark.
     if isinstance(params_override, dict):
-        p = params_override
+        p = dict(params_override)
     else:
-        p = (PARAMS_BY_SYMBOL.get(symbol.upper(), {}) or {})
+        p = dict(PARAMS_BY_SYMBOL.get(symbol.upper(), {}) or {})
+    p.update(get_entry_style_overrides())
+    p.update(get_long_filter_overrides())
+    p.update(get_timeframe_overrides())
+
     ema_f = int(p.get('ema_fast', EMA_S))
     ema_s = int(p.get('ema_slow', EMA_L))
     rsi_buy  = int(p.get('rsi_buy', 55))
     rsi_sell = int(p.get('rsi_sell', 45))
-    adx_min  = int(p.get('adx_min', 15))
+    adx_min  = float(p.get('adx_min', 15))
     min_atr  = float(p.get('min_atr_pct', 0.0012))
     max_atr  = float(p.get('max_atr_pct', 0.012))
     tp_pct   = float(p.get('tp', 0.01))
@@ -249,6 +277,16 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
     sl_pct   = float(p.get('sl_pct', 0.0))
     logic    = str(p.get('logic', 'any'))
     hhll_n   = int(p.get('hhll_lookback', 10) or 0)
+    long_adx_min = float(p.get('long_adx_min', adx_min))
+    long_min_vol_ratio = float(p.get('long_min_vol_ratio', p.get('min_vol_ratio', 1.1)))
+    long_require_rsi_and_breakout = bool(p.get('long_require_rsi_and_breakout', False))
+
+    htf_filter_enabled = bool(p.get('htf_filter_enabled', False))
+    htf_tf = _normalize_resample_tf(p.get('htf_tf', '30m'))
+    htf_ema_fast = int(p.get('htf_ema_fast', 50))
+    htf_ema_slow = int(p.get('htf_ema_slow', 200))
+    htf_adx_min = float(p.get('htf_adx_min', 20.0))
+    htf_adx_period = int(p.get('htf_adx_period', 14))
 
     # --- Nuevos knobs alineados al backtesting (con defaults "lean") ---
     require_close_vs_emas = bool(p.get('require_close_vs_emas', True))
@@ -276,7 +314,8 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
         df["VOL_MA"] = v.rolling(vol_ma_len, min_periods=vol_ma_len).mean()
     except Exception:
         df["VOL_MA"] = np.nan
-    df["VOL_OK"] = (v >= (min_vol_ratio * df["VOL_MA"])) if min_vol_ratio > 0 else True
+    df["VOL_OK_SHORT"] = (v >= (min_vol_ratio * df["VOL_MA"])) if min_vol_ratio > 0 else True
+    df["VOL_OK_LONG"] = (v >= (long_min_vol_ratio * df["VOL_MA"])) if long_min_vol_ratio > 0 else True
 
     # Separación mínima EMAs (evita cruces planos)
     # Nota: EMA_S es la rápida y EMA_L la lenta en este módulo
@@ -316,7 +355,8 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
     trend_short = df["EMA_S"] < df["EMA_L"]
     rsi_long  = df["RSI"] >= rsi_buy
     rsi_short = df["RSI"] <= rsi_sell
-    adx_ok    = df["ADX"] >= adx_min
+    adx_short_ok = df["ADX"] >= adx_min
+    adx_long_ok = df["ADX"] >= long_adx_min
     atr_ok    = (df["ATR_pct"] >= min_atr) & (df["ATR_pct"] <= max_atr)
 
     # Cruces EMA recientes
@@ -348,15 +388,15 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
         short_break_use = short_break
 
     # Gating base (siempre requerido)
-    base_long = trend_long & adx_ok & atr_ok & df["DIST_OK"]
-    base_short = trend_short & adx_ok & atr_ok & df["DIST_OK"]
+    base_long = trend_long & adx_long_ok & atr_ok & df["DIST_OK"]
+    base_short = trend_short & adx_short_ok & atr_ok & df["DIST_OK"]
     if require_close_vs_emas:
         base_long = base_long & df["PRICE_LONG_OK"]
         base_short = base_short & df["PRICE_SHORT_OK"]
 
     # Endurecedores
-    gates_long = df["EMA_SPREAD_OK"] & df["VOL_OK"] & df["ADX_SLOPE_OK"]
-    gates_short = df["EMA_SPREAD_OK"] & df["VOL_OK"] & df["ADX_SLOPE_OK"]
+    gates_long = df["EMA_SPREAD_OK"] & df["VOL_OK_LONG"] & df["ADX_SLOPE_OK"]
+    gates_short = df["EMA_SPREAD_OK"] & df["VOL_OK_SHORT"] & df["ADX_SLOPE_OK"]
 
     # Disparadores (momentum / price action)
     rsi_trig_long = df["RSI_LONG_RECENT"] if require_rsi_cross else rsi_long
@@ -366,18 +406,78 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
         trigger_long = rsi_trig_long & long_break_use
         trigger_short = rsi_trig_short & short_break_use
     else:  # 'any'
-        trigger_long = rsi_trig_long | long_break_use
+        if long_require_rsi_and_breakout:
+            trigger_long = rsi_trig_long & long_break_use
+        else:
+            trigger_long = rsi_trig_long | long_break_use
         trigger_short = rsi_trig_short | short_break_use
 
     trigger_long = trigger_long & df["EMA_LONG_RECENT"]
     trigger_short = trigger_short & df["EMA_SHORT_RECENT"]
 
-    df["Long_Signal"]  = (base_long & gates_long & trigger_long)
-    df["Short_Signal"] = (base_short & gates_short & trigger_short)
+    # Filtro HTF opcional (EMA50/EMA200 + ADX) usando resample de serie 5m.
+    htf_long_ok = pd.Series(True, index=df.index)
+    htf_short_ok = pd.Series(True, index=df.index)
+    if htf_filter_enabled:
+        htf_long_ok = pd.Series(False, index=df.index)
+        htf_short_ok = pd.Series(False, index=df.index)
+        try:
+            htf_src = df[["date", "open", "high", "low", "close"]].copy()
+            htf_src["date"] = pd.to_datetime(htf_src["date"], utc=True, errors="coerce")
+            htf_src = htf_src.dropna(subset=["date"]).sort_values("date")
+            htf = (
+                htf_src.set_index("date")
+                .resample(htf_tf, label="right", closed="right")
+                .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
+                .dropna()
+            )
+            if not htf.empty:
+                htf["HTF_EMA_F"] = ema(htf["close"], htf_ema_fast)
+                htf["HTF_EMA_S"] = ema(htf["close"], htf_ema_slow)
+                htf["HTF_ADX"] = adx(htf["high"], htf["low"], htf["close"], htf_adx_period)
+                htf_feats = htf[["HTF_EMA_F", "HTF_EMA_S", "HTF_ADX"]].reset_index().sort_values("date")
+                idx_df = pd.DataFrame(
+                    {
+                        "_idx": df.index,
+                        "date": pd.to_datetime(df["date"], utc=True, errors="coerce"),
+                    }
+                ).dropna(subset=["date"]).sort_values("date")
+                merged = pd.merge_asof(
+                    idx_df,
+                    htf_feats,
+                    on="date",
+                    direction="backward",
+                ).set_index("_idx").reindex(df.index)
+                htf_long_ok = (
+                    (merged["HTF_EMA_F"] > merged["HTF_EMA_S"])
+                    & (merged["HTF_ADX"] >= htf_adx_min)
+                ).fillna(False)
+                htf_short_ok = (
+                    (merged["HTF_EMA_F"] < merged["HTF_EMA_S"])
+                    & (merged["HTF_ADX"] >= htf_adx_min)
+                ).fillna(False)
+                df["HTF_EMA_F"] = merged["HTF_EMA_F"]
+                df["HTF_EMA_S"] = merged["HTF_EMA_S"]
+                df["HTF_ADX"] = merged["HTF_ADX"]
+        except Exception:
+            htf_long_ok = pd.Series(False, index=df.index)
+            htf_short_ok = pd.Series(False, index=df.index)
+
+    df["HTF_LONG_OK"] = pd.Series(htf_long_ok, index=df.index).fillna(False).astype(bool)
+    df["HTF_SHORT_OK"] = pd.Series(htf_short_ok, index=df.index).fillna(False).astype(bool)
+
+    df["Long_Signal"]  = (base_long & gates_long & trigger_long & df["HTF_LONG_OK"])
+    df["Short_Signal"] = (base_short & gates_short & trigger_short & df["HTF_SHORT_OK"])
 
     # Bloquea señales si el símbolo no está habilitado para trading
     if TRADE_SYMBOLS and str(symbol).upper() not in TRADE_SYMBOLS:
         df["Long_Signal"] = False
+        df["Short_Signal"] = False
+
+    enable_long_entries, enable_short_entries = get_side_mode_flags()
+    if not enable_long_entries:
+        df["Long_Signal"] = False
+    if not enable_short_entries:
         df["Short_Signal"] = False
 
     funding_block = df['date'].apply(_in_funding_window)

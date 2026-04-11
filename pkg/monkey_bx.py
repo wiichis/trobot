@@ -1887,27 +1887,38 @@ def total_monkey():
     return balance
 
 def resultado_PnL():
-    df_data = pd.read_csv('./archivos/PnL.csv')
-    npl = pkg.bingx.hystory_PnL()
-    npl = json.loads(npl)
+    csv_path = './archivos/PnL.csv'
+    try:
+        if os.path.exists(csv_path) and os.path.getsize(csv_path) > 0:
+            df_data = pd.read_csv(csv_path)
+        else:
+            df_data = pd.DataFrame()
+    except Exception as exc:
+        print(f"⚠️ Error leyendo PnL.csv: {exc}")
+        df_data = pd.DataFrame()
+
+    try:
+        npl = pkg.bingx.hystory_PnL()
+        npl = json.loads(npl)
+    except Exception as exc:
+        print(f"⚠️ Error obteniendo historial PnL: {exc}")
+        return
 
     # Verificar si 'data' tiene datos
     if 'data' in npl and npl['data']:
         df = pd.DataFrame(npl['data'])
 
-        # Verificar si la columna 'time' ya está en formato datetime
         if 'time' in df.columns:
-            if pd.api.types.is_datetime64_any_dtype(df['time']):
-                print("La columna 'time' ya está en formato datetime")
-            else:
+            if not pd.api.types.is_datetime64_any_dtype(df['time']):
                 df['time'] = pd.to_datetime(df['time'], unit='ms')
         else:
-            raise KeyError("La columna 'time' no está presente en los datos obtenidos.")
-        
+            print("⚠️ Columna 'time' no presente en datos PnL. Se omite actualización.")
+            return
+
         df_concat = pd.concat([df_data, df])
         df_unique = df_concat.drop_duplicates()
         df_limited = df_unique.tail(10000)
-        df_limited.to_csv('./archivos/PnL.csv', index=False)
+        df_limited.to_csv(csv_path, index=False)
     else:
         print("No hay datos nuevos para procesar en 'npl'.")
 
@@ -1916,44 +1927,55 @@ def resultado_PnL():
 def monkey_result():
     # Obteniendo último resultado
     balance_actual = float(total_monkey())
-    
+
     # Cargar los datos desde el archivo CSV en un DataFrame de pandas
-    df = pd.read_csv('./archivos/ganancias.csv')
-    
+    csv_path = './archivos/ganancias.csv'
+    if not os.path.exists(csv_path):
+        print("⚠️ ganancias.csv no existe. monkey_result retorna ceros.")
+        return balance_actual, 0.0, 0.0, 0.0
+
+    df = pd.read_csv(csv_path)
+    if df.empty or 'date' not in df.columns or 'balance' not in df.columns:
+        print("⚠️ ganancias.csv vacío o sin columnas esperadas.")
+        return balance_actual, 0.0, 0.0, 0.0
+
     # Convertir la columna 'date' en formato datetime
     df['date'] = pd.to_datetime(df['date'])
-    
+
     # Filtrar los datos para obtener solo el día actual y la hora actual
     fecha_actual = datetime.now().date()
     hora_actual = datetime.now().hour
     df_dia_actual = df[df['date'].dt.date == fecha_actual]
     df_hora_actual = df_dia_actual[df_dia_actual['date'].dt.hour == hora_actual]
-    
-    # Obtener el balance al inicio y al final del día actual
-    balance_inicial_dia = df_dia_actual['balance'].iloc[0]
-    balance_final_dia = df_dia_actual['balance'].iloc[-1]
-    
-    # Obtener el balance al inicio y al final de la hora actual
-    balance_inicial_hora = df_hora_actual['balance'].iloc[0]
-    balance_final_hora = df_hora_actual['balance'].iloc[-1]
-    
-    # Calcular la diferencia del día actual y la diferencia de la hora actual
-    diferencia_dia = balance_final_dia - balance_inicial_dia
-    diferencia_hora = balance_final_hora - balance_inicial_hora
-    
+
+    # Diferencia del día
+    if len(df_dia_actual) >= 1:
+        balance_inicial_dia = df_dia_actual['balance'].iloc[0]
+        balance_final_dia = df_dia_actual['balance'].iloc[-1]
+        diferencia_dia = balance_final_dia - balance_inicial_dia
+    else:
+        diferencia_dia = 0.0
+
+    # Diferencia de la hora
+    if len(df_hora_actual) >= 1:
+        balance_inicial_hora = df_hora_actual['balance'].iloc[0]
+        balance_final_hora = df_hora_actual['balance'].iloc[-1]
+        diferencia_hora = balance_final_hora - balance_inicial_hora
+    else:
+        diferencia_hora = 0.0
+
     # Calcular la fecha de una semana atrás
     fecha_semana_pasada = datetime.now().date() - timedelta(days=7)
-    
-    # Filtrar los datos para obtener la semana pasada
     df_semana_pasada = df[df['date'].dt.date >= fecha_semana_pasada]
-    
-    # Obtener el balance al inicio y al final de la semana pasada
-    balance_inicial_semana = df_semana_pasada['balance'].iloc[0]
-    balance_final_semana = df_semana_pasada['balance'].iloc[-1]
-    
-    # Calcular la diferencia de la semana pasada
-    diferencia_semana = balance_final_semana - balance_inicial_semana
-    
+
+    # Diferencia de la semana
+    if len(df_semana_pasada) >= 1:
+        balance_inicial_semana = df_semana_pasada['balance'].iloc[0]
+        balance_final_semana = df_semana_pasada['balance'].iloc[-1]
+        diferencia_semana = balance_final_semana - balance_inicial_semana
+    else:
+        diferencia_semana = 0.0
+
     return balance_actual, diferencia_hora, diferencia_dia, diferencia_semana
 
 
@@ -2391,16 +2413,20 @@ def colocando_ordenes():
         else:
             splits_line = "TP split: 100%"
 
+        side_emoji = '🟢' if position_side == 'LONG' else '🔴'
+        side_label = 'LONG' if position_side == 'LONG' else 'SHORT'
         alert_lines = [
-            "💎 *TRADE ALERT* 💎",
-            f"`{currency}` | {'🟢 LONG' if position_side=='LONG' else '🔴 SHORT'}",
+            f"{'━' * 20}",
+            f"📡 *NUEVA OPERACIÓN*",
+            f"{'━' * 20}",
+            f"{side_emoji} *{currency}* — *{side_label}*",
             "",
-            f"*Entrada:* `{round(price_last, 4)}`",
-            *lines_tp,
-            f"*SL:* `{round(float(sl_level), 4)}` ({sl_pct_str})",
+            f"▸ *Entrada:* `{round(price_last, 4)}`",
+            *[f"▸ {tp}" for tp in lines_tp],
+            f"▸ *SL:* `{round(float(sl_level), 4)}` ({sl_pct_str})",
             "",
-            splits_line,
-            f"💰 *Capital:* `${round(trade, 2)}` — *{peso*100:.2f}%*"
+            f"📊 {splits_line}",
+            f"💰 *Capital asignado:* `${round(trade, 2)}` ({peso*100:.1f}% del portafolio)",
         ]
         alert = "\n".join(alert_lines)
         # -------------------------------------------------------------------------------
@@ -2596,14 +2622,14 @@ def colocando_TK_SL():
                         orderId = df_sym['orderId'].iloc[0]
                         try:
                             pkg.bingx.cancel_order(symbol, orderId)
-                            msg = f"❌ Orden cancelada por timeout para {symbol}. No se ejecutó en el tiempo límite."
+                            msg = f"⛔ *Timeout — {symbol}*\nOrden cancelada. No se ejecutó dentro del tiempo límite."
                         except Exception as ce:
                             print(f"Error al cancelar la orden para {symbol}: {ce}")
-                            msg = f"⏱️ Timeout para {symbol}, no se pudo cancelar la orden (ya no existe o API rechazó)."
+                            msg = f"⚠️ *Timeout — {symbol}*\nNo se pudo cancelar la orden (ya no existe o la API la rechazó)."
                     else:
-                        msg = f"⏱️ Timeout para {symbol}, pero no había STOP/TP pendientes para cancelar."
+                        msg = f"⏳ *Timeout — {symbol}*\nNo había órdenes SL/TP pendientes para cancelar."
                 else:
-                    msg = f"⏱️ Timeout para {symbol}, sin órdenes pendientes registradas."
+                    msg = f"⏳ *Timeout — {symbol}*\nSin órdenes pendientes registradas."
                 # Retirar la posición de la cola de protección en cualquier caso
                 df_posiciones.drop(index, inplace=True)
                 df_posiciones.to_csv('./archivos/position_id_register.csv', index=False)

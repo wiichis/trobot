@@ -3,12 +3,14 @@ from pathlib import Path
 import time
 import logging
 from typing import Any, List, Tuple, Optional
+import json
 
 import pandas as pd
 import requests
 
 from .cfg_loader import load_best_symbols
-from .settings import DEFAULT_SYMBOLS
+from .settings import DEFAULT_SYMBOLS, BEST_PROD_PATH
+from .live_runtime_config import universe_allows_symbol
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -113,14 +115,38 @@ def _fetch_bingx_candles(symbol: str, limit: int, end_time_ms: Optional[int] = N
             raise RuntimeError(f"Fallo al obtener velas para {symbol}: {last_err}")
 
 def currencies_list():
+    # 1) Fuente de verdad live: BEST_PROD_PATH (ya congelado por settings.py)
+    try:
+        if BEST_PROD_PATH.exists():
+            data = json.loads(BEST_PROD_PATH.read_text(encoding="utf-8"))
+            cleaned = []
+            if isinstance(data, list):
+                for row in data:
+                    if isinstance(row, dict):
+                        sym = str(row.get("symbol", "")).upper().strip()
+                        if sym:
+                            cleaned.append(sym)
+                    elif isinstance(row, str):
+                        sym = str(row).upper().strip()
+                        if sym:
+                            cleaned.append(sym)
+            elif isinstance(data, dict):
+                cleaned = [str(k).upper().strip() for k in data.keys() if str(k).strip()]
+            cleaned = sorted(set(cleaned))
+            if cleaned:
+                return [s for s in cleaned if universe_allows_symbol(s)]
+    except Exception as exc:
+        log.warning("No se pudo derivar currencies_list desde BEST_PROD_PATH: %s", exc)
+
+    # 2) Fallback legacy: symbols.json / defaults
     try:
         symbols = load_best_symbols()
-        cleaned = [str(sym).upper() for sym in symbols if sym]
+        cleaned = [str(sym).upper().strip() for sym in symbols if sym]
         if cleaned:
-            return cleaned
+            return [s for s in cleaned if universe_allows_symbol(s)]
     except Exception as exc:
         log.warning("No se pudo derivar currencies_list desde best_prod.json: %s", exc)
-    return [str(sym).upper() for sym in DEFAULT_SYMBOLS]
+    return [str(sym).upper().strip() for sym in DEFAULT_SYMBOLS if universe_allows_symbol(sym)]
     # No usar: MATIC, ADA, BTC, LTC, SOL
 
 
