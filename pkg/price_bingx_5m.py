@@ -138,7 +138,7 @@ def currencies_list():
     except Exception as exc:
         log.warning("No se pudo derivar currencies_list desde BEST_PROD_PATH: %s", exc)
 
-    # 2) Fallback legacy: symbols.json / defaults
+    # 2) Fallback: load_best_symbols() / defaults
     try:
         symbols = load_best_symbols()
         cleaned = [str(sym).upper().strip() for sym in symbols if sym]

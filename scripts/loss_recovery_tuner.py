@@ -337,7 +337,7 @@ def main() -> int:
         description="Daily loss-recovery tuner: optimize only symbols with recent losses."
     )
     parser.add_argument("--pnl_csv", default="archivos/PnL.csv")
-    parser.add_argument("--best_consistent", default="pkg/best_prod_consistent.json")
+    parser.add_argument("--best_consistent", default="pkg/best_prod.json")
     parser.add_argument("--best_fallback", default="pkg/best_prod.json")
     parser.add_argument("--data_template", default="archivos/cripto_price_5m_long.csv")
     parser.add_argument("--sweep_cfg", default="archivos/backtesting/simple_sweep.json")

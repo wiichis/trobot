@@ -70,7 +70,7 @@ parse_positive_floats = None
 # ==========================
 DEFAULT_DATA_TEMPLATE = 'archivos/cripto_price_5m_long.csv'  # CSV único con múltiples símbolos
 DEFAULT_OUT_DIR = 'archivos/backtesting'
-SYMBOLS_FILE = os.path.join(os.path.dirname(__file__), 'symbols.json')
+SYMBOLS_FILE = os.path.join(os.path.dirname(__file__), 'best_prod.json')
 TP_LADDER_FACTORS = (0.6, 1.0, 1.6)
 TP_SPLITS_DEFAULT = (0.40, 0.40, 0.20)
 TP_SPLITS_R_DEFAULT = (0.33, 0.33, 0.34)
@@ -721,15 +721,11 @@ def _export_consistent_best(best_path: str, data_template: str, out_path: str,
         json.dump(prod, f, indent=2)
     print(f"[CONSISTENT] Exportado: {out_path} (symbols={len(prod)})")
 
-    # Copia a pkg/best_prod.json y refresca indicadores
+    # Refrescar indicadores con el nuevo best_prod.json
     try:
-        _pkg_best = os.path.join(os.path.dirname(__file__), 'best_prod.json')
-        with open(_pkg_best, 'w') as _pf:
-            json.dump(prod, _pf, indent=2)
-        print(f"[CONSISTENT] Copia de producción en {_pkg_best}")
         _refresh_indicators_from_best()
     except Exception as _e:
-        print(f"[CONSISTENT][WARN] No se pudo escribir copia en pkg: {_e}")
+        print(f"[CONSISTENT][WARN] No se pudo refrescar indicadores: {_e}")
 
 
 _ATRX_ALLOWED = None
@@ -1429,7 +1425,8 @@ class Backtester:
                  rsi_buy: int = 55,
                  rsi_sell: int = 45,
                  adx_min: int = 15,
-                 taker_fee: float = 0.0005,       # 0.05%
+                 taker_fee: float = 0.0005,       # 0.05% (usado en SL/TP market)
+                 maker_fee: float = 0.0002,       # 0.02% (usado en entradas LIMIT post-only)
                  slippage_mult: float = 1.0,      # multiplicador para stress de ejecución
                  funding_8h: float = 0.0001,      # 0.01% por 8h
                  min_atr_pct: float = 0.0012,     # 0.12%
@@ -1494,6 +1491,7 @@ class Backtester:
         self.rsi_sell = rsi_sell
         self.adx_min = adx_min
         self.taker_fee = taker_fee
+        self.maker_fee = maker_fee
         try:
             sm = float(slippage_mult)
         except Exception:
@@ -2135,7 +2133,12 @@ class Backtester:
         return round_qty(max(qty, 0.0), self.lot_step)
 
     def _apply_commission(self, notional: float) -> float:
+        """Comisión de salida (taker — SL/TP market)."""
         return abs(notional) * self.taker_fee
+
+    def _apply_entry_commission(self, notional: float) -> float:
+        """Comisión de entrada (maker — LIMIT post-only en producción)."""
+        return abs(notional) * self.maker_fee
 
     def _slippage_rate(self, atr_pct: float) -> float:
         base_rate = calc_slippage_rate(atr_pct)
@@ -2226,24 +2229,21 @@ class Backtester:
                         if self.be_active:
                             sl_price = min(sl_price, t.entry_price * (1 - self.be_offset))
                 else:
-                    # Modos basados en ATR
-                    if (self.sl_mode == 'atr_trailing_only') or (self.be_active and self.sl_mode == 'atr_then_trailing'):
-                        # Trailing por ATR
-                        sl_price = self._update_trailing_sl(row, t.side, t.entry_price, atr_abs, anchor_price)
-                        anchor_price = max(anchor_price, price) if t.side == 'long' else min(anchor_price, price)
-                        # Nunca peor que la entrada una vez activo
+                    # Modos basados en ATR — SL fijo inicial, sin trailing
+                    # (alineado a producción: no hay trailing en prod)
+                    if self.lock_initial_atr_sl and self.position_initial_sl is not None:
+                        sl_price = float(self.position_initial_sl)
+                    elif t.side == 'long':
+                        sl_price = t.entry_price - self.atr_mult_sl * atr_abs
+                    else:
+                        sl_price = t.entry_price + self.atr_mult_sl * atr_abs
+
+                    # Si BE activo, mover SL a break-even (como producción)
+                    if self.be_active:
                         if t.side == 'long':
                             sl_price = max(sl_price, t.entry_price * (1 + self.be_offset))
                         else:
                             sl_price = min(sl_price, t.entry_price * (1 - self.be_offset))
-                    else:
-                        # SL fijo inicial por ATR (antes de BE)
-                        if self.lock_initial_atr_sl and self.position_initial_sl is not None:
-                            sl_price = float(self.position_initial_sl)
-                        elif t.side == 'long':
-                            sl_price = t.entry_price - self.atr_mult_sl * atr_abs
-                        else:
-                            sl_price = t.entry_price + self.atr_mult_sl * atr_abs
 
                 # Procesar TP escalonados (puede vaciar toda la posición)
                 tp_hits = self._tp_targets_hit(row)
@@ -2287,11 +2287,13 @@ class Backtester:
                     exit_reason = 'SL'
                     exit_price = sl_price
 
-                # Salida por tiempo (si está activada y no golpeó TP/SL)
-                if exit_reason is None and self.time_exit_bars and open_bar_idx is not None:
-                    if (i - open_bar_idx) >= int(self.time_exit_bars):
-                        exit_reason = 'TIME'
-                        exit_price = price  # cierra a precio de cierre de la barra
+                # Salida por tiempo desactivada — producción no la implementa.
+                # Se conserva el parámetro time_exit_bars para referencia futura
+                # pero no se ejecuta la lógica de cierre por tiempo.
+                # if exit_reason is None and self.time_exit_bars and open_bar_idx is not None:
+                #     if (i - open_bar_idx) >= int(self.time_exit_bars):
+                #         exit_reason = 'TIME'
+                #         exit_price = price
 
                 if exit_reason is not None:
                     qty_to_close = self.position_open_qty
@@ -2347,7 +2349,7 @@ class Backtester:
                     actual_entry_notional = price * (1 + slip_rate) * qty
                 else:
                     actual_entry_notional = price * (1 - slip_rate) * qty
-                fee = self._apply_commission(actual_entry_notional)
+                fee = self._apply_entry_commission(actual_entry_notional)
 
                 self.open_trade = Trade(
                     symbol=self.symbol,
@@ -3396,7 +3398,7 @@ def main():
 
     if args.export_consistent_best:
         best_path = args.parity_best or os.path.join(os.path.dirname(__file__), 'best_prod.json')
-        outp = args.export_best if args.export_best else os.path.join(DEFAULT_OUT_DIR, 'best_prod_consistent.json')
+        outp = args.export_best if args.export_best else os.path.join(os.path.dirname(__file__), 'best_prod.json')
         if not os.path.isabs(outp) and os.path.dirname(outp) == '':
             outp = os.path.join(args.out_dir, outp)
         _export_consistent_best(
@@ -3559,7 +3561,7 @@ def main():
         symbols = available_symbols
         print(f"[INFO] Símbolos usados: {symbols}")
     elif auto_symbols and not file_symbols:
-        print("[WARN] --symbols=auto requiere pkg/symbols.json cuando data_template tiene {symbol}.")
+        print("[WARN] --symbols=auto requiere pkg/best_prod.json cuando data_template tiene {symbol}.")
     os.makedirs(args.out_dir, exist_ok=True)
 
 

@@ -26,10 +26,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "universe_profile": "exclude_weak3",
         "long_filter_profile": "baseline",
     },
-    "best_prod_path": "pkg/best_prod_live_benchmark.json",
     "universe": {
-        "mode": "exclude",
-        "symbols": ["APT-USDT", "LINK-USDT", "BNB-USDT"],
+        "mode": "from_best_prod",
+        "symbols": [],
     },
     "session": {
         "entry_hours_utc": [6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 21, 22],
