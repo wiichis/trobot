@@ -113,10 +113,6 @@ def run_bingx():
     pkg.monkey_bx.colocando_ordenes()
 
     
-def pesos():
-    pkg.calcular_pesos.pesos_ok()
-    
-    
 def run_fast():
     path = './archivos/indicadores.csv'
     if not os.path.exists(path) or os.path.getsize(path) == 0:
@@ -160,9 +156,6 @@ if __name__ == '__main__':
     schedule.every(50).seconds.do(run_fast)
     schedule.every(6).hours.do(pkg.monkey_bx.resultado_PnL)
     schedule.every(5).minutes.do(posiciones_antiguas)
-    schedule.every().saturday.at("01:00").do(pesos)    
-
-  
     # Reporte de resultados cada hora al minuto 59, ejecutado en un hilo independiente
     schedule.every().hour.at(":59").do(lambda: threading.Thread(target=monkey_result).start())
 

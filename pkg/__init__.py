@@ -1,1 +1,1 @@
-import pkg.credentials, pkg.indicadores, pkg.bingx, pkg.monkey_bx, pkg.calcular_pesos
+import pkg.credentials, pkg.indicadores, pkg.bingx, pkg.monkey_bx

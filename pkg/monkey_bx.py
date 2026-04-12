@@ -2081,37 +2081,13 @@ def colocando_ordenes():
     except FileNotFoundError:
         df_positions = pd.DataFrame(columns=['symbol','tipo','counter'])
 
-    # Cargar los pesos actualizados
-    PESOS_ACTUALIZADOS_PATH = './archivos/pesos_actualizados.csv'
-    if os.path.exists(PESOS_ACTUALIZADOS_PATH):
-        df_pesos = pd.read_csv(PESOS_ACTUALIZADOS_PATH)
-    else:
-        # Si no hay pesos actualizados, asignar pesos iguales
-        df_pesos = pd.DataFrame({
-            'symbol': currencies,
-            'peso_actualizado': [1.0 / len(currencies)] * len(currencies)
-        })
-
-    # Aplicar límite máximo al peso individual (40% en normalización al 100%)
-    LIMITE_PESO_INDIVIDUAL = 0.40
-
-    # Aplicar límite máximo al peso en el DataFrame de pesos
-    df_pesos['peso_ajustado'] = df_pesos['peso_actualizado'].clip(
-        upper=LIMITE_PESO_INDIVIDUAL
-    )
-
-    # Normalizar los pesos ajustados al 100%
-    suma_pesos_ajustados = df_pesos['peso_ajustado'].sum()
-    df_pesos['peso_normalizado'] = df_pesos['peso_ajustado'] / suma_pesos_ajustados
-
-    # Normalizar los pesos al 200%
-    df_pesos['peso_normalizado'] *= 2
-
-    # Aplicar límite máximo al peso individual al 200% (80%)
-    LIMITE_PESO_INDIVIDUAL_200 = LIMITE_PESO_INDIVIDUAL * 2
-    df_pesos['peso_normalizado'] = df_pesos['peso_normalizado'].clip(
-        upper=LIMITE_PESO_INDIVIDUAL_200
-    )
+    # ── Position sizing: equal weight por par ──
+    # Exposición total objetivo: 200% del capital (futuros con apalancamiento)
+    # Cap individual: 50% para no concentrar en un solo par
+    MAX_EXPOSURE_TOTAL = 2.0
+    MAX_PER_TRADE = 0.50
+    n_pairs = max(len(currencies), 1)
+    peso_equal = min(MAX_EXPOSURE_TOTAL / n_pairs, MAX_PER_TRADE)
 
     # Obtener el total de fondos disponibles
     total_money = float(pkg.monkey_bx.total_monkey())
@@ -2130,18 +2106,10 @@ def colocando_ordenes():
             continue
 
         try:
-            # Obtener el peso normalizado de la moneda
-            peso = df_pesos.loc[df_pesos['symbol'] == currency, 'peso_normalizado'].values
-            if len(peso) == 0:
-                peso = (1.0 / len(currencies)) * 2  # Peso por defecto normalizado al 200%
-                peso = min(peso, LIMITE_PESO_INDIVIDUAL_200)
-            else:
-                peso = peso[0]
-
             # Obtener precio y tipo de alerta
             price_last, tipo = pkg.indicadores.ema_alert(currency)
 
-            # Verificar si se obtuvo una alerta válida (nueva condición)
+            # Verificar si se obtuvo una alerta válida
             if "Alerta de LONG" not in str(tipo) and "Alerta de SHORT" not in str(tipo):
                 continue  # No hay alerta para esta moneda
 
@@ -2156,7 +2124,7 @@ def colocando_ordenes():
                 'symbol': currency,
                 'tipo': tipo,
                 'price_last': price_last,
-                'peso': peso
+                'peso': peso_equal,
             })
 
         except Exception as e:
@@ -2167,26 +2135,13 @@ def colocando_ordenes():
         # Silenciado: print("No hay señales activas en este momento.")
         return
 
-    # Calcular la suma de los pesos de las monedas activas
-    suma_pesos_activos = sum(item['peso'] for item in active_currencies)
-    if suma_pesos_activos <= 0:
-        return
-
-    # Reajustar los pesos para que la suma de los pesos activos no exceda 200%
-    factor_ajuste = min(2.0, suma_pesos_activos) / suma_pesos_activos
-    for item in active_currencies:
-        item['peso_ajustado'] = item['peso'] * factor_ajuste
-
-    # Calcular el capital asignado a cada moneda y verificar que no exceda el capital disponible
+    # Asignar capital a cada moneda activa con equal weight
     total_capital_asignado = 0
     for item in active_currencies:
-        peso = item['peso_ajustado']
-        trade = total_money * peso
+        trade = total_money * item['peso']
         # Verificar si el capital asignado excede el capital disponible
         if total_capital_asignado + trade > capital_disponible:
-            # Ajustar el trade para no exceder el capital disponible
             trade = capital_disponible - total_capital_asignado
-            # Si no queda capital disponible, no colocar la orden
             if trade <= 0:
                 print(f"No hay capital disponible para {item['symbol']}.")
                 continue
@@ -2202,7 +2157,7 @@ def colocando_ordenes():
         tipo = item['tipo']
         price_last = item['price_last']
         trade = item['trade']
-        peso = item['peso_ajustado']
+        peso = item['peso']
 
         # Ajustar cantidad al step‑size permitido por el contrato
         step_size = _step_size_for(currency)

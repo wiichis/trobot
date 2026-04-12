@@ -1100,29 +1100,12 @@ def _as_bool_signal(val) -> bool:
 
 
 def _load_weight_map(path: Optional[str], symbols: List[str]) -> Dict[str, float]:
-    if not path or not os.path.exists(path):
+    """Equal weight por par: 200% exposición total, cap 50% individual."""
+    if not symbols:
         return {}
-    try:
-        df = pd.read_csv(path)
-    except Exception:
-        return {}
-    if df.empty:
-        return {}
-    cols = {c.lower(): c for c in df.columns}
-    sym_col = cols.get('symbol')
-    weight_col = cols.get('peso_actualizado') or cols.get('peso') or cols.get('weight')
-    if not sym_col or not weight_col:
-        return {}
-    df = df[[sym_col, weight_col]].copy()
-    df[sym_col] = df[sym_col].astype(str).str.upper()
-    df[weight_col] = pd.to_numeric(df[weight_col], errors='coerce').fillna(0.0)
-    df['peso_ajustado'] = df[weight_col].clip(upper=0.40)
-    suma = float(df['peso_ajustado'].sum())
-    if suma <= 0:
-        return {}
-    df['peso_normalizado'] = (df['peso_ajustado'] / suma) * 2.0
-    df['peso_normalizado'] = df['peso_normalizado'].clip(upper=0.80)
-    return {str(r[sym_col]).upper(): float(r['peso_normalizado']) for _, r in df.iterrows()}
+    n = len(symbols)
+    w = min(2.0 / n, 0.50)
+    return {str(s).upper(): w for s in symbols}
 
 
 def round_qty(qty: float, step: float = 0.0001) -> float:
@@ -3351,7 +3334,7 @@ def main():
     parser.add_argument('--parity_days', type=int, default=None, help='Limitar live-parity a los últimos N días (None = todo)')
     parser.add_argument('--parity_best', type=str, default=None, help='Ruta a best_prod.json para live-parity (si se omite, usa el cargado por indicadores)')
     parser.add_argument('--parity_per_symbol', action='store_true', help='Imprime resumen por símbolo en live-parity')
-    parser.add_argument('--weights_csv', type=str, default='archivos/pesos_actualizados.csv', help='CSV de pesos (symbol,peso_actualizado)')
+    parser.add_argument('--weights_csv', type=str, default=None, help='CSV de pesos (obsoleto, se usa equal weight por defecto)')
     parser.add_argument('--portfolio_max_positions', type=int, default=3, help='Máximo de posiciones abiertas simultáneas (0 = sin límite)')
     parser.add_argument('--portfolio_alloc_pct', type=float, default=0.30, help='Fracción máxima del equity que puede asignar cada trade (0.30 = 30%%)')
     parser.add_argument('--portfolio_eval_best', action='store_true', help='Después de un sweep, evalúa el portafolio usando el archivo exportado en --export_best')
