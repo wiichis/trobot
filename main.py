@@ -85,20 +85,21 @@ def monkey_result():
     try:
         balance_actual, diferencia_hora, diferencia_dia, diferencia_semana = pkg.monkey_bx.monkey_result()
 
-        def _fmt_delta(val):
+        def _fmt_line(label, val):
             signo = "+" if val >= 0 else ""
             emoji = "🟢" if val >= 0 else "🔴"
-            return f"{emoji} `{signo}{round(val, 2)} USD`"
+            num = f"{signo}{val:.2f}"
+            return f"{label}  {emoji}`{num:>8}`"
 
         monkey_USD = "\n".join([
-            f"{'━' * 20}",
-            f"📊 *RESUMEN DE RENDIMIENTO*",
-            f"{'━' * 20}",
-            f"💰 *Balance actual:* `{round(balance_actual, 2)} USD`",
+            f"{'━' * 14}",
+            "📊 *RENDIMIENTO*",
+            f"{'━' * 14}",
+            f"💰 *`{balance_actual:.2f} USD`*",
             "",
-            f"▸ *Última hora:* {_fmt_delta(diferencia_hora)}",
-            f"▸ *Hoy:* {_fmt_delta(diferencia_dia)}",
-            f"▸ *Últimos 7 días:* {_fmt_delta(diferencia_semana)}",
+            _fmt_line("1 hora", diferencia_hora),
+            _fmt_line("hoy", diferencia_dia),
+            _fmt_line("7 días", diferencia_semana),
         ])
         pkg.monkey_bx.bot_send_text(monkey_USD)
     except Exception as exc:
@@ -158,6 +159,10 @@ if __name__ == '__main__':
     schedule.every(5).minutes.do(posiciones_antiguas)
     # Reporte de resultados cada hora al minuto 59, ejecutado en un hilo independiente
     schedule.every().hour.at(":59").do(lambda: threading.Thread(target=monkey_result).start())
+    # Resumen diario a las 23:00 UTC
+    schedule.every().day.at("23:00").do(lambda: threading.Thread(target=pkg.monkey_bx.daily_summary).start())
+    # Posiciones abiertas cada 6h
+    schedule.every(6).hours.at(":30").do(lambda: threading.Thread(target=pkg.monkey_bx.open_positions_alert).start())
 
     try:
         while True:

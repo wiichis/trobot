@@ -37,33 +37,66 @@ def _fmt_value(value: Any) -> str:
     return str(value).strip()
 
 
-_FIELD_LABELS = {
+# Campos visibles por categoría — lo que no esté aquí se oculta del mensaje.
+_CATEGORY_VISIBLE_FIELDS: Dict[str, Dict[str, str]] = {
+    "tp1_filled": {"symbol": "Par", "position_side": "Lado", "remaining_qty": "Restante"},
+    "tp2_filled": {"symbol": "Par", "position_side": "Lado", "remaining_qty": "Restante"},
+    "tp3_filled": {"symbol": "Par", "position_side": "Lado"},
+    "tp1_failed": {"symbol": "Par", "position_side": "Lado", "reason": "Razón"},
+    "tp2_failed": {"symbol": "Par", "position_side": "Lado", "reason": "Razón"},
+    "tp3_failed": {"symbol": "Par", "position_side": "Lado", "reason": "Razón"},
+    "stop_loss_hit": {"symbol": "Par", "position_side": "Lado", "stop_price": "Precio SL", "cooldown_min": "Cooldown"},
+    "break_even_activated": {"symbol": "Par", "position_side": "Lado", "new_sl": "Nuevo SL"},
+    "bot_started": {"symbols_count": "Pares activos", "symbols": "Pares"},
+    "bot_stopped": {},
+    "pnl_below_expectation": {"symbol": "Par", "reason": "Razón", "detail": "Detalle"},
+    "edge_degrading": {"reason": "Razón", "detail": "Detalle"},
+    "monitoring_run_failed": {"reason": "Razón", "detail": "Detalle"},
+}
+
+# Fallback genérico para categorías sin config
+_FIELD_LABELS_GENERIC = {
     "symbol": "Par",
     "position_side": "Lado",
-    "entry": "Entrada",
-    "sl": "Stop Loss",
-    "tp1": "TP1",
-    "tp2": "TP2",
-    "tp3": "TP3",
     "reason": "Razón",
-    "source": "Origen",
     "detail": "Detalle",
-    "order_id": "Orden",
     "qty": "Cantidad",
     "price": "Precio",
     "pnl": "PnL",
     "symbols_count": "Pares activos",
     "symbols": "Pares",
-    "force": None,  # ocultar
+    "force": None,
+    "source": None,
+    "order_id": None,
+    "confirmation_mode": None,
+    "request_id": None,
+    "data_quality": None,
 }
 
 
-def _build_body(fields: Dict[str, Any]) -> str:
+def _clean_pair(val: str) -> str:
+    return str(val).replace("-USDT", "")
+
+
+def _build_body(fields: Dict[str, Any], category: str = "") -> str:
+    visible = _CATEGORY_VISIBLE_FIELDS.get(category)
+    if visible is not None:
+        # Formato limpio: solo campos relevantes
+        parts = []
+        for key, label in visible.items():
+            value = fields.get(key)
+            if value is None:
+                continue
+            fmt = _clean_pair(_fmt_value(value)) if key == "symbol" else _fmt_value(value)
+            parts.append(f"{label}  `{fmt}`")
+        return "\n".join(parts)
+
+    # Fallback genérico: ocultar campos técnicos
     parts = []
     for key, value in fields.items():
         if value is None:
             continue
-        label = _FIELD_LABELS.get(key, key.replace("_", " ").capitalize())
+        label = _FIELD_LABELS_GENERIC.get(key, key.replace("_", " ").capitalize())
         if label is None:
             continue
         parts.append(f"▸ {label}: {_fmt_value(value)}")
@@ -109,7 +142,7 @@ class LifecycleEventDispatcher:
         **fields: Any,
     ) -> Dict[str, Any]:
         ts_utc = _now_iso_utc()
-        body = _build_body(fields)
+        body = _build_body(fields, category=str(category))
         result = self.alerter.send(
             category=str(category),
             severity=str(severity).upper(),
@@ -160,7 +193,7 @@ def emit_lifecycle_event(
             "ts_utc": ts_utc,
             "category": str(category),
             "severity": str(severity).upper(),
-            "body": _build_body(fields),
+            "body": _build_body(fields, category=str(category)),
             "fields_json": json.dumps(fields, ensure_ascii=True, default=str),
             "telegram_sent": False,
             "telegram_detail": f"emit_error:{exc}",

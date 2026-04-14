@@ -302,21 +302,21 @@ class TelegramAlerter:
         return True, "ok_cooldown_pass"
 
     _SEVERITY_EMOJI = {
-        "INFO": "ℹ️",
+        "INFO": "✅",
         "WARN": "⚠️",
         "CRITICAL": "🚨",
         "ERROR": "🚨",
     }
 
     _CATEGORY_LABEL = {
-        "bot_started": "Bot iniciado",
+        "bot_started": "Bot activo",
         "bot_stopped": "Bot detenido",
         "trade_signal_detected": "Señal detectada",
-        "entry_order_submitted": "Orden de entrada enviada",
-        "entry_order_filled": "Orden de entrada ejecutada",
-        "entry_order_canceled_or_expired": "Orden cancelada/expirada",
-        "take_profit_hit": "Take Profit alcanzado",
-        "stop_loss_hit": "Stop Loss alcanzado",
+        "entry_order_submitted": "Orden enviada",
+        "entry_order_filled": "Orden ejecutada",
+        "entry_order_canceled_or_expired": "Orden expirada",
+        "take_profit_hit": "TP alcanzado",
+        "stop_loss_hit": "SL alcanzado",
         "tp1_submitted": "TP1 enviado",
         "tp1_filled": "TP1 ejecutado",
         "tp2_submitted": "TP2 enviado",
@@ -326,13 +326,15 @@ class TelegramAlerter:
         "tp1_failed": "TP1 falló",
         "tp2_failed": "TP2 falló",
         "tp3_failed": "TP3 falló",
-        "break_even_activated": "Break-even activado",
-        "legacy_fallback_used": "Fallback legacy usado",
-        "runtime_storage_warning": "Problema de almacenamiento",
-        "execution_quality_warning": "Alerta de ejecución",
-        "concentration_warning": "Alerta de concentración",
-        "monitoring_run_completed": "Monitoreo completado",
-        "monitoring_run_failed": "Monitoreo fallido",
+        "break_even_activated": "Break-even",
+        "legacy_fallback_used": "Fallback legacy",
+        "runtime_storage_warning": "Almacenamiento",
+        "execution_quality_warning": "Ejecución",
+        "concentration_warning": "Concentración",
+        "monitoring_run_completed": "Monitoreo OK",
+        "monitoring_run_failed": "Monitoreo falló",
+        "pnl_below_expectation": "PnL bajo",
+        "edge_degrading": "Edge degradado",
     }
 
     def _build_header(self, *, severity: str, category: str, ts_utc: str) -> str:

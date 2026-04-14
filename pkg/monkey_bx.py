@@ -720,6 +720,11 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
                     partial_fill_status="inferred",
                     notes=f"{confirm_source}|{confirm_reason}",
                 )
+                if tp_idx == 3:
+                    try:
+                        _record_trade_closed(symbol_u, pside_u, "tp3")
+                    except Exception:
+                        pass
             else:
                 _emit_tp_failed(
                     tp_idx=tp_idx,
@@ -822,6 +827,11 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
                     partial_fill_status="inferred",
                     notes=confirm_reason,
                 )
+                if tp_idx == 3:
+                    try:
+                        _record_trade_closed(symbol_u, pside_u, "tp3")
+                    except Exception:
+                        pass
             else:
                 emit_lifecycle_event(
                     "execution_quality_warning",
@@ -968,6 +978,8 @@ def _append_entry_watch(
     intended_entry_price=None,
     submitted_price=None,
     submit_time_utc: str = "",
+    trade_capital: float = 0.0,
+    peso_pct: float = 0.0,
 ) -> None:
     cols = [
         'symbol',
@@ -979,6 +991,8 @@ def _append_entry_watch(
         'intended_entry_price',
         'submitted_price',
         'submit_time_utc',
+        'trade_capital',
+        'peso_pct',
         'ts_utc',
     ]
     try:
@@ -1001,6 +1015,8 @@ def _append_entry_watch(
             'intended_entry_price': _safe_float_or_none(intended_entry_price),
             'submitted_price': _safe_float_or_none(submitted_price),
             'submit_time_utc': str(submit_time_utc or '').strip(),
+            'trade_capital': _safe_float(trade_capital, 0.0),
+            'peso_pct': _safe_float(peso_pct, 0.0),
             'ts_utc': _utc_now_iso(),
         }
         df = pd.concat([df, pd.DataFrame([row], columns=cols)], ignore_index=True)
@@ -1789,6 +1805,355 @@ def extract_tp_sl_from_latest(latest_values: pd.DataFrame, symbol: str, side: st
     return tps, sl
 
 
+def _build_fill_alert(
+    symbol: str,
+    position_side: str,
+    fill_price: float,
+    tps: list,
+    sl_level,
+    trade_capital: float = 0.0,
+    peso_pct: float = 0.0,
+) -> str:
+    """Mensaje unificado de operación confirmada para Telegram."""
+    side_emoji = '🟢' if position_side == 'LONG' else '🔴'
+    side_label = position_side.upper()
+    # Nombre limpio del par (sin -USDT)
+    pair_name = symbol.replace('-USDT', '')
+
+    sign = 1.0 if position_side == 'LONG' else -1.0
+
+    def _pct(px):
+        try:
+            return f"{sign * (px / fill_price - 1.0) * 100:+.2f}%"
+        except Exception:
+            return ""
+
+    # Entrada
+    lines = [
+        f"{'━' * 14}",
+        f"{side_emoji} *{pair_name}* {side_label}",
+        f"{'━' * 14}",
+        "",
+        f"Entrada  `{fill_price:.4f}`",
+    ]
+
+    # TPs
+    for i, tp_px in enumerate(tps[:3], start=1):
+        tp_f = float(tp_px)
+        lines.append(f"TP{i}       `{tp_f:.4f}`  {_pct(tp_f)}")
+
+    # SL
+    if sl_level is not None:
+        sl_f = float(sl_level)
+        lines.append(f"SL        `{sl_f:.4f}`  {_pct(sl_f)}")
+
+    # R:R (riesgo vs TP1)
+    if tps and sl_level is not None:
+        try:
+            risk = abs(fill_price - float(sl_level))
+            reward = abs(float(tps[0]) - fill_price)
+            if risk > 0:
+                rr = reward / risk
+                lines.append(f"R:R      `1:{rr:.1f}`")
+        except Exception:
+            pass
+
+    lines.append("")
+
+    # Capital
+    if trade_capital > 0:
+        lines.append(f"💰 `${trade_capital:.2f}` ({peso_pct:.0f}%)")
+
+    # Splits
+    try:
+        s1, s2, s3 = _runtime_tp_splits()
+        if len(tps) >= 3:
+            lines.append(f"📊 `{s1*100:.0f}/{s2*100:.0f}/{s3*100:.0f}`")
+    except Exception:
+        pass
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+#  Mensaje: Trade cerrado (se llama cuando se detecta SL hit o TP3 filled)
+# ---------------------------------------------------------------------------
+_TRADE_CLOSED_CSV = './archivos/trade_closed_log.csv'
+
+
+def _record_trade_closed(symbol: str, position_side: str, close_reason: str):
+    """Registra el cierre y envía alerta con PnL y duración."""
+    try:
+        pair_name = symbol.replace('-USDT', '')
+        symbol_u = str(symbol).upper().strip()
+        pside_u = str(position_side).upper().strip()
+
+        # Buscar entrada en execution_ledger
+        ledger_path = './archivos/execution_ledger.csv'
+        entry_price = None
+        entry_time = None
+        if os.path.exists(ledger_path):
+            df_led = pd.read_csv(ledger_path, low_memory=False)
+            mask = (
+                (df_led['symbol'].astype(str).str.upper() == symbol_u)
+                & (df_led['position_side'].astype(str).str.upper() == pside_u)
+                & (df_led['event_type'].astype(str).str.strip() == 'entry_order_filled')
+            )
+            entries = df_led[mask].copy()
+            if not entries.empty:
+                last_entry = entries.iloc[-1]
+                entry_price = pd.to_numeric(last_entry.get('actual_fill_price'), errors='coerce')
+                if pd.isna(entry_price):
+                    entry_price = pd.to_numeric(last_entry.get('intended_entry_price'), errors='coerce')
+                entry_time = pd.to_datetime(last_entry.get('ts_utc'), errors='coerce', utc=True)
+
+        # PnL desde PnL.csv (últimas 24h para este símbolo)
+        pnl_val = 0.0
+        pnl_csv = './archivos/PnL.csv'
+        if os.path.exists(pnl_csv):
+            df_pnl = pd.read_csv(pnl_csv, low_memory=False)
+            df_pnl['time'] = pd.to_datetime(df_pnl['time'], errors='coerce')
+            cutoff = pd.Timestamp.now() - pd.Timedelta(hours=48)
+            mask_pnl = (
+                (df_pnl['symbol'].astype(str).str.upper() == symbol_u)
+                & (df_pnl['time'] >= cutoff)
+                & (df_pnl['incomeType'] == 'REALIZED_PNL')
+            )
+            pnl_val = pd.to_numeric(df_pnl.loc[mask_pnl, 'income'], errors='coerce').sum()
+
+        # Duración
+        duration_str = ""
+        if entry_time is not None and not pd.isna(entry_time):
+            now_utc = pd.Timestamp.now(tz='UTC')
+            delta = now_utc - entry_time
+            total_min = int(delta.total_seconds() / 60)
+            if total_min >= 60:
+                hours = total_min // 60
+                mins = total_min % 60
+                duration_str = f"{hours}h {mins}m"
+            else:
+                duration_str = f"{total_min}m"
+
+        # Emoji resultado
+        if 'sl' in close_reason.lower() or 'stop' in close_reason.lower():
+            result_emoji = "🔴"
+            result_label = "SL"
+        else:
+            result_emoji = "✅"
+            result_label = close_reason.upper().replace("_FILLED", "").replace("_", "")
+
+        pnl_emoji = "🟢" if pnl_val >= 0 else "🔴"
+        side_emoji = "🟢" if pside_u == "LONG" else "🔴"
+
+        lines = [
+            f"{'━' * 14}",
+            f"📋 *TRADE CERRADO*",
+            f"{'━' * 14}",
+            f"{side_emoji} *{pair_name}* {pside_u}",
+            "",
+        ]
+        if entry_price is not None and not pd.isna(entry_price):
+            lines.append(f"Entrada  `{entry_price:.4f}`")
+        lines.append(f"PnL       {pnl_emoji}`{pnl_val:+.2f} USD`")
+        if duration_str:
+            lines.append(f"Duración  `{duration_str}`")
+        lines.append(f"Resultado  {result_emoji} {result_label}")
+
+        msg = "\n".join(lines)
+        bot_send_text(msg)
+
+        # Log a CSV
+        try:
+            row = {
+                'ts_utc': _utc_now_iso(),
+                'symbol': symbol_u,
+                'position_side': pside_u,
+                'close_reason': close_reason,
+                'pnl': round(pnl_val, 4),
+                'duration_min': int(delta.total_seconds() / 60) if entry_time is not None and not pd.isna(entry_time) else 0,
+                'entry_price': entry_price if entry_price is not None and not pd.isna(entry_price) else '',
+            }
+            df_log = pd.DataFrame([row])
+            exists = os.path.exists(_TRADE_CLOSED_CSV) and os.path.getsize(_TRADE_CLOSED_CSV) > 0
+            df_log.to_csv(_TRADE_CLOSED_CSV, mode='a', header=not exists, index=False)
+        except Exception:
+            pass
+
+    except Exception as e:
+        print(f"Error en _record_trade_closed: {e}")
+
+
+# ---------------------------------------------------------------------------
+#  Mensaje: Resumen diario (se llama una vez al día)
+# ---------------------------------------------------------------------------
+def daily_summary():
+    """Envía resumen del día: trades cerrados, PnL, win rate."""
+    try:
+        pnl_csv = './archivos/PnL.csv'
+        if not os.path.exists(pnl_csv):
+            return
+
+        df = pd.read_csv(pnl_csv, low_memory=False)
+        df['time'] = pd.to_datetime(df['time'], errors='coerce')
+
+        today = pd.Timestamp.now().normalize()
+        mask = (
+            (df['time'] >= today)
+            & (df['incomeType'] == 'REALIZED_PNL')
+        )
+        df_today = df[mask].copy()
+
+        if df_today.empty:
+            msg = "\n".join([
+                f"{'━' * 14}",
+                "📅 *RESUMEN DEL DÍA*",
+                f"{'━' * 14}",
+                "",
+                "_Sin trades cerrados hoy_",
+            ])
+            bot_send_text(msg)
+            return
+
+        df_today['income'] = pd.to_numeric(df_today['income'], errors='coerce').fillna(0)
+
+        # Agrupar por símbolo para contar trades
+        by_sym = df_today.groupby('symbol')['income'].sum()
+        total_pnl = by_sym.sum()
+        wins = (by_sym > 0).sum()
+        losses = (by_sym <= 0).sum()
+        total_trades = len(by_sym)
+        winrate = (wins / total_trades * 100) if total_trades > 0 else 0
+
+        best_sym = by_sym.idxmax().replace('-USDT', '') if not by_sym.empty else "-"
+        best_val = by_sym.max() if not by_sym.empty else 0
+        worst_sym = by_sym.idxmin().replace('-USDT', '') if not by_sym.empty else "-"
+        worst_val = by_sym.min() if not by_sym.empty else 0
+
+        pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
+
+        lines = [
+            f"{'���' * 14}",
+            "📅 *RESUMEN DEL DÍA*",
+            f"{'━' * 14}",
+            "",
+            f"Trades   `{total_trades}` ({wins}W / {losses}L)",
+            f"PnL       {pnl_emoji}`{total_pnl:+.2f} USD`",
+            f"Win rate  `{winrate:.0f}%`",
+            "",
+            f"Mejor    `{best_sym}` `{best_val:+.2f}`",
+            f"Peor     `{worst_sym}` `{worst_val:+.2f}`",
+        ]
+
+        # Posiciones abiertas
+        try:
+            open_count = _count_open_positions()
+            if open_count > 0:
+                lines.append(f"\n📊 `{open_count}` posiciones abiertas")
+        except Exception:
+            pass
+
+        msg = "\n".join(lines)
+        bot_send_text(msg)
+
+    except Exception as e:
+        print(f"Error en daily_summary: {e}")
+
+
+# ---------------------------------------------------------------------------
+#  Mensaje: Posiciones abiertas (se llama cada 6h)
+# ---------------------------------------------------------------------------
+def _count_open_positions() -> int:
+    """Cuenta posiciones abiertas consultando currencies activas."""
+    count = 0
+    try:
+        currencies = pkg.price_bingx_5m.currencies_list()
+        for curr in currencies:
+            try:
+                raw = pkg.bingx.perpetual_swap_positions(curr)
+                data = json.loads(raw)
+                if data.get('data'):
+                    for pos in data['data']:
+                        amt = float(pos.get('positionAmt', 0))
+                        if abs(amt) > 0:
+                            count += 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return count
+
+
+def open_positions_alert():
+    """Envía snapshot de posiciones abiertas con unrealized PnL."""
+    try:
+        currencies = pkg.price_bingx_5m.currencies_list()
+        positions = []
+
+        for curr in currencies:
+            try:
+                raw = pkg.bingx.perpetual_swap_positions(curr)
+                data = json.loads(raw)
+                if not data.get('data'):
+                    continue
+                for pos in data['data']:
+                    amt = float(pos.get('positionAmt', 0))
+                    if abs(amt) <= 0:
+                        continue
+                    pside = str(pos.get('positionSide', '')).upper()
+                    unrealized = float(pos.get('unrealizedProfit', 0))
+                    avg_price = float(pos.get('avgPrice', 0))
+                    mark_price = float(pos.get('markPrice', avg_price))
+                    pair_name = str(curr).replace('-USDT', '')
+
+                    # Calcular % de ganancia
+                    if avg_price > 0:
+                        if pside == 'LONG':
+                            pct = (mark_price / avg_price - 1) * 100
+                        else:
+                            pct = (1 - mark_price / avg_price) * 100
+                    else:
+                        pct = 0.0
+
+                    positions.append({
+                        'pair': pair_name,
+                        'side': pside,
+                        'pct': pct,
+                        'unrealized': unrealized,
+                    })
+            except Exception:
+                continue
+
+        if not positions:
+            return  # Sin posiciones abiertas, no enviar nada
+
+        # Ordenar por unrealized PnL
+        positions.sort(key=lambda x: x['unrealized'], reverse=True)
+
+        total_unrealized = sum(p['unrealized'] for p in positions)
+        total_emoji = "🟢" if total_unrealized >= 0 else "🔴"
+
+        lines = [
+            f"{'━' * 14}",
+            "📊 *POSICIONES ABIERTAS*",
+            f"{'━' * 14}",
+            "",
+        ]
+
+        for p in positions:
+            emoji = "🟢" if p['pct'] >= 0 else "🔴"
+            side_short = "L" if p['side'] == 'LONG' else "S"
+            lines.append(f"{emoji} `{p['pair']:>5}` {side_short}  `{p['pct']:+.2f}%`")
+
+        lines.append("")
+        lines.append(f"Total  {total_emoji}`{total_unrealized:+.2f} USD`")
+
+        msg = "\n".join(lines)
+        bot_send_text(msg)
+
+    except Exception as e:
+        print(f"Error en open_positions_alert: {e}")
+
+
 #Funcion Enviar Mensajes
 def bot_send_text(bot_message):
     text = str(bot_message or "")
@@ -2273,6 +2638,8 @@ def colocando_ordenes():
             intended_entry_price=entry_details.get('intended_entry_price'),
             submitted_price=entry_details.get('submitted_price'),
             submit_time_utc=entry_details.get('submit_time_utc', ''),
+            trade_capital=round(trade, 2),
+            peso_pct=round(peso * 100, 1),
         )
         upsert_tp_state(
             currency,
@@ -2291,113 +2658,9 @@ def colocando_ordenes():
         })
         df_positions = pd.concat([df_positions, nueva_fila], ignore_index=True)
 
-        # ---------- ALERTA MARKDOWN con TP escalonados ----------
-        # Intentar extraer TP ladder y SL desde indicadores; fallback a best_prod
-        tps = []
-        sl_level = None
-        if latest_values is not None:
-            try:
-                tps, sl_level = extract_tp_sl_from_latest(latest_values, currency, position_side)
-            except Exception:
-                tps, sl_level = [], None
-        if not tps:
-            # Fallback a un solo TP usando best_prod.json (tp_pct) si existe
-            p = params_by_symbol.get(str(currency).upper(), {})
-            try:
-                tp_pct = float(p.get('tp', 0.015))
-            except Exception:
-                tp_pct = 0.015
-            if position_side == 'LONG':
-                tps = [price_last * (1.0 + tp_pct)]
-            else:
-                tps = [price_last * (1.0 - tp_pct)]
-        if sl_level is None:
-            # Fallback conservador para SL sólo para el texto
-            sl_level = price_last * (0.995 if position_side == 'LONG' else 1.005)
-
-        # --- Ajuste opcional de TP1 (más cerca) desde best_prod.json ---
-        try:
-            p = params_by_symbol.get(str(currency).upper(), {})
-            tp1_factor = p.get('tp1_factor', None)
-            tp1_pct_override = p.get('tp1_pct_override', None)
-            # Normalizar a float si vienen como string
-            tp1_factor = float(tp1_factor) if tp1_factor is not None else None
-            tp1_pct_override = float(tp1_pct_override) if tp1_pct_override is not None else None
-        except Exception:
-            tp1_factor = None
-            tp1_pct_override = None
-
-        if tps:
-            if tp1_pct_override is not None and tp1_pct_override > 0:
-                # Override absoluto en % desde precio de entrada de mercado
-                if position_side == 'LONG':
-                    tps[0] = float(price_last) * (1.0 + tp1_pct_override)
-                else:  # SHORT
-                    tps[0] = float(price_last) * (1.0 - tp1_pct_override)
-            elif tp1_factor is not None and 0.0 < tp1_factor < 1.0:
-                # Comprimir distancia del TP1 hacia la entrada
-                base = float(tps[0])
-                if position_side == 'LONG':
-                    tps[0] = float(price_last) + (base - float(price_last)) * tp1_factor
-                else:
-                    tps[0] = float(price_last) - (float(price_last) - base) * tp1_factor
-            else:
-                # Fallback por defecto: TP1 más alcanzable (70% del camino)
-                base = float(tps[0])
-                if position_side == 'LONG':
-                    tps[0] = float(price_last) + (base - float(price_last)) * 0.70
-                else:
-                    tps[0] = float(price_last) - (float(price_last) - base) * 0.70
-        # ---------------------------------------------------------------
-
-        # Pct firmados respecto a la entrada (positivos si a favor)
-        sign = 1.0 if position_side == 'LONG' else -1.0
-        def pct_to_str(px):
-            try:
-                return f"{sign * (px/price_last - 1.0) * 100:+.2f}%"
-            except Exception:
-                return "+0.00%"
-
-        lines_tp = []
-        for i, tp_px in enumerate(tps[:3], start=1):
-            lines_tp.append(f"*TP{i}:* `{round(float(tp_px), 4)}` ({pct_to_str(float(tp_px))})")
-        sl_pct_str = pct_to_str(float(sl_level))
-        if len(tps) >= 3:
-            s1, s2, s3 = _runtime_tp_splits()
-            splits_line = f"TP splits: {s1*100:.0f}% / {s2*100:.0f}% / {s3*100:.0f}%"
-        else:
-            splits_line = "TP split: 100%"
-
-        side_emoji = '🟢' if position_side == 'LONG' else '🔴'
-        side_label = 'LONG' if position_side == 'LONG' else 'SHORT'
-        alert_lines = [
-            f"{'━' * 20}",
-            f"📡 *NUEVA OPERACIÓN*",
-            f"{'━' * 20}",
-            f"{side_emoji} *{currency}* — *{side_label}*",
-            "",
-            f"▸ *Entrada:* `{round(price_last, 4)}`",
-            *[f"▸ {tp}" for tp in lines_tp],
-            f"▸ *SL:* `{round(float(sl_level), 4)}` ({sl_pct_str})",
-            "",
-            f"📊 {splits_line}",
-            f"💰 *Capital asignado:* `${round(trade, 2)}` ({peso*100:.1f}% del portafolio)",
-        ]
-        alert = "\n".join(alert_lines)
-        # -------------------------------------------------------------------------------
-        sent_ok = bool(pkg.monkey_bx.bot_send_text(alert))
-        if not sent_ok:
-            emit_lifecycle_event(
-                "trade_signal_detected",
-                "INFO",
-                force=True,
-                symbol=str(currency).upper(),
-                position_side=str(position_side).upper(),
-                entry=round(float(price_last), 6),
-                tp1=round(float(tps[0]), 6) if tps else None,
-                sl=round(float(sl_level), 6) if sl_level is not None else None,
-                source="colocando_ordenes_signal_fallback",
-            )
+        # La alerta Telegram se envía unificada al confirmar el fill
+        # en colocando_TK_SL (entry_order_filled).
+        print(f"📡 Orden enviada: {currency} {position_side} @ {price_last}")
 
     # Guardando Posiciones fuera del bucle
     df_positions.to_csv('./archivos/position_id_register.csv', index=False)
@@ -2500,6 +2763,11 @@ def sync_cooldowns_from_sl_fills():
             clear_tp_state(symbol, position_side)
         except Exception:
             pass
+        # Alerta de trade cerrado
+        try:
+            _record_trade_closed(symbol, position_side, "stop_loss")
+        except Exception:
+            pass
 
     if remaining_rows:
         pd.DataFrame(remaining_rows).to_csv(SL_WATCH_CSV, index=False)
@@ -2569,22 +2837,21 @@ def colocando_TK_SL():
         if counter >= 20:
             try:
                 mask = (df_ordenes['symbol'] == symbol) if 'symbol' in df_ordenes.columns else pd.Series([], dtype=bool)
-                msg = ""
+                pair_name = symbol.replace('-USDT', '')
                 orderId = None
+                canceled = False
                 if mask.any():
                     df_sym = df_ordenes.loc[mask]
                     if 'orderId' in df_sym.columns and not df_sym['orderId'].isna().all():
                         orderId = df_sym['orderId'].iloc[0]
                         try:
                             pkg.bingx.cancel_order(symbol, orderId)
-                            msg = f"⛔ *Timeout — {symbol}*\nOrden cancelada. No se ejecutó dentro del tiempo límite."
+                            canceled = True
                         except Exception as ce:
                             print(f"Error al cancelar la orden para {symbol}: {ce}")
-                            msg = f"⚠️ *Timeout — {symbol}*\nNo se pudo cancelar la orden (ya no existe o la API la rechazó)."
-                    else:
-                        msg = f"⏳ *Timeout — {symbol}*\nNo había órdenes SL/TP pendientes para cancelar."
-                else:
-                    msg = f"⏳ *Timeout — {symbol}*\nSin órdenes pendientes registradas."
+                emoji = "⛔" if canceled else "⏳"
+                status = "cancelada" if canceled else "expirada"
+                msg = f"{emoji} *{pair_name}* — Orden {status}\n_No se ejecutó a tiempo_"
                 # Retirar la posición de la cola de protección en cualquier caso
                 df_posiciones.drop(index, inplace=True)
                 df_posiciones.to_csv('./archivos/position_id_register.csv', index=False)
@@ -2714,7 +2981,13 @@ def colocando_TK_SL():
                 position_qty = 0.0
 
             watch_hit = _consume_entry_watch(symbol, positionSide)
+            _send_fill_alert = False
+            _fill_trade_capital = 0.0
+            _fill_peso_pct = 0.0
             if watch_hit is not None:
+                _send_fill_alert = True
+                _fill_trade_capital = _safe_float(watch_hit.get("trade_capital"), 0.0)
+                _fill_peso_pct = _safe_float(watch_hit.get("peso_pct"), 0.0)
                 fill_ts_utc = _utc_now_iso()
                 submit_ts_utc = str(watch_hit.get("submit_time_utc", "") or watch_hit.get("ts_utc", "")).strip()
                 watch_side = str(watch_hit.get("side", "")).upper().strip()
@@ -2782,6 +3055,19 @@ def colocando_TK_SL():
                         # Fallback: TP1 más alcanzable por defecto (70% del camino)
                         base = float(desired_tps[0])
                         desired_tps[0] = float(price) + (base - float(price)) * 0.70
+
+                # Alerta unificada de operación confirmada
+                if _send_fill_alert:
+                    try:
+                        _alert = _build_fill_alert(
+                            symbol, 'LONG', float(price),
+                            desired_tps, sl_level,
+                            _fill_trade_capital, _fill_peso_pct,
+                        )
+                        pkg.monkey_bx.bot_send_text(_alert)
+                    except Exception as _ae:
+                        print(f"Error enviando alerta fill: {_ae}")
+                    _send_fill_alert = False
 
                 # ¿Qué órdenes existen ya?
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
@@ -3125,6 +3411,19 @@ def colocando_TK_SL():
                         # Fallback: TP1 más alcanzable por defecto (70% del camino)
                         base = float(desired_tps[0])
                         desired_tps[0] = float(price) - (float(price) - base) * 0.70
+
+                # Alerta unificada de operación confirmada
+                if _send_fill_alert:
+                    try:
+                        _alert = _build_fill_alert(
+                            symbol, 'SHORT', float(price),
+                            desired_tps, sl_level,
+                            _fill_trade_capital, _fill_peso_pct,
+                        )
+                        pkg.monkey_bx.bot_send_text(_alert)
+                    except Exception as _ae:
+                        print(f"Error enviando alerta fill: {_ae}")
+                    _send_fill_alert = False
 
                 # ¿Qué órdenes existen ya?
                 symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]

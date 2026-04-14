@@ -1,0 +1,142 @@
+{
+  "window": {
+    "window_hours": 24,
+    "recent_trades_n": 20
+  },
+  "baseline": {
+    "profile_summary_csv": "archivos/backtesting/exp90_robustness_report/robustness_profile_summary.csv",
+    "symbol_breakdown_csv": "archivos/backtesting/exp90_robustness_report/robustness_symbol_breakdown.csv",
+    "side_breakdown_csv": "archivos/backtesting/exp90_robustness_report/robustness_side_breakdown.csv",
+    "concentration_csv": "archivos/backtesting/exp90_robustness_report/robustness_symbol_concentration.csv",
+    "baseline_profile": "base",
+    "baseline_window_days": 90,
+    "fallback_profile": {
+      "pnl_net": 1.43,
+      "max_dd_pct": -0.0012,
+      "winrate_pct": 80.95,
+      "profit_factor": 4.101,
+      "trades": 21,
+      "cost_ratio": 0.3016
+    },
+    "fallback_concentration": {
+      "top1_share_pct": 69.9301,
+      "top2_share_pct": 97.9021
+    },
+    "fallback_symbol_mix_pct": {
+      "HBAR-USDT": 69.9301,
+      "DOGE-USDT": 27.9720,
+      "XMR-USDT": 2.0979
+    },
+    "fallback_side_pnl": {
+      "long": 0.4830,
+      "short": 0.9511
+    }
+  },
+  "execution_assumptions": {
+    "expected_slippage_bps": 4.0,
+    "expected_fee_bps_per_side": 5.0,
+    "supports_fill_level_data": false
+  },
+  "thresholds": {
+    "concentration": {
+      "top1_warn_pct": 70.0,
+      "top2_warn_pct": 95.0,
+      "top1_vs_baseline_delta_warn_pct": 5.0,
+      "top2_vs_baseline_delta_warn_pct": 3.0
+    },
+    "drift": {
+      "min_trade_count_window": 8,
+      "min_pnl_per_trade_ratio_vs_baseline": 0.50,
+      "min_profit_factor_ratio_vs_baseline": 0.70,
+      "max_cost_ratio_multiplier_vs_baseline": 1.35,
+      "max_cost_ratio_absolute": 0.85,
+      "trade_freq_low_ratio": 0.50,
+      "trade_freq_high_ratio": 1.80,
+      "symbol_mix_l1_warn": 0.45,
+      "side_pnl_share_delta_warn": 0.35
+    },
+    "alerts": {
+      "symbol_dependency_top2_pct": 95.0,
+      "trade_count_too_low": 6,
+      "require_execution_fill_data": false,
+      "min_order_acceptance_rate": 0.85,
+      "min_pending_gone_ratio_proxy": 0.20,
+      "min_pending_events_for_ratio": 5
+    }
+  },
+  "outputs": {
+    "append": true
+  },
+  "telegram": {
+    "enabled": false,
+    "parse_mode": "",
+    "chat_id_override": "",
+    "send_timeout_sec": 12,
+    "strategy_profile_name": "bingx_30m5m_rsi_liquid_utc_wo_13_18_20_both_exweak3",
+    "categories_enabled": {
+      "bot_started": true,
+      "bot_stopped": true,
+      "entry_order_submitted": false,
+      "entry_order_filled": false,
+      "take_profit_hit": false,
+      "stop_loss_hit": true,
+      "entry_order_canceled_or_expired": false,
+      "tp1_submitted": false,
+      "tp1_filled": true,
+      "tp2_submitted": false,
+      "tp2_filled": true,
+      "tp3_submitted": false,
+      "tp3_filled": true,
+      "tp1_failed": true,
+      "tp2_failed": true,
+      "tp3_failed": true,
+      "legacy_fallback_used": false,
+      "break_even_activated": true,
+      "tp_order_canceled_or_replaced": false,
+      "monitoring_run_completed": false,
+      "monitoring_run_failed": true,
+      "portfolio_summary": false,
+      "trade_closed_summary": false,
+      "concentration_warning": false,
+      "symbol_dependency_warning": false,
+      "pnl_below_expectation": true,
+      "cost_ratio_warning": false,
+      "execution_quality_warning": false,
+      "edge_degrading": true,
+      "trade_count_too_low": false,
+      "trade_frequency_abnormal": false,
+      "symbol_mix_shift": false
+    },
+    "throttle": {
+      "default_cooldown_sec": 900,
+      "dedupe_enabled": true,
+      "by_category": {
+        "bot_started": 60,
+        "bot_stopped": 60,
+        "entry_order_submitted": 20,
+        "entry_order_filled": 20,
+        "take_profit_hit": 45,
+        "stop_loss_hit": 45,
+        "entry_order_canceled_or_expired": 90,
+        "tp1_submitted": 20,
+        "tp1_filled": 30,
+        "tp2_submitted": 20,
+        "tp2_filled": 30,
+        "tp3_submitted": 20,
+        "tp3_filled": 30,
+        "tp1_failed": 45,
+        "tp2_failed": 45,
+        "tp3_failed": 45,
+        "legacy_fallback_used": 90,
+        "break_even_activated": 45,
+        "tp_order_canceled_or_replaced": 90,
+        "monitoring_run_completed": 300,
+        "portfolio_summary": 3600,
+        "trade_closed_summary": 900,
+        "concentration_warning": 1800,
+        "monitoring_run_failed": 60
+      }
+    },
+    "state_file": "archivos/backtesting/paper_live_monitor/telegram_alert_state.json"
+  }
+}
