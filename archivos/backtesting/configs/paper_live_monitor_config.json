@@ -68,7 +68,7 @@
     "append": true
   },
   "telegram": {
-    "enabled": false,
+    "enabled": true,
     "parse_mode": "",
     "chat_id_override": "",
     "send_timeout_sec": 12,
