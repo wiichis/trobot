@@ -1989,6 +1989,15 @@ def _record_trade_closed(symbol: str, position_side: str, close_reason: str):
 def daily_summary():
     """Envía resumen del día: trades cerrados, PnL, win rate."""
     try:
+        # Refrescar PnL.csv desde BingX antes de calcular el resumen,
+        # para que el reporte tenga los trades cerrados hasta justo antes
+        # del cierre del día UTC. La pausa deja que el CSV termine de escribirse.
+        try:
+            resultado_PnL()
+            time.sleep(5)
+        except Exception as exc:
+            print(f"⚠️ daily_summary: fallo refrescando PnL.csv: {exc}")
+
         pnl_csv = './archivos/PnL.csv'
         if not os.path.exists(pnl_csv):
             return
