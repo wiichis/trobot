@@ -18,16 +18,11 @@
     ]
   },
   "side_mode": "both",
-  "entry_style_overrides": {
-    "logic": "strict",
-    "require_rsi_cross": true,
-    "fresh_breakout_only": false,
-    "max_dist_emaslow": 0.008
-  },
+  "entry_style_overrides": {},
   "long_filter_overrides": {},
   "timeframe": {
     "entry_tf": "5m",
-    "htf_filter_enabled": true,
+    "htf_filter_enabled": false,
     "htf_tf": "30m",
     "htf_ema_fast": 50,
     "htf_ema_slow": 200,
@@ -35,8 +30,7 @@
     "htf_adx_period": 14
   },
   "cooldown": {
-    "mode": "fixed_minutes",
-    "value": 50
+    "mode": "symbol_params"
   },
   "execution_tp": {
     "tp_mode": "legacy_market_tp",
