@@ -1,0 +1,55 @@
+{
+  "profile_name": "bingx_live_benchmark_v1",
+  "reference": {
+    "timeframe_combo": "30m_5m",
+    "entry_style": "rsi_reversal",
+    "session_profile": "liquid_utc_wo_13_18_20",
+    "side_mode": "both",
+    "universe_profile": "exclude_weak3",
+    "long_filter_profile": "baseline"
+  },
+  "universe": {
+    "mode": "all",
+    "symbols": []
+  },
+  "session": {
+    "entry_hours_utc": [
+      6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 21, 22
+    ]
+  },
+  "side_mode": "both",
+  "entry_style_overrides": {
+    "logic": "strict",
+    "require_rsi_cross": true,
+    "fresh_breakout_only": false,
+    "max_dist_emaslow": 0.008
+  },
+  "long_filter_overrides": {},
+  "timeframe": {
+    "entry_tf": "5m",
+    "htf_filter_enabled": true,
+    "htf_tf": "30m",
+    "htf_ema_fast": 50,
+    "htf_ema_slow": 200,
+    "htf_adx_min": 20.0,
+    "htf_adx_period": 14
+  },
+  "cooldown": {
+    "mode": "fixed_minutes",
+    "value": 50
+  },
+  "execution_tp": {
+    "tp_mode": "legacy_market_tp",
+    "tp_partial_distribution": [
+      0.33,
+      0.33,
+      0.34
+    ],
+    "tp_limit_offset_bps": 0.0,
+    "tp_reduce_only": true,
+    "tp_one_at_a_time": true,
+    "break_even_after_tp1": true,
+    "tp_legacy_fallback_on_error": true,
+    "tp_fill_confirmation_mode": "inferred"
+  }
+}
