@@ -34,16 +34,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "entry_hours_utc": [6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 21, 22],
     },
     "side_mode": "both",
-    "entry_style_overrides": {
-        "logic": "strict",
-        "require_rsi_cross": True,
-        "fresh_breakout_only": False,
-        "max_dist_emaslow": 0.008,
-    },
+    "entry_style_overrides": {},
     "long_filter_overrides": {},
     "timeframe": {
         "entry_tf": "5m",
-        "htf_filter_enabled": True,
+        "htf_filter_enabled": False,
         "htf_tf": "30m",
         "htf_ema_fast": 50,
         "htf_ema_slow": 200,
@@ -51,8 +46,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "htf_adx_period": 14,
     },
     "cooldown": {
-        "mode": "fixed_minutes",
-        "value": 50,  # benchmark cooldown=10 barras de 5m
+        "mode": "symbol_params",
     },
     "execution_entry": {
         "entry_mode": "limit_post_only",
