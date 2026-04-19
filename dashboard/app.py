@@ -152,7 +152,7 @@ def render_balance_chart(balance_df: pd.DataFrame, days: int) -> None:
         st.info("No hay datos de balance (ganancias.csv).")
         return
 
-    cutoff = pd.Timestamp.utcnow() - pd.Timedelta(days=days)
+    cutoff = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(days=days)
     df = balance_df[balance_df["date"] >= cutoff]
     if df.empty:
         st.info("Sin snapshots en la ventana.")

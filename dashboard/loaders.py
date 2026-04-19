@@ -45,6 +45,9 @@ def load_ganancias() -> pd.DataFrame:
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    # Forzar naive para comparación consistente con pd.Timestamp.utcnow().tz_localize(None)
+    if pd.api.types.is_datetime64tz_dtype(df["date"]):
+        df["date"] = df["date"].dt.tz_convert("UTC").dt.tz_localize(None)
     df["balance"] = pd.to_numeric(df["balance"], errors="coerce")
     df = df.dropna(subset=["date", "balance"]).sort_values("date").reset_index(drop=True)
     return df
