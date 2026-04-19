@@ -52,15 +52,19 @@ def render_sidebar() -> None:
         with st.spinner("Descargando CSV del servidor..."):
             results = sync.sync_from_production()
         loaders.clear_all_caches()
-        ok_count = sum(1 for r in results if r.ok)
+        ok_count = sum(1 for r in results if r.ok and not r.skipped)
+        skipped_count = sum(1 for r in results if r.skipped)
+        failed = [r for r in results if not r.ok]
         total = len(results)
-        if ok_count == total:
-            st.sidebar.success(f"✅ {ok_count}/{total} archivos sincronizados")
+        if not failed:
+            msg = f"✅ {ok_count}/{total} archivos sincronizados"
+            if skipped_count:
+                msg += f" ({skipped_count} opcionales no existen)"
+            st.sidebar.success(msg)
         else:
             st.sidebar.warning(f"⚠️ {ok_count}/{total} archivos OK")
-            for r in results:
-                if not r.ok:
-                    st.sidebar.caption(f"❌ {r.file_rel}: {r.detail[:80]}")
+            for r in failed:
+                st.sidebar.caption(f"❌ {r.file_rel}: {r.detail[:80]}")
         st.session_state["last_sync"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     if "last_sync" in st.session_state:
