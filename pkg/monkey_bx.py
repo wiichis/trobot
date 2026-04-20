@@ -2041,7 +2041,7 @@ def daily_summary():
         pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
 
         lines = [
-            f"{'���' * 14}",
+            f"{'━' * 14}",
             "📅 *RESUMEN DEL DÍA*",
             f"{'━' * 14}",
             "",

@@ -95,7 +95,7 @@ def monkey_result():
             f"{'━' * 14}",
             "📊 *RENDIMIENTO*",
             f"{'━' * 14}",
-            f"💰 *`{balance_actual:.2f} USD`*",
+            f"💰 `{balance_actual:.2f} USD`",
             "",
             _fmt_line("1 hora", diferencia_hora),
             _fmt_line("hoy", diferencia_dia),
