@@ -222,14 +222,15 @@ def _run_sweep_for_symbols(
         "--symbols", ",".join(symbols),
         "--data_template", data_template,
         "--lookback_days", str(int(lookback_days)),
-        "--train_ratio", "0",
+        "--train_ratio", "0.66",
         "--search_mode", "random",
         "--n_trials", str(int(n_trials)),
-        "--rank_by", "pnl_net",
+        "--rank_by", "calmar",
         "--sweep", sweep_cfg,
         "--out_dir", str(out_dir),
-        "--min_trades", "5",
+        "--min_trades", "15",
         "--max_cost_ratio", "1.0",
+        "--max_dd", "0.12",
         "--export_best", str(candidate_best_path),
         "--export_positive_ratio",
     ]
@@ -561,8 +562,8 @@ def main() -> int:
                         help="Dias de data para backtesting sweep (default: 90)")
 
     # Sweep params
-    parser.add_argument("--n_trials", type=int, default=200,
-                        help="Random search trials por simbolo (default: 200)")
+    parser.add_argument("--n_trials", type=int, default=500,
+                        help="Random search trials por simbolo (default: 500)")
     parser.add_argument("--max_replacement_attempts", type=int, default=3,
                         help="Intentos con candidatos nuevos (default: 3)")
     parser.add_argument("--max_history_batches", type=int, default=52,
