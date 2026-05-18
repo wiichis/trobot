@@ -307,23 +307,45 @@ def _normalize_best_file(path_in: str, save_to: str = os.path.join('pkg', 'best_
 
 def _post_run_normalize_best():
     """
-    Al terminar la ejecución, intenta normalizar el archivo de 'best' sin asumir
-    exactamente dónde lo escribió el runner.
+    Al terminar la ejecución, normaliza in-place el archivo --export_best del
+    usuario (idempotente si el formato ya es correcto).
+
+    Bug fix (2026-05-18): el handler anterior escribía SIEMPRE a
+    pkg/best_prod.json sin importar el --export_best del usuario, causando
+    drift silencioso entre sweeps de prueba y la config de producción
+    (incidentes 2026-05-02 y 2026-05-18). Ahora solo sobrescribe
+    pkg/best_prod.json si el usuario lo pidió explícitamente vía
+    --export_best pkg/best_prod.json.
     """
-    candidates = set()
-    # lo que el usuario configuró
-    cfg_path = SIMPLE_RUN.get('EXPORT_BEST') or 'best_prod.json'
-    candidates.add(cfg_path)
-    # posible ubicación en out_dir
+    cfg_path = SIMPLE_RUN.get('EXPORT_BEST')
+    if not cfg_path:
+        return
+
+    prod_target = os.path.join('pkg', 'best_prod.json')
     out_dir = SIMPLE_RUN.get('OUT_DIR', DEFAULT_OUT_DIR) or DEFAULT_OUT_DIR
-    candidates.add(os.path.join(out_dir, os.path.basename(cfg_path)))
-    # fallback por defecto
-    candidates.add(os.path.join(out_dir, 'best_prod.json'))
-    for p in list(candidates):
-        try:
-            _normalize_best_file(p, os.path.join('pkg', 'best_prod.json'))
-        except Exception:
-            continue
+
+    # Resolver el path real donde quedó el export (cfg_path o dentro de out_dir).
+    source = None
+    for cand in (cfg_path, os.path.join(out_dir, os.path.basename(cfg_path))):
+        if os.path.exists(cand):
+            source = cand
+            break
+    if source is None:
+        return
+
+    # Solo sobrescribir pkg/best_prod.json si el usuario lo pidió EXPLÍCITAMENTE.
+    try:
+        explicit_prod_write = (
+            os.path.realpath(cfg_path) == os.path.realpath(prod_target)
+        )
+    except Exception:
+        explicit_prod_write = False
+
+    target = prod_target if explicit_prod_write else source
+    try:
+        _normalize_best_file(source, target)
+    except Exception:
+        pass
 
 atexit.register(_post_run_normalize_best)
 
