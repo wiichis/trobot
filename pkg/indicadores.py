@@ -287,6 +287,10 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
     htf_ema_slow = int(p.get('htf_ema_slow', 200))
     htf_adx_min = float(p.get('htf_adx_min', 20.0))
     htf_adx_period = int(p.get('htf_adx_period', 14))
+    # 'ema_adx': exige alineación EMA HTF + ADX (comportamiento original).
+    # 'adx_only': filtro de régimen puro — solo exige ADX HTF >= htf_adx_min,
+    #             sin direccionalidad (P2.1 Opción A: bloquear laterales).
+    htf_mode = str(p.get('htf_mode', 'ema_adx')).strip().lower()
 
     # --- Nuevos knobs alineados al backtesting (con defaults "lean") ---
     require_close_vs_emas = bool(p.get('require_close_vs_emas', True))
@@ -448,14 +452,19 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
                     on="date",
                     direction="backward",
                 ).set_index("_idx").reindex(df.index)
-                htf_long_ok = (
-                    (merged["HTF_EMA_F"] > merged["HTF_EMA_S"])
-                    & (merged["HTF_ADX"] >= htf_adx_min)
-                ).fillna(False)
-                htf_short_ok = (
-                    (merged["HTF_EMA_F"] < merged["HTF_EMA_S"])
-                    & (merged["HTF_ADX"] >= htf_adx_min)
-                ).fillna(False)
+                if htf_mode == 'adx_only':
+                    regime_ok = (merged["HTF_ADX"] >= htf_adx_min).fillna(False)
+                    htf_long_ok = regime_ok
+                    htf_short_ok = regime_ok
+                else:
+                    htf_long_ok = (
+                        (merged["HTF_EMA_F"] > merged["HTF_EMA_S"])
+                        & (merged["HTF_ADX"] >= htf_adx_min)
+                    ).fillna(False)
+                    htf_short_ok = (
+                        (merged["HTF_EMA_F"] < merged["HTF_EMA_S"])
+                        & (merged["HTF_ADX"] >= htf_adx_min)
+                    ).fillna(False)
                 df["HTF_EMA_F"] = merged["HTF_EMA_F"]
                 df["HTF_EMA_S"] = merged["HTF_EMA_S"]
                 df["HTF_ADX"] = merged["HTF_ADX"]

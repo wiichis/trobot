@@ -8,13 +8,21 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = REPO_ROOT / "archivos" / "backtesting" / "configs" / "live_benchmark_runtime.json"
+
+# Override por variable de entorno (útil para A/B en backtest sin tocar el repo),
+# mismo patrón que TROBOT_BEST_PROD_PATH en pkg/settings.py.
+_env_runtime_cfg = os.getenv("TROBOT_RUNTIME_CONFIG_PATH", "").strip()
+if _env_runtime_cfg:
+    DEFAULT_CONFIG_PATH = Path(_env_runtime_cfg).expanduser()
+else:
+    DEFAULT_CONFIG_PATH = REPO_ROOT / "archivos" / "backtesting" / "configs" / "live_benchmark_runtime.json"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "profile_name": "bingx_live_benchmark_v1",
