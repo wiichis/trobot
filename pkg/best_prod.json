@@ -225,7 +225,7 @@
       "require_rsi_cross": true,
       "min_ema_spread": 0.0012,
       "require_close_vs_emas": false,
-      "min_vol_ratio": 1.15,
+      "min_vol_ratio": 1.0,
       "vol_ma_len": 40,
       "adx_slope_len": 4,
       "adx_slope_min": 0.4,
