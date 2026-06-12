@@ -292,6 +292,13 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
     #             sin direccionalidad (P2.1 Opción A: bloquear laterales).
     htf_mode = str(p.get('htf_mode', 'ema_adx')).strip().lower()
 
+    # P2.1 Opción B (ofensiva): en régimen lateral (ADX HTF < regime_relax_below)
+    # relajar por-barra los gates de entrada 5m en vez de bloquear.
+    regime_relax_enabled = bool(p.get('regime_relax_enabled', False))
+    regime_relax_below = float(p.get('regime_relax_below', 18.0))
+    regime_relax_adx_factor = float(p.get('regime_relax_adx_factor', 0.8))
+    regime_relax_vol_factor = float(p.get('regime_relax_vol_factor', 0.9))
+
     # --- Nuevos knobs alineados al backtesting (con defaults "lean") ---
     require_close_vs_emas = bool(p.get('require_close_vs_emas', True))
     min_ema_spread = float(p.get('min_ema_spread', 0.001))
@@ -312,14 +319,66 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
     df["EMA_L"] = ema(c, ema_s)
     df["ADX"]   = adx(h, l, c, ADX_P)
 
+    # --- Features HTF (una sola vez; las usa el filtro HTF y/o el relax de régimen) ---
+    htf_feats_ok = False
+    if htf_filter_enabled or regime_relax_enabled:
+        try:
+            htf_src = df[["date", "open", "high", "low", "close"]].copy()
+            htf_src["date"] = pd.to_datetime(htf_src["date"], utc=True, errors="coerce")
+            htf_src = htf_src.dropna(subset=["date"]).sort_values("date")
+            htf = (
+                htf_src.set_index("date")
+                .resample(htf_tf, label="right", closed="right")
+                .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
+                .dropna()
+            )
+            if not htf.empty:
+                htf["HTF_EMA_F"] = ema(htf["close"], htf_ema_fast)
+                htf["HTF_EMA_S"] = ema(htf["close"], htf_ema_slow)
+                htf["HTF_ADX"] = adx(htf["high"], htf["low"], htf["close"], htf_adx_period)
+                htf_feats = htf[["HTF_EMA_F", "HTF_EMA_S", "HTF_ADX"]].reset_index().sort_values("date")
+                idx_df = pd.DataFrame(
+                    {
+                        "_idx": df.index,
+                        "date": pd.to_datetime(df["date"], utc=True, errors="coerce"),
+                    }
+                ).dropna(subset=["date"]).sort_values("date")
+                merged = pd.merge_asof(
+                    idx_df,
+                    htf_feats,
+                    on="date",
+                    direction="backward",
+                ).set_index("_idx").reindex(df.index)
+                df["HTF_EMA_F"] = merged["HTF_EMA_F"]
+                df["HTF_EMA_S"] = merged["HTF_EMA_S"]
+                df["HTF_ADX"] = merged["HTF_ADX"]
+                htf_feats_ok = True
+        except Exception:
+            htf_feats_ok = False
+
+    # Máscara de régimen lateral para Opción B (warmup NaN → no relajar)
+    if regime_relax_enabled and htf_feats_ok:
+        lateral_mask = (df["HTF_ADX"] < regime_relax_below).fillna(False)
+    else:
+        lateral_mask = pd.Series(False, index=df.index)
+    df["REGIME_LATERAL"] = lateral_mask
+
     # --- Features adicionales ---
-    # Volumen relativo
+    # Volumen relativo (relax por-barra en lateral si Opción B activa)
     try:
         df["VOL_MA"] = v.rolling(vol_ma_len, min_periods=vol_ma_len).mean()
     except Exception:
         df["VOL_MA"] = np.nan
-    df["VOL_OK_SHORT"] = (v >= (min_vol_ratio * df["VOL_MA"])) if min_vol_ratio > 0 else True
-    df["VOL_OK_LONG"] = (v >= (long_min_vol_ratio * df["VOL_MA"])) if long_min_vol_ratio > 0 else True
+    if min_vol_ratio > 0:
+        eff_vol_short = np.where(lateral_mask, min_vol_ratio * regime_relax_vol_factor, min_vol_ratio)
+        df["VOL_OK_SHORT"] = v >= (eff_vol_short * df["VOL_MA"])
+    else:
+        df["VOL_OK_SHORT"] = True
+    if long_min_vol_ratio > 0:
+        eff_vol_long = np.where(lateral_mask, long_min_vol_ratio * regime_relax_vol_factor, long_min_vol_ratio)
+        df["VOL_OK_LONG"] = v >= (eff_vol_long * df["VOL_MA"])
+    else:
+        df["VOL_OK_LONG"] = True
 
     # Separación mínima EMAs (evita cruces planos)
     # Nota: EMA_S es la rápida y EMA_L la lenta en este módulo
@@ -359,8 +418,11 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
     trend_short = df["EMA_S"] < df["EMA_L"]
     rsi_long  = df["RSI"] >= rsi_buy
     rsi_short = df["RSI"] <= rsi_sell
-    adx_short_ok = df["ADX"] >= adx_min
-    adx_long_ok = df["ADX"] >= long_adx_min
+    # Umbrales ADX por-barra (relax en lateral si Opción B activa)
+    eff_adx_min = np.where(lateral_mask, adx_min * regime_relax_adx_factor, adx_min)
+    eff_long_adx_min = np.where(lateral_mask, long_adx_min * regime_relax_adx_factor, long_adx_min)
+    adx_short_ok = df["ADX"] >= eff_adx_min
+    adx_long_ok = df["ADX"] >= eff_long_adx_min
     atr_ok    = (df["ATR_pct"] >= min_atr) & (df["ATR_pct"] <= max_atr)
 
     # Cruces EMA recientes
@@ -419,56 +481,26 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
     trigger_long = trigger_long & df["EMA_LONG_RECENT"]
     trigger_short = trigger_short & df["EMA_SHORT_RECENT"]
 
-    # Filtro HTF opcional (EMA50/EMA200 + ADX) usando resample de serie 5m.
+    # Filtro HTF opcional (usa las features HTF precomputadas arriba).
     htf_long_ok = pd.Series(True, index=df.index)
     htf_short_ok = pd.Series(True, index=df.index)
     if htf_filter_enabled:
-        htf_long_ok = pd.Series(False, index=df.index)
-        htf_short_ok = pd.Series(False, index=df.index)
-        try:
-            htf_src = df[["date", "open", "high", "low", "close"]].copy()
-            htf_src["date"] = pd.to_datetime(htf_src["date"], utc=True, errors="coerce")
-            htf_src = htf_src.dropna(subset=["date"]).sort_values("date")
-            htf = (
-                htf_src.set_index("date")
-                .resample(htf_tf, label="right", closed="right")
-                .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
-                .dropna()
-            )
-            if not htf.empty:
-                htf["HTF_EMA_F"] = ema(htf["close"], htf_ema_fast)
-                htf["HTF_EMA_S"] = ema(htf["close"], htf_ema_slow)
-                htf["HTF_ADX"] = adx(htf["high"], htf["low"], htf["close"], htf_adx_period)
-                htf_feats = htf[["HTF_EMA_F", "HTF_EMA_S", "HTF_ADX"]].reset_index().sort_values("date")
-                idx_df = pd.DataFrame(
-                    {
-                        "_idx": df.index,
-                        "date": pd.to_datetime(df["date"], utc=True, errors="coerce"),
-                    }
-                ).dropna(subset=["date"]).sort_values("date")
-                merged = pd.merge_asof(
-                    idx_df,
-                    htf_feats,
-                    on="date",
-                    direction="backward",
-                ).set_index("_idx").reindex(df.index)
-                if htf_mode == 'adx_only':
-                    regime_ok = (merged["HTF_ADX"] >= htf_adx_min).fillna(False)
-                    htf_long_ok = regime_ok
-                    htf_short_ok = regime_ok
-                else:
-                    htf_long_ok = (
-                        (merged["HTF_EMA_F"] > merged["HTF_EMA_S"])
-                        & (merged["HTF_ADX"] >= htf_adx_min)
-                    ).fillna(False)
-                    htf_short_ok = (
-                        (merged["HTF_EMA_F"] < merged["HTF_EMA_S"])
-                        & (merged["HTF_ADX"] >= htf_adx_min)
-                    ).fillna(False)
-                df["HTF_EMA_F"] = merged["HTF_EMA_F"]
-                df["HTF_EMA_S"] = merged["HTF_EMA_S"]
-                df["HTF_ADX"] = merged["HTF_ADX"]
-        except Exception:
+        if htf_feats_ok:
+            if htf_mode == 'adx_only':
+                regime_ok = (df["HTF_ADX"] >= htf_adx_min).fillna(False)
+                htf_long_ok = regime_ok
+                htf_short_ok = regime_ok
+            else:
+                htf_long_ok = (
+                    (df["HTF_EMA_F"] > df["HTF_EMA_S"])
+                    & (df["HTF_ADX"] >= htf_adx_min)
+                ).fillna(False)
+                htf_short_ok = (
+                    (df["HTF_EMA_F"] < df["HTF_EMA_S"])
+                    & (df["HTF_ADX"] >= htf_adx_min)
+                ).fillna(False)
+        else:
+            # Filtro pedido pero features no disponibles → fail-closed (como antes)
             htf_long_ok = pd.Series(False, index=df.index)
             htf_short_ok = pd.Series(False, index=df.index)
 
