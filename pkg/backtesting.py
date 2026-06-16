@@ -2638,6 +2638,14 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
             minutes = 0
         cooldown_map[sym] = max(0, int(math.ceil(minutes / 5.0))) if minutes > 0 else 0
 
+    # P2.2 — cooldown extendido tras SL (global, en barras). Lee la misma config
+    # runtime que el live, así el A/B vía TROBOT_RUNTIME_CONFIG_PATH es fiel.
+    try:
+        from pkg.live_runtime_config import get_post_sl_cooldown_bars
+        _post_sl_bars = int(get_post_sl_cooldown_bars())
+    except Exception:
+        _post_sl_bars = 0
+
     equity = float(capital)
     trades: List[Trade] = []
     open_positions: Dict[str, LivePosition] = {}
@@ -2729,7 +2737,8 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                     commissions += comm_exit
                     slippages += slip_exit
                     open_positions.pop(sym, None)
-                    cooldowns[sym] = cooldown_map.get(sym, 0)
+                    # post-SL: el cooldown extendido reemplaza al normal si es mayor
+                    cooldowns[sym] = max(cooldown_map.get(sym, 0), _post_sl_bars)
                     closed_this_bar.add(sym)
 
             if sym in open_positions or cooldowns.get(sym, 0) > 0 or sym in closed_this_bar:

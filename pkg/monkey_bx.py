@@ -13,6 +13,7 @@ from decimal import Decimal, ROUND_DOWN, ROUND_UP
 # --- Cooldown por SL: lectura de estado compartido con indicadores ---
 from .live_runtime_config import (
     get_cooldown_minutes_override,
+    get_post_sl_cooldown_bars,
     is_entry_hour_allowed_utc,
     get_entry_mode,
     get_entry_limit_offset_bps,
@@ -2740,6 +2741,15 @@ def sync_cooldowns_from_sl_fills():
             continue
 
         minutes = _cooldown_minutes_for_symbol(params_by_symbol, symbol, default=10)
+        # P2.2 — anti-re-entry post-SL: extiende el cooldown tras un cierre por SL.
+        # post_sl_cooldown_bars en barras de 5m → minutos = bars * 5. Se toma el
+        # mayor entre el cooldown normal y el extendido.
+        try:
+            post_sl_min = int(get_post_sl_cooldown_bars()) * 5
+        except Exception:
+            post_sl_min = 0
+        if post_sl_min > minutes:
+            minutes = post_sl_min
         _write_cooldown(symbol, now, minutes)
         fill_ts_utc = _utc_now_iso()
         emit_lifecycle_event(

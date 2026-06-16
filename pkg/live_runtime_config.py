@@ -56,6 +56,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "cooldown": {
         "mode": "symbol_params",
     },
+    # P2.2 — Anti-re-entry post-SL: cooldown extendido SOLO tras un cierre por
+    # stop-loss (además del cooldown normal del símbolo). En barras de 5m;
+    # 0 = desactivado (cae al cooldown normal). 36 ≈ 3h.
+    "post_sl_cooldown_bars": 0,
     "execution_entry": {
         "entry_mode": "limit_post_only",
         "entry_limit_offset_bps": 2.0,
@@ -274,6 +278,16 @@ def get_cooldown_minutes_override() -> Optional[int]:
             return None
         return v if v > 0 else None
     return None
+
+
+def get_post_sl_cooldown_bars() -> int:
+    """P2.2 — barras de cooldown extra tras un cierre por SL (0 = desactivado)."""
+    cfg = get_live_runtime_config()
+    try:
+        v = int(cfg.get("post_sl_cooldown_bars", 0) or 0)
+    except Exception:
+        return 0
+    return max(0, v)
 
 
 def universe_allows_symbol(symbol: object) -> bool:
