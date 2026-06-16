@@ -1,0 +1,208 @@
+# TRobot — Guía rápida
+
+Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USDT con una estrategia trend-following sobre velas de 5 minutos, optimizada por sweep semanal y desplegada a un servidor EC2 que corre 24/7 vía systemd.
+
+---
+
+## Qué hace el proyecto
+
+1. **Recolecta datos**: cada minuto sincroniza velas 5m de BingX (`pkg/price_bingx_5m.py`).
+2. **Calcula indicadores**: EMA fast/slow, RSI, ADX, ATR, volumen relativo (`pkg/indicadores.py`).
+3. **Genera señales y abre/cierra posiciones**: trend-following con confirmación multi-indicador. Lógica live en `pkg/monkey_bx.py`.
+4. **Gestiona TP/SL**: TP escalonado (TP1, TP2, TP3) opcional, BE-trigger después de TP1, SL fijo en `%` o ATR-trailing (`pkg/tp_stage_state.py`).
+5. **Optimiza parámetros**: cada lunes corre [scripts/evaluate_pairs.py](scripts/evaluate_pairs.py) que clasifica pares por PnL real, re-optimiza los perdedores via sweep aleatorio sobre `pkg/backtesting.py`, rota el peor por uno nuevo de top-volumen.
+6. **Reporta**: resúmenes horarios + diarios + alertas TP/SL/BE por Telegram (`pkg/telegram_alerts.py`).
+
+## Lógica del scheduler (main.py)
+
+| Frecuencia | Tarea |
+|---|---|
+| Cada 5 min (minuto :01,:06,…) | Pull velas 5m de BingX |
+| Cada 5 min (minuto :03,:08,…) | `update_indicators` + `colocando_ordenes` (entradas) |
+| Cada 50 s | `colocando_TK_SL` (gestión TP/SL en vivo) |
+| Cada 5 min | `unrealized_profit_positions` (posiciones antiguas) |
+| Cada 6 h | `resultado_PnL` (refresca PnL.csv desde exchange) |
+| Cada hora :59 | Reporte horario por Telegram |
+| Diario 23:00 UTC | Resumen diario |
+| Cada 12h | Backfill velas + huecos |
+
+## Composición actual del portfolio
+
+10 pares (al 2026-06-16, commit `3b44fc2`, MD5 `5d7d3d1d`):
+APT, AVAX, BCH, BNB, CFX, DOT, ETH, LINK, ONDO, XMR.
+
+⚠️ **AVAX paramset NEW** (16/06, cross-val 5/5): validar que opere y no degrade.
+✅ **CFX graduó a KEEP** (16/06): el relax de `min_vol_ratio` del 11/06 funcionó (0→7 trades, +0.52 real).
+⚠️ **ONDO**: NEW del 10/06 opera solo shorts (longs bloqueados por `logic=strict`/momentum_trigger). Vigilar.
+⚠️ **DOT**: 4ª semana sin aportar (0 trades = plano, no sangra). Sin reemplazo disponible; mantener en vigilancia.
+
+Pares removidos (no reincorporar a ciegas):
+- DOGE-USDT (02/05) — peor 90d
+- TRX-USDT (08/05) — sweep robusto sin paramset que pase filtros
+- NEAR-USDT (18/05) — peor 90d (-1.91)
+- HBAR-USDT (01/06) — 3 sweeps sin paramset robusto, 0 trades
+- SOL-USDT (01/06) — 3 sweeps sin paramset robusto, 0 trades
+- AAVE-USDT (10/06) — regla de vigilancia: perdió −1.19 su 1ª semana; cross-val regresivo 60/90d
+- BTC-USDT (10/06) — 4 sweeps sin paramset robusto + 0 trades reales en 5 semanas
+
+Candidatos evaluados y rechazados (10/06): HYPE, XRP, ZEC — overfit en 60/90d.
+Sintéticos NC* (oro/Nasdaq/petróleo/FX): descartados — gaps de finde rompen velas 5m.
+
+## Archivos clave
+
+| Path | Función |
+|---|---|
+| `main.py` | Scheduler principal, levanta todos los jobs |
+| `pkg/best_prod.json` | **Fuente de verdad de pares + parámetros activos**. Lo lee el bot al arrancar |
+| `pkg/monkey_bx.py` | Lógica de entradas, salidas, TP/SL, riesgo |
+| `pkg/indicadores.py` | Cálculo de indicadores y filtros de señal. Lee whitelist de `best_prod.json` |
+| `pkg/backtesting.py` | Motor de backtest + sweep. (El atexit que sobrescribía `best_prod.json` fue parcheado en `27cc863`; verificar md5 tras sweeps sigue siendo buena práctica) |
+| `scripts/evaluate_pairs.py` | Flujo semanal: clasificar, re-optimizar, rotar, deploy a prod |
+| `scripts/weekly_pull_and_backtest.sh` | Cron wrapper de evaluate_pairs |
+| `archivos/cripto_price_5m_long.csv` | Histórico de velas para backtesting |
+| `archivos/PnL.csv` | PnL realizado descargado de BingX |
+| `archivos/trade_closed_log.csv` | Log de cierres con razón (stop_loss, tp1/2/3) |
+| `archivos/ganancias.csv` | Snapshot de balance cada minuto |
+| `dashboard/` | Streamlit local para monitorear (no afecta a prod) |
+
+## Operación — comandos comunes
+
+### Conexión a producción
+
+```bash
+ssh -i ~/Documents/proyectos/ls_keys/trobot4.pem ubuntu@98.81.217.194
+# Servicio: sudo systemctl {status|restart|stop|start} trobot
+# Logs: journalctl -u trobot -f
+# Working dir: ~/TRobot/  (branch main, mergea desde origin/codex/nuevo-bot-estrategia)
+```
+
+### Verificar consistencia local ↔ prod
+
+```bash
+# MD5 del archivo de pares en prod
+ssh prod "cd TRobot && md5sum pkg/best_prod.json"
+# vs local
+md5 pkg/best_prod.json
+# vs HEAD del repo
+git show HEAD:pkg/best_prod.json | md5
+# Los tres deben coincidir. Si no: hay drift (ver feedback_atexit_bug en memoria)
+```
+
+### Sweep semanal (ya con metodología robusta)
+
+```bash
+# Local, dry-run (no toca prod):
+python3 scripts/evaluate_pairs.py --skip_sync --skip_rotation
+# Default n_trials=500, train_ratio=0.66, rank_by=calmar, min_trades=15, max_dd=0.12
+
+# Aplicar a local + deploy a prod (requiere confirmación):
+python3 scripts/evaluate_pairs.py --apply --deploy --send_alert
+```
+
+### Antes de cualquier dry-run de backtesting
+
+El bug atexit que sobrescribía `pkg/best_prod.json` fue parcheado (`27cc863`). Buena práctica que se mantiene: snapshot `md5 -q pkg/best_prod.json` antes del sweep y verificar igualdad después.
+
+Para cross-validar paramsets de **símbolos fuera de la whitelist** (candidatos nuevos): `indicadores.py` fuerza señales en False si el símbolo no está en `best_prod.json`. Usar `TROBOT_BEST_PROD_PATH=<ruta_candidates.json>` como env var al invocar `pkg/backtesting.py --live_parity`.
+
+## Branches
+
+- **`main`** — branch que corre prod. Mergea desde `codex/nuevo-bot-estrategia`. Suele estar muchos commits "ahead de origin/main" porque los merges/auto-commits no se pushean a github desde prod (eso es OK).
+- **`codex/nuevo-bot-estrategia`** — branch de desarrollo. Es donde se hacen commits desde local y se pushea a `origin/codex/nuevo-bot-estrategia`. Prod la mergea a su `main` local.
+
+## Estrategia (resumen)
+
+Trend-following con confirmación multi-indicador en velas 5m:
+
+- **Entrada LONG**: EMA fast > EMA slow + RSI > rsi_buy + ADX > adx_min + filtros (ATR%, volumen relativo, distancia a EMA slow, opcional fresh-cross o fresh-breakout).
+- **Entrada SHORT**: simétrica con RSI < rsi_sell.
+- **TP**: fijo (`tp_mode=fixed`, ej 1.2-2.2%) o adaptativo por ATR (`tp_mode=atrx`).
+- **SL**: porcentual fijo (`sl_mode=percent`) o ATR + trailing tras BE (`sl_mode=atr_then_trailing`).
+- **Cooldown**: bars entre entradas consecutivas en el mismo símbolo.
+- **Time exit**: cierre forzado tras N bars sin alcanzar TP.
+
+Cada par tiene su propio paramset en `pkg/best_prod.json`, optimizado individualmente.
+
+---
+
+## Pendientes — para retomar la próxima semana
+
+### P0 — ✅ COMPLETADO (2026-05-18)
+
+~~Parchear `_post_run_normalize_best` en `pkg/backtesting.py`~~ → **Hecho en commit `27cc863`**. El handler ahora solo escribe a `pkg/best_prod.json` si el usuario lo pidió explícitamente vía `--export_best pkg/best_prod.json`. Verificado en el sweep semanal: archivo intacto antes/después.
+
+### ~~P2.1 Filtro de régimen~~ — ❌ CERRADO 11/06: A y B probadas y RECHAZADAS
+
+**Ambas direcciones falsificadas el mismo día** (A/B parity, 10 pares, 30/60/90d, logs en `archivos/backtesting/regime_validation_20260611/`):
+
+- **Opción A (bloquear si ADX_1h<umbral)**: −51/−54/−53% del PnL. Los trades en lateral eran netos POSITIVOS (+21 USD/90d). Sensibilidad monótona: a más umbral, peor (ADX≥22 → portfolio negativo).
+- **Opción B (relajar `adx_min`/`min_vol_ratio` ×0.8/×0.9 en lateral)**: Δ −5/−12/−23 USD en 30/60/90d. Monótono también (aggr ×0.7/×0.85 → −77). Los trades marginales desbloqueados pierden (XMR +0.7→−15.4). **Y los pares silenciosos NO despiertan** (CFX 7→7 trades, ETH 7→7 en 30d): su blocker no es ADX/volumen.
+- Conclusión: los paramsets actuales están en un óptimo local respecto a estos knobs condicionados a régimen. No insistir con variantes (ver memoria `regime_filter_experiments`).
+
+**Infra que queda (commiteada, inerte por default, reutilizable)**:
+- `htf_mode: 'adx_only'` + knobs `regime_relax_*` en `pkg/indicadores.py` (features HTF hoisted, se computan una vez).
+- Env override `TROBOT_RUNTIME_CONFIG_PATH` en `pkg/live_runtime_config.py`.
+- Configs: `archivos/backtesting/configs/regime_{A_adx*,B_*}.json`.
+- Harness: `TROBOT_RUNTIME_CONFIG_PATH=<cfg> python3 pkg/backtesting.py --live_parity --parity_days N --parity_per_symbol`.
+
+### ✅ P2.1b Diagnóstico de blockers — HECHO 11/06 (herramienta: `scripts/diagnose_blockers.py`)
+
+Descompone la señal en sus 11 condiciones y mide fail% + **near-miss** (barras donde solo falla esa condición). Valida la descomposición contra Long/Short_Signal reales. Resultados 30d en `archivos/backtesting/blockers_20260611_30d.csv`:
+
+- **`ema_cross_recent` domina el portfolio** (blocker #1 en 13/20 par-lados, fail 86-97%): `fresh_cross_max_bars` 3-7 = el bot solo entra en los primeros 15-35 min tras un cruce EMA. La estrategia es "entrar en el cruce", no trend-following amplio.
+- **CFX**: blocker es `vol_ratio` (fail 92%) — `min_vol_ratio=1.15` × media 40 barras casi nunca pasa.
+- **ONDO**: `momentum_trigger` (fail 97%) — `logic=strict` exige RSI-cross Y breakout simultáneos.
+
+**A/B quirúrgico (relajar solo el blocker #1 de cada par silencioso)**:
+- ✗ AVAX fresh-cross 3→6: −19/−35/−46 (más trades = más pérdida; problema de edge, no de frecuencia)
+- ✗ ETH fresh-cross 7→10: −4.6/−10.3/−12.9
+- ✗ XMR fresh-cross 3→6: +5/+29 en 30/60d pero −18.8 en 90d (viola regla ≤$2)
+- ✅ **CFX `min_vol_ratio` 1.15→1.0: mejora en LAS 5 ventANAS** (7/14/30/60/90d), 0→12 trades en 7d, cost_ratio 0.04-0.18. Sim con compounding exagera magnitud absoluta (esperar realización ~5%); aplicado 11/06 → vigilar.
+
+Lección consolidada (3ª vez hoy): desbloquear near-misses solo paga cuando el edge subyacente del par es bueno (CFX era el mejor backtest del portfolio). En pares con edge débil, más trades = más pérdida.
+
+### Flujo semanal estándar (referencia, ya consolidado)
+
+1. Pre-check consistencia local ↔ prod (`md5sum`); restaurar con `git checkout` si hay drift.
+2. Sync PnL/ganancias/trade_closed de prod vía SCP. Para velas: **NO bajar long.csv de prod** (es la versión thin ~10-40d) — hacer **top-up directo del API BingX** (4 batches × 1000 velas por par cubren ~2 semanas de gap; dedupe por symbol+date). Backfill profundo (~35 batches ≈ 105d, el techo del API) solo para pares nuevos.
+3. Análisis PnL real de la semana.
+4. Dry-run `evaluate_pairs.py --skip_sync` (+ `--skip_rotation` si la rotación se maneja manual).
+5. Cross-val anti-overfit (criterio refinado: 3/5 vale solo si regresión ≤$2 en ventanas perdidas).
+6. Presentar propuesta → confirmar con usuario → aplicar + deploy + verificar + actualizar memoria.
+
+### Watch-list 22/06
+
+- **AVAX-USDT** — paramset NEW aplicado 16/06 (cross-val 5/5; EMAs más lentas 21/30, TP/SL más amplios). Validar que opere y mejore vs su −0.76 de la semana.
+- **ONDO-USDT** — NEW del 10/06: opera shorts, longs bloqueados por `logic=strict`. Si sigue asimétrico y pierde, revisar el trigger.
+- **CFX-USDT** — graduó a KEEP (+0.61/14d). Seguir vigilando que no degrade con más volumen.
+- **DOT-USDT** — 4ª semana 0 trades. Plano, no sangra, sin reemplazo. Si aparece cripto nuevo en top-volumen, es el primero en la fila de rotación.
+- Portfolio en 10 pares (HYPE/XRP/ZEC rechazados 10/06). Re-evaluar candidatos solo si aparece cripto nuevo en top-volumen.
+
+### P2 — Mejoras estratégicas adicionales
+
+1. ~~**Filtro de régimen**~~ → ❌ cerrado (A y B rechazadas, ver arriba).
+2. ~~**Anti-re-entry post-SL**~~ → ❌ **CERRADO 16/06: implementado, validado, RECHAZADO**. Knob global `post_sl_cooldown_bars` en `live_runtime_config` (default 0=off, infra inerte commiteada). A/B 10 pares: post-SL 36 barras (3h) Δ +3/−34/−41 en 30/60/90d; post-24 peor (−74/90d). Bloquea re-entradas rentables (CFX +206→+165 en 90d). Misma lección que P2.1: bloquear trades quita los netos-positivos. Configs `post_sl_{24,36}.json`, logs `post_sl_validation_20260616/`.
+3. **Kill-switch DD diario**: si PnL día < −1% del balance, cortar nuevas entradas hasta el siguiente día UTC. *(siguiente candidato P2 sin probar)*
+4. **Filtro de volatilidad relativa**: además de `min_atr_pct/max_atr_pct` absolutos, percentile-based para adaptarse al régimen actual de cada par.
+
+### 🐛 Hallazgo 16/06 — desajuste de unidad en `cooldown` (preexistente, sin corregir)
+
+El `cooldown` per-símbolo se interpreta como **barras en backtest** (`SimBacktester`, cuenta descendente de bars) pero como **minutos en live** (`_cooldown_minutes_for_symbol` → `_write_cooldown(timedelta(minutes=...))`). Con `cooldown=6`: backtest espera 30 min, live solo 6 → el cooldown real en vivo es ~5× más débil de lo que el sweep optimiza. `run_live_parity_portfolio` usa la convención de minutos (`ceil(min/5)`), así que el parity-sim refleja el live, no el SimBacktester. **Decidir**: o convertir live a barras (×5, alinea con sweep pero endurece cooldowns en vivo) o documentar que el sweep debería optimizar en minutos. No tocado por riesgo de cambiar comportamiento de los 10 pares a la vez.
+
+### P3 — Telemetría y observabilidad
+
+1. **Alerta Telegram semanal**: PnL/balance, # trades, distribución razones de cierre, top losers. Si TP-rate < 25% en 7d → recomendar pausar.
+2. **Dashboard mejorado**: agregar página de "salud del portfolio" con métricas de cada par (PnL 7/30/90d, winrate, pf, max_dd) y alertas visuales.
+3. **CI ligero**: hook que verifique `md5sum pkg/best_prod.json` local == HEAD == prod después de cualquier deploy.
+
+### P4 — Limpieza
+
+1. **Borrar `pkg/best_prod.json.bak.*`** locales (8 backups acumulados). Cron del script genera uno nuevo en cada deploy y nunca limpia. Conservar último 1-2 y eliminar el resto, o mover a un directorio `pkg/backups/`.
+2. **Branch `main` en prod 35 commits ahead de `origin/main`**. No es problema funcional pero podría hacerse un `git push prod-merge` ocasional para mantener historia visible. No urgente.
+
+### Memoria persistente
+
+Las gotchas detectadas y validadas están en `~/.claude/projects/-Users-will-Documents-proyectos-TRobot/memory/`:
+- `backtest_history.md` — qué se rotó cada semana, monedas removidas/probadas
+- `feedback_deploy_gotchas.md` — qué hacer cuando el deploy falla
+- `feedback_atexit_bug.md` — el bug del atexit y cómo aislarse de él
