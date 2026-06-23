@@ -28,13 +28,15 @@ Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USD
 
 ## Composición actual del portfolio
 
-10 pares (al 2026-06-16, commit `3b44fc2`, MD5 `5d7d3d1d`):
+10 pares (al 2026-06-22, commit `eaa91e0`, MD5 `9928fb4a`):
 APT, AVAX, BCH, BNB, CFX, DOT, ETH, LINK, ONDO, XMR.
 
-⚠️ **AVAX paramset NEW** (16/06, cross-val 5/5): validar que opere y no degrade.
-✅ **CFX graduó a KEEP** (16/06): el relax de `min_vol_ratio` del 11/06 funcionó (0→7 trades, +0.52 real).
+⚠️ **APT/AVAX/BCH paramset NEW** (22/06, cross-val 5/5 c/u): validar que operen y mejoren.
+  - AVAX: 2º cambio en 2 semanas (el set del 16/06 lo dejó mudo; este corrige con EMA fast 8).
+  - APT: NEW muy selectivo (100→17 trades/90d), "perder menos operando menos".
+  - BCH: de negativo a positivo en todas las ventanas.
 ⚠️ **ONDO**: NEW del 10/06 opera solo shorts (longs bloqueados por `logic=strict`/momentum_trigger). Vigilar.
-⚠️ **DOT**: 4ª semana sin aportar (0 trades = plano, no sangra). Sin reemplazo disponible; mantener en vigilancia.
+⚠️ **DOT**: 5ª semana sin aportar (0 trades = plano, no sangra). Sin reemplazo disponible; mantener en vigilancia.
 
 Pares removidos (no reincorporar a ciegas):
 - DOGE-USDT (02/05) — peor 90d
@@ -170,12 +172,12 @@ Lección consolidada (3ª vez hoy): desbloquear near-misses solo paga cuando el 
 5. Cross-val anti-overfit (criterio refinado: 3/5 vale solo si regresión ≤$2 en ventanas perdidas).
 6. Presentar propuesta → confirmar con usuario → aplicar + deploy + verificar + actualizar memoria.
 
-### Watch-list 22/06
+### Watch-list 29/06
 
-- **AVAX-USDT** — paramset NEW aplicado 16/06 (cross-val 5/5; EMAs más lentas 21/30, TP/SL más amplios). Validar que opere y mejore vs su −0.76 de la semana.
-- **ONDO-USDT** — NEW del 10/06: opera shorts, longs bloqueados por `logic=strict`. Si sigue asimétrico y pierde, revisar el trigger.
-- **CFX-USDT** — graduó a KEEP (+0.61/14d). Seguir vigilando que no degrade con más volumen.
-- **DOT-USDT** — 4ª semana 0 trades. Plano, no sangra, sin reemplazo. Si aparece cripto nuevo en top-volumen, es el primero en la fila de rotación.
+- **BCH-USDT** — NEW 22/06 (cross-val 5/5, neg→pos todas las ventanas). El más prometedor; validar que se realice.
+- **AVAX-USDT** — NEW 22/06, 2º cambio seguido. Si vuelve a quedar mudo o pierde, parar de tocarlo y dejar el set estable.
+- **APT-USDT** — NEW 22/06 muy selectivo (17 trades/90d). Si cae a 0 trades como AVAX-16/06, fue demasiado restrictivo.
+- **DOT-USDT** — 5ª semana 0 trades. Primero en la fila de rotación si aparece cripto nuevo en top-volumen.
 - Portfolio en 10 pares (HYPE/XRP/ZEC rechazados 10/06). Re-evaluar candidatos solo si aparece cripto nuevo en top-volumen.
 
 ### P2 — Mejoras estratégicas adicionales
@@ -197,8 +199,9 @@ El `cooldown` per-símbolo se interpreta como **barras en backtest** (`SimBackte
 
 ### P4 — Limpieza
 
-1. **Borrar `pkg/best_prod.json.bak.*`** locales (8 backups acumulados). Cron del script genera uno nuevo en cada deploy y nunca limpia. Conservar último 1-2 y eliminar el resto, o mover a un directorio `pkg/backups/`.
+1. ~~**Borrar `pkg/best_prod.json.bak.*`**~~ → ✅ HECHO 22/06: se conservó el más reciente (`.20260502_234317`), borrados 6. Son untracked (no requieren commit).
 2. **Branch `main` en prod 35 commits ahead de `origin/main`**. No es problema funcional pero podría hacerse un `git push prod-merge` ocasional para mantener historia visible. No urgente.
+3. **`dashboard/jobs.py` + `5_🧪_Backtesting.py` sin commitear** (sesión del dashboard). Decidir si commitear o descartar.
 
 ### Memoria persistente
 
