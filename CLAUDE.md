@@ -28,15 +28,14 @@ Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USD
 
 ## Composición actual del portfolio
 
-10 pares (al 2026-06-22, commit `eaa91e0`, MD5 `9928fb4a`):
+10 pares (al 2026-06-30, commit `0159a1a`, MD5 `956062fc`):
 APT, AVAX, BCH, BNB, CFX, DOT, ETH, LINK, ONDO, XMR.
 
-⚠️ **APT/AVAX/BCH paramset NEW** (22/06, cross-val 5/5 c/u): validar que operen y mejoren.
-  - AVAX: 2º cambio en 2 semanas (el set del 16/06 lo dejó mudo; este corrige con EMA fast 8).
-  - APT: NEW muy selectivo (100→17 trades/90d), "perder menos operando menos".
-  - BCH: de negativo a positivo en todas las ventanas.
-⚠️ **ONDO**: NEW del 10/06 opera solo shorts (longs bloqueados por `logic=strict`/momentum_trigger). Vigilar.
-⚠️ **DOT**: 5ª semana sin aportar (0 trades = plano, no sangra). Sin reemplazo disponible; mantener en vigilancia.
+✅ **BCH NEW validó** (22/06): +2.02 real, 10/12 wins. El acierto del mes.
+🔄 **LINK paramset NEW** (30/06, cross-val 5/5): validar que se realice.
+⏪ **CFX revertido** a `min_vol_ratio` 1.15 (30/06): el relax del 11/06 sangró −2.02 en vivo pese a sim +362 (ver memoria `parity-sim-realization-gap`). Debería volver a quieto/plano.
+🧊 **AVAX congelado**: 2 cambios malos seguidos; NO re-optimizar sus params. Si sigue sangrando → rotar.
+⚠️ **DOT/ONDO**: mudos crónicos. Candidatos a rotación si aparece edge en LTC/DYDX/INJ.
 
 Pares removidos (no reincorporar a ciegas):
 - DOGE-USDT (02/05) — peor 90d
@@ -172,13 +171,13 @@ Lección consolidada (3ª vez hoy): desbloquear near-misses solo paga cuando el 
 5. Cross-val anti-overfit (criterio refinado: 3/5 vale solo si regresión ≤$2 en ventanas perdidas).
 6. Presentar propuesta → confirmar con usuario → aplicar + deploy + verificar + actualizar memoria.
 
-### Watch-list 29/06
+### Watch-list 06/07
 
-- **BCH-USDT** — NEW 22/06 (cross-val 5/5, neg→pos todas las ventanas). El más prometedor; validar que se realice.
-- **AVAX-USDT** — NEW 22/06, 2º cambio seguido. Si vuelve a quedar mudo o pierde, parar de tocarlo y dejar el set estable.
-- **APT-USDT** — NEW 22/06 muy selectivo (17 trades/90d). Si cae a 0 trades como AVAX-16/06, fue demasiado restrictivo.
-- **DOT-USDT** — 5ª semana 0 trades. Primero en la fila de rotación si aparece cripto nuevo en top-volumen.
-- Portfolio en 10 pares (HYPE/XRP/ZEC rechazados 10/06). Re-evaluar candidatos solo si aparece cripto nuevo en top-volumen.
+- **CFX-USDT** — revertido a `min_vol_ratio` 1.15 (30/06). Validar que vuelva a plano (era −2.02 con 1.0). Si sigue negativo, es el 1º en la fila de rotación (peor 90d).
+- **AVAX-USDT** — CONGELADO (no tocar params). −0.97/90d. Si pierde otra semana → rotar, no re-optimizar.
+- **LINK-USDT** — NEW 30/06 (5/5). Validar que se realice.
+- **Rotación disponible**: LTC/DYDX/INJ en top-volumen (1ª vez con reemplazo cripto desde 10/06). Plan si CFX/AVAX siguen mal: backfill ~105d + sweep + cross-val de LTC, rotar el peor 90d. NO meter a ciegas (HYPE/XRP/ZEC se rechazaron así).
+- **DOT-USDT** — 5ª semana muda. Candidato de rotación secundario.
 
 ### P2 — Mejoras estratégicas adicionales
 
