@@ -213,9 +213,9 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 3. **Kill-switch DD diario**: si PnL día < −1% del balance, cortar nuevas entradas hasta el siguiente día UTC. *(siguiente candidato P2 sin probar)*
 4. **Filtro de volatilidad relativa**: además de `min_atr_pct/max_atr_pct` absolutos, percentile-based para adaptarse al régimen actual de cada par.
 
-### 🐛 Hallazgo 16/06 — desajuste de unidad en `cooldown` (preexistente, sin corregir)
+### ✅ Bug 16/06 — desajuste de unidad en `cooldown` — CORREGIDO 03/07
 
-El `cooldown` per-símbolo se interpreta como **barras en backtest** (`SimBacktester`, cuenta descendente de bars) pero como **minutos en live** (`_cooldown_minutes_for_symbol` → `_write_cooldown(timedelta(minutes=...))`). Con `cooldown=6`: backtest espera 30 min, live solo 6 → el cooldown real en vivo es ~5× más débil de lo que el sweep optimiza. `run_live_parity_portfolio` usa la convención de minutos (`ceil(min/5)`), así que el parity-sim refleja el live, no el SimBacktester. **Decidir**: o convertir live a barras (×5, alinea con sweep pero endurece cooldowns en vivo) o documentar que el sweep debería optimizar en minutos. No tocado por riesgo de cambiar comportamiento de los 10 pares a la vez.
+`cooldown` per-símbolo era **barras en backtest** pero **minutos en live** → cooldown vivo 5× más débil que lo optimizado. Fix: live convierte barras→minutos (`_cooldown_minutes_for_symbol` retorna `cooldown*5`; alias legacy `cooldown_min` sigue en minutos) y el parity-sim usa barras directas. Los 3 motores (SimBacktester/parity/live) hablan barras. A/B parity: +2.56/+2.78/+0.49 en 30/60/90d, −0.47 en 14d, empate 7d. Efecto práctico: tras un SL se espera 30-75 min (según par) en vez de 6-15.
 
 ### P3 — Telemetría y observabilidad
 

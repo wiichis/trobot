@@ -2672,10 +2672,12 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
         sym_u = str(sym).upper()
         p = params_by_symbol.get(sym_u) or params_norm.get(_norm_symbol(sym_u)) or {}
         try:
-            minutes = int(p.get('cooldown', 0))
+            bars = int(p.get('cooldown', 0))
         except Exception:
-            minutes = 0
-        cooldown_map[sym] = max(0, int(math.ceil(minutes / 5.0))) if minutes > 0 else 0
+            bars = 0
+        # 'cooldown' se interpreta en BARRAS de 5m (misma convención que el
+        # SimBacktester/sweep). El live lo convierte a minutos (bars*5).
+        cooldown_map[sym] = max(0, bars)
 
     # P2.2 — cooldown extendido tras SL (global, en barras). Lee la misma config
     # runtime que el live, así el A/B vía TROBOT_RUNTIME_CONFIG_PATH es fiel.

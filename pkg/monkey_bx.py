@@ -910,8 +910,11 @@ def _cooldown_minutes_for_symbol(params_by_symbol: dict, symbol: str, default: i
         return int(fixed_cd)
     try:
         p = params_by_symbol.get(str(symbol).upper(), {}) if isinstance(params_by_symbol, dict) else {}
-        cd = p.get('cooldown', p.get('cooldown_min', default))
-        return int(cd)
+        # 'cooldown' está en BARRAS de 5m (convención del sweep/SimBacktester):
+        # convertir a minutos. 'cooldown_min' (legacy) ya viene en minutos.
+        if 'cooldown' in p:
+            return int(p['cooldown']) * 5
+        return int(p.get('cooldown_min', default))
     except Exception:
         return default
 
