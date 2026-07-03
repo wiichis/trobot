@@ -2,7 +2,7 @@
   {
     "symbol": "APT-USDT",
     "params": {
-      "tp": 0.012,
+      "tp": 0.024,
       "tp_mode": "fixed",
       "tp_atr_mult": 0.9,
       "ema_fast": 21,
@@ -102,7 +102,7 @@
   {
     "symbol": "BCH-USDT",
     "params": {
-      "tp": 0.018,
+      "tp": 0.036,
       "tp_mode": "fixed",
       "tp_atr_mult": 0.0,
       "ema_fast": 13,
@@ -152,7 +152,7 @@
   {
     "symbol": "BNB-USDT",
     "params": {
-      "tp": 0.015,
+      "tp": 0.03,
       "tp_mode": "fixed",
       "tp_atr_mult": 0.6,
       "ema_fast": 8,
@@ -202,7 +202,7 @@
   {
     "symbol": "CFX-USDT",
     "params": {
-      "tp": 0.012,
+      "tp": 0.024,
       "tp_mode": "fixed",
       "tp_atr_mult": 0.6,
       "ema_fast": 21,
@@ -252,7 +252,7 @@
   {
     "symbol": "DOT-USDT",
     "params": {
-      "tp": 0.018,
+      "tp": 0.036,
       "tp_mode": "fixed",
       "tp_atr_mult": 0.0,
       "ema_fast": 21,
@@ -302,7 +302,7 @@
   {
     "symbol": "ETH-USDT",
     "params": {
-      "tp": 0.022,
+      "tp": 0.044,
       "tp_mode": "fixed",
       "tp_atr_mult": 0.0,
       "ema_fast": 8,
@@ -402,7 +402,7 @@
   {
     "symbol": "ONDO-USDT",
     "params": {
-      "tp": 0.022,
+      "tp": 0.044,
       "tp_mode": "fixed",
       "tp_atr_mult": 0.6,
       "ema_fast": 8,
@@ -452,7 +452,7 @@
   {
     "symbol": "XMR-USDT",
     "params": {
-      "tp": 0.012,
+      "tp": 0.024,
       "tp_mode": "fixed",
       "tp_atr_mult": 0.0,
       "ema_fast": 8,

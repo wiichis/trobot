@@ -1216,6 +1216,7 @@ class LivePosition:
     tp1_filled: bool
     cooldown_bars: int
     position_id: int
+    bars_held: int = 0
 
 
 def _allocate_entry_cost_live(position: LivePosition, qty_close: float) -> Tuple[float, float, float]:
@@ -2646,6 +2647,17 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
     except Exception:
         _post_sl_bars = 0
 
+    # P1 — time-stop de perdedores (global, en barras; 0 = off). Cierra a mercado
+    # posiciones que tras N barras siguen en pérdida. Lee la misma config runtime
+    # que el live para que el A/B vía TROBOT_RUNTIME_CONFIG_PATH sea fiel.
+    try:
+        from pkg.live_runtime_config import get_loss_time_stop_bars, get_loss_time_stop_min_loss_pct
+        _lts_bars = int(get_loss_time_stop_bars())
+        _lts_min_loss = float(get_loss_time_stop_min_loss_pct())
+    except Exception:
+        _lts_bars = 0
+        _lts_min_loss = 0.0
+
     equity = float(capital)
     trades: List[Trade] = []
     open_positions: Dict[str, LivePosition] = {}
@@ -2684,6 +2696,7 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                     funding_costs += fcost
 
                 _update_live_sl(pos, row, price)
+                pos.bars_held += 1
 
                 tp_hits = []
                 for target in pos.tp_plan:
@@ -2740,6 +2753,23 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                     # post-SL: el cooldown extendido reemplaza al normal si es mayor
                     cooldowns[sym] = max(cooldown_map.get(sym, 0), _post_sl_bars)
                     closed_this_bar.add(sym)
+                elif _lts_bars > 0 and pos.bars_held >= _lts_bars:
+                    if pos.side == 'long':
+                        pnl_pct = price / pos.entry_price - 1.0
+                    else:
+                        pnl_pct = 1.0 - price / pos.entry_price
+                    if pnl_pct < -_lts_min_loss:
+                        pnl_exit, comm_exit, slip_exit, trade = _close_position_portion_live(
+                            pos, pos.remaining_qty, price, ts, atr_pct, 0.0005, exit_reason='LTS'
+                        )
+                        if trade is not None:
+                            trades.append(trade)
+                        equity += pnl_exit
+                        commissions += comm_exit
+                        slippages += slip_exit
+                        open_positions.pop(sym, None)
+                        cooldowns[sym] = cooldown_map.get(sym, 0)
+                        closed_this_bar.add(sym)
 
             if sym in open_positions or cooldowns.get(sym, 0) > 0 or sym in closed_this_bar:
                 continue

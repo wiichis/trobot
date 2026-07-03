@@ -290,6 +290,26 @@ def get_post_sl_cooldown_bars() -> int:
     return max(0, v)
 
 
+def get_loss_time_stop_bars() -> int:
+    """P1 — barras máximas de una posición en pérdida antes de cerrarla a mercado (0 = desactivado)."""
+    cfg = get_live_runtime_config()
+    try:
+        v = int(cfg.get("loss_time_stop_bars", 0) or 0)
+    except Exception:
+        return 0
+    return max(0, v)
+
+
+def get_loss_time_stop_min_loss_pct() -> float:
+    """P1 — pérdida mínima (fracción del precio de entrada) para que aplique el time-stop (0 = cualquier pérdida)."""
+    cfg = get_live_runtime_config()
+    try:
+        v = float(cfg.get("loss_time_stop_min_loss_pct", 0.0) or 0.0)
+    except Exception:
+        return 0.0
+    return max(0.0, v)
+
+
 def universe_allows_symbol(symbol: object) -> bool:
     sym = _normalize_symbol(symbol)
     if not sym:
