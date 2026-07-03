@@ -28,9 +28,10 @@ Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USD
 
 ## Composición actual del portfolio
 
-10 pares (al 2026-06-30, commit `0159a1a`, MD5 `956062fc`):
+10 pares (al 2026-07-03, MD5 `3310f1b2`):
 APT, AVAX, BCH, BNB, CFX, DOT, ETH, LINK, ONDO, XMR.
 
+🎯 **TP×2 aplicado** (03/07) a 8 pares (todos menos AVAX congelado y LINK NEW): el A/B de estructura de salidas mostró TPs demasiado cercanos (payoff real 0.42, perdedores 11h vs ganadores 3h). Cross-val 5/5 ventanas. Esperar: winrate más bajo, ganancias más grandes, ~20% menos trades/fees. Ver memoria `exit-structure-experiments`.
 ✅ **BCH NEW validó** (22/06): +2.02 real, 10/12 wins. El acierto del mes.
 🔄 **LINK paramset NEW** (30/06, cross-val 5/5): validar que se realice.
 ⏪ **CFX revertido** a `min_vol_ratio` 1.15 (30/06): el relax del 11/06 sangró −2.02 en vivo pese a sim +362 (ver memoria `parity-sim-realization-gap`). Debería volver a quieto/plano.
@@ -162,6 +163,14 @@ Descompone la señal en sus 11 condiciones y mide fail% + **near-miss** (barras 
 
 Lección consolidada (3ª vez hoy): desbloquear near-misses solo paga cuando el edge subyacente del par es bueno (CFX era el mejor backtest del portfolio). En pares con edge débil, más trades = más pérdida.
 
+### ✅ P1 Asimetría W/L — HECHO 03/07: time-stop RECHAZADO, TP×2 APLICADO
+
+Diagnóstico con PnL real 90d: winrate 66% pero payoff 0.42 (ganador +0.16, perdedor −0.37) → PF bruto 0.83, negativo antes de fees. Perdedores viven 11h (SL), ganadores 3h (TP).
+
+- ✗ **Time-stop de perdedores** (`loss_time_stop_bars` 24/36/48): empeora las 5 ventanas, monótono. **4ª confirmación** de "cortar/bloquear trades quita los netos-positivos". Infra inerte commiteada (knobs en `live_runtime_config`, check en parity-sim, configs `loss_ts_{24,36,48}.json`). NO insistir.
+- ✗ `be_trigger=0`: 4/5 pero −9.57 en 60d. El BE aporta en ventanas largas.
+- ✅ **TP×2 en 8 pares** (sin AVAX congelado ni LINK NEW): cross-val **5/5** (Δ +1.7/+1.1/+3.2/+6.7/+14.8), mejora repartida 8/10 pares (no la explica CFX), −20% trades, Sharpe 3.61→4.25. Aplicado 03/07. Esperar winrate ~57% con ganancias más grandes; veredicto real en 2-4 semanas.
+
 ### Flujo semanal estándar (referencia, ya consolidado)
 
 1. Pre-check consistencia local ↔ prod (`md5sum`); restaurar con `git checkout` si hay drift.
@@ -178,6 +187,7 @@ Lección consolidada (3ª vez hoy): desbloquear near-misses solo paga cuando el 
 - **LINK-USDT** — NEW 30/06 (5/5). Validar que se realice.
 - **Rotación disponible**: LTC/DYDX/INJ en top-volumen (1ª vez con reemplazo cripto desde 10/06). Plan si CFX/AVAX siguen mal: backfill ~105d + sweep + cross-val de LTC, rotar el peor 90d. NO meter a ciegas (HYPE/XRP/ZEC se rechazaron así).
 - **DOT-USDT** — 5ª semana muda. Candidato de rotación secundario.
+- **TP×2 (03/07)** — 8 pares con TP duplicado. Esperar winrate más bajo con ganancias más grandes; NO revertir por una semana mala de winrate. Evaluar realización a 2-4 semanas contra la línea base −2 a −3 USD/mes.
 
 ### P2 — Mejoras estratégicas adicionales
 
