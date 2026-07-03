@@ -1885,7 +1885,7 @@ def _build_fill_alert(
 _TRADE_CLOSED_CSV = './archivos/trade_closed_log.csv'
 
 
-def _record_trade_closed(symbol: str, position_side: str, close_reason: str):
+def _record_trade_closed(symbol: str, position_side: str, close_reason: str, stop_price=None):
     """Registra el cierre y envía alerta con PnL y duración."""
     try:
         pair_name = symbol.replace('-USDT', '')
@@ -1896,6 +1896,7 @@ def _record_trade_closed(symbol: str, position_side: str, close_reason: str):
         ledger_path = './archivos/execution_ledger.csv'
         entry_price = None
         entry_time = None
+        entry_qty = None
         if os.path.exists(ledger_path):
             df_led = pd.read_csv(ledger_path, low_memory=False)
             mask = (
@@ -1910,36 +1911,101 @@ def _record_trade_closed(symbol: str, position_side: str, close_reason: str):
                 if pd.isna(entry_price):
                     entry_price = pd.to_numeric(last_entry.get('intended_entry_price'), errors='coerce')
                 entry_time = pd.to_datetime(last_entry.get('ts_utc'), errors='coerce', utc=True)
+                entry_qty = pd.to_numeric(last_entry.get('fill_qty'), errors='coerce')
 
-        # PnL desde PnL.csv (últimas 24h para este símbolo)
-        pnl_val = 0.0
-        pnl_csv = './archivos/PnL.csv'
-        if os.path.exists(pnl_csv):
-            df_pnl = pd.read_csv(pnl_csv, low_memory=False)
-            df_pnl['time'] = pd.to_datetime(df_pnl['time'], errors='coerce')
-            cutoff = pd.Timestamp.now() - pd.Timedelta(hours=48)
-            mask_pnl = (
-                (df_pnl['symbol'].astype(str).str.upper() == symbol_u)
-                & (df_pnl['time'] >= cutoff)
-                & (df_pnl['incomeType'] == 'REALIZED_PNL')
-            )
-            pnl_val = pd.to_numeric(df_pnl.loc[mask_pnl, 'income'], errors='coerce').sum()
+        # Reclasificar cierres por stop según el nivel vs entrada:
+        # be_stop (stop en breakeven), trail_stop (stop en ganancia), stop_loss (real).
+        try:
+            if (close_reason == 'stop_loss' and stop_price is not None
+                    and entry_price is not None and not pd.isna(entry_price) and float(entry_price) > 0):
+                sp = float(stop_price)
+                ep = float(entry_price)
+                if pside_u == 'LONG':
+                    if sp >= ep * 1.002:
+                        close_reason = 'trail_stop'
+                    elif sp >= ep * 0.999:
+                        close_reason = 'be_stop'
+                else:
+                    if sp <= ep * 0.998:
+                        close_reason = 'trail_stop'
+                    elif sp <= ep * 1.001:
+                        close_reason = 'be_stop'
+        except Exception:
+            pass
+
+        # PnL de la posición, por orden de precisión:
+        # 1) income API del exchange filtrado desde la entrada (incluye parciales TP)
+        pnl_val = None
+        pnl_source = ''
+        try:
+            _raw = json.loads(pkg.bingx.hystory_PnL())
+            _data = _raw.get('data') or []
+            if _data:
+                _dfa = pd.DataFrame(_data)
+                _dfa['time'] = pd.to_datetime(pd.to_numeric(_dfa['time'], errors='coerce'), unit='ms', utc=True)
+                _dfa['income'] = pd.to_numeric(_dfa['income'], errors='coerce')
+                _m = (
+                    (_dfa['symbol'].astype(str).str.upper() == symbol_u)
+                    & (_dfa['incomeType'].astype(str) == 'REALIZED_PNL')
+                )
+                if entry_time is not None and not pd.isna(entry_time):
+                    _m &= _dfa['time'] >= (entry_time - pd.Timedelta(minutes=2))
+                else:
+                    _m &= _dfa['time'] >= (pd.Timestamp.now(tz='UTC') - pd.Timedelta(hours=6))
+                if bool(_m.any()):
+                    pnl_val = float(_dfa.loc[_m, 'income'].sum())
+                    pnl_source = 'api'
+        except Exception:
+            pnl_val = None
+        # 2) estimación por precios (stop conocido + qty de la entrada)
+        if pnl_val is None:
+            try:
+                if (stop_price is not None and entry_price is not None and not pd.isna(entry_price)
+                        and entry_qty is not None and not pd.isna(entry_qty) and float(entry_qty) > 0):
+                    _dir = 1.0 if pside_u == 'LONG' else -1.0
+                    pnl_val = (float(stop_price) - float(entry_price)) * _dir * float(entry_qty)
+                    pnl_source = 'price_est'
+            except Exception:
+                pnl_val = None
+        # 3) fallback legacy: PnL.csv (se refresca cada 6h — puede estar viejo)
+        if pnl_val is None:
+            pnl_val = 0.0
+            pnl_source = 'csv_stale'
+            pnl_csv = './archivos/PnL.csv'
+            if os.path.exists(pnl_csv):
+                df_pnl = pd.read_csv(pnl_csv, low_memory=False)
+                df_pnl['time'] = pd.to_datetime(df_pnl['time'], errors='coerce')
+                cutoff = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(hours=48)
+                if entry_time is not None and not pd.isna(entry_time):
+                    cutoff = entry_time.tz_localize(None) - pd.Timedelta(minutes=2)
+                mask_pnl = (
+                    (df_pnl['symbol'].astype(str).str.upper() == symbol_u)
+                    & (df_pnl['time'] >= cutoff)
+                    & (df_pnl['incomeType'] == 'REALIZED_PNL')
+                )
+                pnl_val = pd.to_numeric(df_pnl.loc[mask_pnl, 'income'], errors='coerce').sum()
 
         # Duración
         duration_str = ""
+        duration_min = 0
         if entry_time is not None and not pd.isna(entry_time):
             now_utc = pd.Timestamp.now(tz='UTC')
             delta = now_utc - entry_time
-            total_min = int(delta.total_seconds() / 60)
-            if total_min >= 60:
-                hours = total_min // 60
-                mins = total_min % 60
-                duration_str = f"{hours}h {mins}m"
+            duration_min = int(delta.total_seconds() / 60)
+            if duration_min >= 60:
+                duration_str = f"{duration_min // 60}h {duration_min % 60}m"
             else:
-                duration_str = f"{total_min}m"
+                duration_str = f"{duration_min}m"
 
         # Emoji resultado
-        if 'sl' in close_reason.lower() or 'stop' in close_reason.lower():
+        _reason_l = close_reason.lower()
+        if _reason_l == 'be_stop':
+            result_emoji = "⚪"
+            result_label = "BE"
+        elif _reason_l == 'trail_stop':
+            result_emoji = "🟢"
+            result_label = "TRAIL"
+        elif 'sl' in _reason_l or 'stop' in _reason_l:
             result_emoji = "🔴"
             result_label = "SL"
         else:
@@ -1973,12 +2039,22 @@ def _record_trade_closed(symbol: str, position_side: str, close_reason: str):
                 'symbol': symbol_u,
                 'position_side': pside_u,
                 'close_reason': close_reason,
-                'pnl': round(pnl_val, 4),
-                'duration_min': int(delta.total_seconds() / 60) if entry_time is not None and not pd.isna(entry_time) else 0,
+                'pnl': round(float(pnl_val), 4),
+                'duration_min': duration_min,
                 'entry_price': entry_price if entry_price is not None and not pd.isna(entry_price) else '',
+                'stop_price': float(stop_price) if stop_price is not None else '',
+                'pnl_source': pnl_source,
             }
             df_log = pd.DataFrame([row])
             exists = os.path.exists(_TRADE_CLOSED_CSV) and os.path.getsize(_TRADE_CLOSED_CSV) > 0
+            if exists:
+                # Migración one-shot: agregar columnas nuevas al histórico si faltan
+                df_old = pd.read_csv(_TRADE_CLOSED_CSV, low_memory=False)
+                if 'pnl_source' not in df_old.columns:
+                    for _c in ('stop_price', 'pnl_source'):
+                        if _c not in df_old.columns:
+                            df_old[_c] = ''
+                    df_old.to_csv(_TRADE_CLOSED_CSV, index=False)
             df_log.to_csv(_TRADE_CLOSED_CSV, mode='a', header=not exists, index=False)
         except Exception:
             pass
@@ -2787,7 +2863,7 @@ def sync_cooldowns_from_sl_fills():
             pass
         # Alerta de trade cerrado
         try:
-            _record_trade_closed(symbol, position_side, "stop_loss")
+            _record_trade_closed(symbol, position_side, "stop_loss", stop_price=stop_price)
         except Exception:
             pass
 

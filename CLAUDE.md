@@ -219,6 +219,7 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 
 ### P3 — Telemetría y observabilidad
 
+0. ~~**PnL del trade_closed_log**~~ → ✅ **CORREGIDO 03/07**. El `pnl` venía de PnL.csv (refresco cada 6h) → 50% de filas en 0.0 y el resto contaminado con 48h del símbolo. Ahora: income API filtrado desde la entrada de la posición (fallbacks `price_est`/`csv_stale`, columna `pnl_source`). Cierres por stop reclasificados: `stop_loss`/`be_stop`/`trail_stop` (columna `stop_price`). ⚠️ El `pnl` de filas anteriores al 03/07 NO es confiable — filtrar por `pnl_source` en análisis.
 1. **Alerta Telegram semanal**: PnL/balance, # trades, distribución razones de cierre, top losers. Si TP-rate < 25% en 7d → recomendar pausar.
 2. **Dashboard mejorado**: agregar página de "salud del portfolio" con métricas de cada par (PnL 7/30/90d, winrate, pf, max_dd) y alertas visuales.
 3. **CI ligero**: hook que verifique `md5sum pkg/best_prod.json` local == HEAD == prod después de cualquier deploy.
