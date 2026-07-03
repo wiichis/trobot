@@ -196,15 +196,32 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 5. Cross-val anti-overfit (criterio refinado: 3/5 vale solo si regresión ≤$2 en ventanas perdidas).
 6. Presentar propuesta → confirmar con usuario → aplicar + deploy + verificar + actualizar memoria.
 
-### Watch-list 06/07
+### 📅 Plan con fechas (fijado 03/07 tras los 4 cambios del día)
 
-- **CFX-USDT** — revertido a `min_vol_ratio` 1.15 (30/06). Validar que vuelva a plano (era −2.02 con 1.0). Si sigue negativo, es el 1º en la fila de rotación (peor 90d).
-- **AVAX-USDT** — CONGELADO (no tocar params). −0.97/90d. Si pierde otra semana → rotar, no re-optimizar.
-- **LINK-USDT** — NEW 30/06 (5/5). Validar que se realice.
-- **Rotación disponible**: LTC/DYDX/INJ en top-volumen (1ª vez con reemplazo cripto desde 10/06). Plan si CFX/AVAX siguen mal: backfill ~105d + sweep + cross-val de LTC, rotar el peor 90d. NO meter a ciegas (HYPE/XRP/ZEC se rechazaron así).
-- **DOT-USDT** — 5ª semana muda. Candidato de rotación secundario.
-- **TP×2 (03/07)** — 8 pares con TP duplicado. Esperar winrate más bajo con ganancias más grandes; NO revertir por una semana mala de winrate. Evaluar realización a 2-4 semanas contra la línea base −2 a −3 USD/mes.
-- **TPs LIMIT maker (03/07)** — `tp_mode: partial_limit_tp` activado en runtime config (A/B 4/4 ventanas, fills perdidos marginales). `break_even_after_tp1: false` a propósito (BE sigue por price-trigger como siempre). Vigilar en logs/Telegram que los TPs se llenen como LIMIT y que el fallback a market no se dispare seguido; revertir = flip de config + restart.
+Contexto: el 03/07 se aplicaron 4 cambios (TP×2 en 8 pares, TPs LIMIT maker, fix cooldown ×5, telemetría PnL). Necesitan ventana de realización limpia — **congelamiento de parámetros hasta el 03/08** salvo emergencia (par con pérdida real >2 USD/semana).
+
+**Lunes 06/07 — flujo semanal en modo OBSERVACIÓN (no tocar params)**
+1. Pre-check md5 local↔prod + sync PnL/ganancias/trade_closed vía SCP (velas: top-up API, no bajar long.csv).
+2. **NO re-optimizar ni aplicar sweeps.** Dry-run solo como diagnóstico si se quiere.
+3. Verificar ejecución de los cambios del 03/07:
+   - TPs colocándose como **LIMIT** reduce-only (execution_ledger/order_register); fallback a market no dispara seguido.
+   - `trade_closed_log`: cierres nuevos con `pnl_source=api`; aparecen `be_stop`/`trail_stop` (ya no todo es "stop_loss").
+   - Cooldowns: tras un SL no hay re-entradas antes de 30-75 min.
+4. Watch pares: **CFX** (¿volvió a plano tras revert 30/06?), **AVAX** (congelado; si pierde otra semana → candidato rotación), **LINK** (NEW 30/06, ¿realiza?), **DOT** (6ª semana muda).
+
+**Lunes 13/07 — observación, semana 1.5 de TP×2**
+- Mismas verificaciones. Primera lectura de TP×2: winrate ~57% esperado con ganadores más grandes — **NO revertir por winrate bajo**.
+- Si CFX o AVAX acumulan 2 semanas malas: preparar rotación (backfill ~105d de LTC/DYDX/INJ + sweep + cross-val), **sin aplicar todavía**.
+
+**Lunes 20/07 — evaluación intermedia (2.5 semanas de datos)**
+- PnL realizado desde 03/07 vs baseline (−2 a −3 USD/mes), usando solo filas `pnl_source=api`.
+- Métricas P4: % de TPs llenados como LIMIT vs fallback market. Distribución be_stop vs stop_loss real.
+- Si hay candidato de rotación validado (cross-val 5/5 o 3/5 con regresión ≤$2) y CFX/AVAX siguen mal → aplicar rotación (es cambio de par, no de params congelados).
+
+**Lunes 03/08 — veredicto TP×2 (4 semanas) + decisiones estructurales**
+- Veredicto TP×2 + LIMIT TPs con un mes de realización real. Revertir solo si el PnL realizado es peor que la baseline.
+- **P-proceso (punto 3)**: arranca la cadencia MENSUAL de re-optimización — primer sweep aplicable, con presupuesto de cambios (máx. 1-2 pares/mes; cada cambio debe ganarle a "no tocar nada" en cross-val). Los lunes intermedios quedan como observación/rotación.
+- **P-pesos (punto 6)**: decidir con el mes de datos si concentrar capital (menos pares o pesos escalonados con cap por par) en vez del equal-weight 20% actual.
 
 ### P2 — Mejoras estratégicas adicionales
 
