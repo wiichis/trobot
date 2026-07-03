@@ -171,6 +171,13 @@ Diagnóstico con PnL real 90d: winrate 66% pero payoff 0.42 (ganador +0.16, perd
 - ✗ `be_trigger=0`: 4/5 pero −9.57 en 60d. El BE aporta en ventanas largas.
 - ✅ **TP×2 en 8 pares** (sin AVAX congelado ni LINK NEW): cross-val **5/5** (Δ +1.7/+1.1/+3.2/+6.7/+14.8), mejora repartida 8/10 pares (no la explica CFX), −20% trades, Sharpe 3.61→4.25. Aplicado 03/07. Esperar winrate ~57% con ganancias más grandes; veredicto real en 2-4 semanas.
 
+### ✅ P4 Costos de ejecución — HECHO 03/07: TPs LIMIT maker activados
+
+- Live ya entraba maker (PostOnly); las salidas eran todas taker. La infra `partial_limit_tp` de `monkey_bx.py` (TPs escalonados LIMIT reduce-only, one-at-a-time, fallback a market) existía completa y testeada (32 tests) pero apagada.
+- 🐛 De paso: `should_fill_tp_limit`/`LimitFillPolicy` estaban hardcodeados a `None` en `pkg/backtesting.py` (resto de un módulo borrado) → `conservative_limit_fills` era código muerto en TODOS los sweeps históricos. Restaurados: fill solo si trade-through ≥buffer_bps o close confirma.
+- A/B (fills conservadores + fee maker + slippage 0 en TPs vs status quo): **+0.45/+0.80/+1.15/+1.30 en 30/60/90/120d, 4/4**, peor celda por par −0.09. Fills perdidos ~2-3%.
+- Aplicado: `tp_mode: partial_limit_tp` + `break_even_after_tp1: false` (mantiene BE por price-trigger idéntico a hoy) en `live_benchmark_runtime.json`. Reversible con flip de config + restart.
+
 ### ❌ P2 Timeframe 15m — CERRADO 03/07: sweep completo, RECHAZADO
 
 Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs costos. Falsificada:
@@ -197,6 +204,7 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 - **Rotación disponible**: LTC/DYDX/INJ en top-volumen (1ª vez con reemplazo cripto desde 10/06). Plan si CFX/AVAX siguen mal: backfill ~105d + sweep + cross-val de LTC, rotar el peor 90d. NO meter a ciegas (HYPE/XRP/ZEC se rechazaron así).
 - **DOT-USDT** — 5ª semana muda. Candidato de rotación secundario.
 - **TP×2 (03/07)** — 8 pares con TP duplicado. Esperar winrate más bajo con ganancias más grandes; NO revertir por una semana mala de winrate. Evaluar realización a 2-4 semanas contra la línea base −2 a −3 USD/mes.
+- **TPs LIMIT maker (03/07)** — `tp_mode: partial_limit_tp` activado en runtime config (A/B 4/4 ventanas, fills perdidos marginales). `break_even_after_tp1: false` a propósito (BE sigue por price-trigger como siempre). Vigilar en logs/Telegram que los TPs se llenen como LIMIT y que el fallback a market no se dispare seguido; revertir = flip de config + restart.
 
 ### P2 — Mejoras estratégicas adicionales
 

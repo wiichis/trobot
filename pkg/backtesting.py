@@ -58,8 +58,46 @@ except Exception:
     except Exception:
         _indicadores = None
 
-LimitFillPolicy = None
-should_fill_tp_limit = None
+from dataclasses import dataclass as _lf_dataclass
+
+
+@_lf_dataclass
+class LimitFillPolicy:
+    """Modelo conservador de fill para TP LIMIT (maker).
+
+    Un TP LIMIT se considera llenado en la barra si:
+    - el precio ATRAVIESA el nivel por >= buffer_bps (trade-through: cubre la
+      cola del book), o
+    - tocó el nivel y el CIERRE de la barra confirma más allá del nivel
+      (solo si require_close_confirmation=True).
+    Tocar exacto sin confirmación NO llena (a diferencia del modo optimista).
+    """
+    buffer_bps: float = 2.0
+    require_close_confirmation: bool = True
+
+
+def should_fill_tp_limit(position_side: str, limit_price: float, bar_high: float,
+                         bar_low: float, bar_close: float, policy: "LimitFillPolicy") -> bool:
+    try:
+        price = float(limit_price)
+        buf = price * float(policy.buffer_bps) / 10000.0
+    except Exception:
+        return False
+    if str(position_side).lower() == 'long':  # TP = SELL limit
+        traded_through = float(bar_high) >= price + buf
+        touched = float(bar_high) >= price
+        close_confirms = float(bar_close) >= price
+    else:  # TP de short = BUY limit
+        traded_through = float(bar_low) <= price - buf
+        touched = float(bar_low) <= price
+        close_confirms = float(bar_close) <= price
+    if traded_through:
+        return True
+    if policy.require_close_confirmation:
+        return touched and close_confirms
+    return False
+
+
 compute_initial_stop_from_entry = None
 compute_tp_prices_from_r_multiples = None
 parse_positive_floats = None

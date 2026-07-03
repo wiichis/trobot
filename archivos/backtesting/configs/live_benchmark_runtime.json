@@ -33,7 +33,7 @@
     "mode": "symbol_params"
   },
   "execution_tp": {
-    "tp_mode": "legacy_market_tp",
+    "tp_mode": "partial_limit_tp",
     "tp_partial_distribution": [
       0.33,
       0.33,
@@ -42,7 +42,7 @@
     "tp_limit_offset_bps": 0.0,
     "tp_reduce_only": true,
     "tp_one_at_a_time": true,
-    "break_even_after_tp1": true,
+    "break_even_after_tp1": false,
     "tp_legacy_fallback_on_error": true,
     "tp_fill_confirmation_mode": "inferred"
   }
