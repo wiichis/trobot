@@ -171,6 +171,15 @@ Diagnóstico con PnL real 90d: winrate 66% pero payoff 0.42 (ganador +0.16, perd
 - ✗ `be_trigger=0`: 4/5 pero −9.57 en 60d. El BE aporta en ventanas largas.
 - ✅ **TP×2 en 8 pares** (sin AVAX congelado ni LINK NEW): cross-val **5/5** (Δ +1.7/+1.1/+3.2/+6.7/+14.8), mejora repartida 8/10 pares (no la explica CFX), −20% trades, Sharpe 3.61→4.25. Aplicado 03/07. Esperar winrate ~57% con ganancias más grandes; veredicto real en 2-4 semanas.
 
+### ❌ P2 Timeframe 15m — CERRADO 03/07: sweep completo, RECHAZADO
+
+Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs costos. Falsificada:
+
+- El estilo fresh-cross genera **~10× menos señales en 15m** (~10 trades/90d por par con la config más laxa vs ~100 en 5m). Parte era `max_dist_emaslow` calibrado a geometría 5m (en 15m la EMA slow es media de 7.5h, el precio casi siempre está a >1%), pero aun corregido el techo es estructural.
+- Sweep 500 trials × 10 pares, 120d, espacio calibrado a 15m (`tf15m_validation_20260703/sweep_15m_v2.json`): 8 candidatos pasaron filtros, pero en cross-val 30/60/90/120d **pierden en las 4 ventanas** (−6.1/−13.6/−13.6/−5.0) vs baseline 5m (−1.6/+6.5/+4.2/+13.5). Overfit sobre señal escasa.
+- Única señal débil: APT y ETH 15m positivos en 3-4 ventanas sin regresión (mudos crónicos en 5m), pero con 13-18 trades/120d y requeriría wiring de `entry_tf` en `indicadores.py` (live es 5m-only). NO pagar ese costo por 2 candidatos marginales; revisitar solo si APT/ETH siguen mudos ≥4 semanas más.
+- Artefactos: `archivos/backtesting/tf15m_validation_20260703/`.
+
 ### Flujo semanal estándar (referencia, ya consolidado)
 
 1. Pre-check consistencia local ↔ prod (`md5sum`); restaurar con `git checkout` si hay drift.
