@@ -40,7 +40,7 @@
       0.34
     ],
     "tp_limit_offset_bps": 0.0,
-    "tp_reduce_only": true,
+    "tp_reduce_only": false,
     "tp_one_at_a_time": true,
     "break_even_after_tp1": false,
     "tp_legacy_fallback_on_error": true,

@@ -362,11 +362,16 @@ def _tp_limit_order_kwargs(symbol: str, position_side: str, tp_idx: int) -> dict
     p = str(position_side or "").upper().strip()
     short_side = "L" if p == "LONG" else "S"
     client_id = f"tp{idx}{sym}{short_side}{uuid.uuid4().hex[:12]}"
-    return {
-        "reduceOnly": bool(get_tp_reduce_only()),
+    kwargs = {
         "timeInForce": "GTC",
         "clientOrderId": client_id,
     }
+    # En Hedge mode BingX rechaza el campo reduceOnly (code 109400): el cierre
+    # ya queda definido por side+positionSide. Solo enviar el campo si la
+    # config lo pide explícitamente (cuentas one-way).
+    if bool(get_tp_reduce_only()):
+        kwargs["reduceOnly"] = True
+    return kwargs
 
 
 def _tp1_limit_order_kwargs(symbol: str, position_side: str) -> dict:
@@ -1473,11 +1478,12 @@ def _post_with_retry(
                 if return_details:
                     return True, details
                 return True
-            # Fallback seguro: en Hedge mode, algunas cuentas rechazan reduceOnly en MARKET.
-            # Reintentamos una vez sin reduceOnly para evitar fallo operativo en cierres de emergencia.
+            # Fallback seguro: en Hedge mode la cuenta rechaza reduceOnly (109400).
+            # Reintentamos una vez sin reduceOnly. Aplica a MARKET (cierres de
+            # emergencia) y a LIMIT (TPs maker): side+positionSide ya define el cierre.
             fallback_attempted = False
             if (
-                otype_u == "MARKET"
+                otype_u in ("MARKET", "LIMIT")
                 and "reduceOnly" in order_kwargs
                 and _is_reduce_only_hedge_rejection(code, (err_msg or msg or ""))
             ):

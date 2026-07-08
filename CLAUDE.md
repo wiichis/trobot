@@ -177,6 +177,7 @@ Diagnóstico con PnL real 90d: winrate 66% pero payoff 0.42 (ganador +0.16, perd
 - 🐛 De paso: `should_fill_tp_limit`/`LimitFillPolicy` estaban hardcodeados a `None` en `pkg/backtesting.py` (resto de un módulo borrado) → `conservative_limit_fills` era código muerto en TODOS los sweeps históricos. Restaurados: fill solo si trade-through ≥buffer_bps o close confirma.
 - A/B (fills conservadores + fee maker + slippage 0 en TPs vs status quo): **+0.45/+0.80/+1.15/+1.30 en 30/60/90/120d, 4/4**, peor celda por par −0.09. Fills perdidos ~2-3%.
 - Aplicado: `tp_mode: partial_limit_tp` + `break_even_after_tp1: false` (mantiene BE por price-trigger idéntico a hoy) en `live_benchmark_runtime.json`. Reversible con flip de config + restart.
+- 🐛 **Fix 07/07**: la primera semana los 9/9 TP LIMIT fueron rechazados por BingX (`109400: Hedge mode no acepta reduceOnly`) y cayeron al fallback market (sin pérdidas, pero sin ahorro). Fix: `tp_reduce_only: false` en config (en Hedge, side+positionSide ya define el cierre), kwargs omite el campo, y el retry sin reduceOnly cubre también LIMIT. Verificar fills LIMIT reales el 13/07.
 
 ### ❌ P2 Timeframe 15m — CERRADO 03/07: sweep completo, RECHAZADO
 
