@@ -25,6 +25,7 @@ from .live_runtime_config import (
     get_tp_fill_confirmation_mode,
     get_tp_limit_offset_bps,
     get_tp_reduce_only,
+    get_tp_min_close_notional_usdt,
     get_tp_legacy_fallback_on_error,
     is_break_even_after_tp1_enabled,
 )
@@ -419,6 +420,8 @@ def _compute_partial_limit_stage_qty(
     splits: tuple,
     state: dict,
     stage_idx: int,
+    price_ref=None,
+    min_close_notional: float = 0.0,
 ):
     idx = max(1, min(3, int(stage_idx)))
     qty_now = max(0.0, _safe_float(position_qty_now, 0.0))
@@ -445,6 +448,19 @@ def _compute_partial_limit_stage_qty(
     qty = _round_step(qty, step_sz)
     if qty <= 0:
         return 0.0, "stage_qty_rounded_zero"
+
+    # Guard de notional mínimo del exchange (BingX ~6.4 USDT por orden de
+    # cierre; codes 110422/101485). Si el tramo queda corto, colapsar al
+    # total restante; si ni el total alcanza, no enviar (el SL protege).
+    try:
+        px = _safe_float(price_ref, 0.0)
+        min_notional = max(0.0, _safe_float(min_close_notional, 0.0))
+        if px > 0 and min_notional > 0 and (qty * px) < min_notional:
+            if (qty_now * px) >= min_notional:
+                return qty_now, "ok_collapsed_min_notional"
+            return 0.0, "below_min_close_notional"
+    except Exception:
+        pass
     return qty, "ok"
 
 
@@ -3236,6 +3252,8 @@ def colocando_TK_SL():
                                 splits=splits,
                                 state=st_curr,
                                 stage_idx=stage_idx_target,
+                                price_ref=stage_price_ref,
+                                min_close_notional=get_tp_min_close_notional_usdt(),
                             )
                             if stage_qty <= 0:
                                 _emit_tp_failed(
@@ -3593,6 +3611,8 @@ def colocando_TK_SL():
                                 splits=splits,
                                 state=st_curr,
                                 stage_idx=stage_idx_target,
+                                price_ref=stage_price_ref,
+                                min_close_notional=get_tp_min_close_notional_usdt(),
                             )
                             if stage_qty <= 0:
                                 _emit_tp_failed(

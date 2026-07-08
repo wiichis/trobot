@@ -397,6 +397,15 @@ def get_tp_legacy_fallback_on_error() -> bool:
     return bool(get_tp_runtime_config().get("tp_legacy_fallback_on_error", True))
 
 
+def get_tp_min_close_notional_usdt() -> float:
+    """Notional mínimo (USDT) para órdenes de cierre TP — BingX rechaza <~6.4 (110422/101485)."""
+    try:
+        v = float(get_tp_runtime_config().get("tp_min_close_notional_usdt", 7.0))
+    except Exception:
+        return 7.0
+    return max(0.0, v)
+
+
 def get_tp_fill_confirmation_mode() -> str:
     mode = str(get_tp_runtime_config().get("tp_fill_confirmation_mode", "inferred")).strip().lower()
     if mode not in ("exchange_state", "inferred"):
