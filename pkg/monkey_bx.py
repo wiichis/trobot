@@ -446,22 +446,35 @@ def _compute_partial_limit_stage_qty(
             stage_target = 0.0
         qty = min(max(0.0, stage_target), qty_now)
     qty = _round_step(qty, step_sz)
-    if qty <= 0:
-        return 0.0, "stage_qty_rounded_zero"
 
     # Guard de notional mínimo del exchange (BingX ~6.4 USDT por orden de
-    # cierre; codes 110422/101485). Si el tramo queda corto, colapsar al
-    # total restante; si ni el total alcanza, no enviar (el SL protege).
-    try:
-        px = _safe_float(price_ref, 0.0)
-        min_notional = max(0.0, _safe_float(min_close_notional, 0.0))
-        if px > 0 and min_notional > 0 and (qty * px) < min_notional:
-            if (qty_now * px) >= min_notional:
-                return qty_now, "ok_collapsed_min_notional"
-            return 0.0, "below_min_close_notional"
-    except Exception:
-        pass
-    return qty, "ok"
+    # cierre; codes 110422/101485). Si el tramo quedó en cero por rounding
+    # al step (posición chica) o corto de notional, colapsar al total
+    # restante; si ni el total alcanza, no enviar (el SL protege).
+    px = _safe_float(price_ref, 0.0)
+    min_notional = max(0.0, _safe_float(min_close_notional, 0.0))
+    guard_on = px > 0 and min_notional > 0
+    if qty > 0 and (not guard_on or (qty * px) >= min_notional):
+        return qty, "ok"
+    if guard_on and (qty_now * px) >= min_notional:
+        return qty_now, "ok_collapsed_min_notional"
+    if qty <= 0:
+        return 0.0, "stage_qty_rounded_zero"
+    return 0.0, "below_min_close_notional"
+
+
+_TP_SKIP_EMIT_MEMO = {}
+
+
+def _should_emit_tp_skip(symbol: str, position_side: str, tp_idx: int, reason: str, every_sec: int = 3600) -> bool:
+    """Throttle: el skip por qty/notional se re-evalúa cada ciclo (50s); emitir el evento 1 vez/hora."""
+    key = (str(symbol).upper(), str(position_side).upper(), int(tp_idx), str(reason))
+    now = time.time()
+    last = _TP_SKIP_EMIT_MEMO.get(key, 0.0)
+    if (now - last) < max(60, int(every_sec)):
+        return False
+    _TP_SKIP_EMIT_MEMO[key] = now
+    return True
 
 
 def _emit_tp_failed(
@@ -3256,17 +3269,18 @@ def colocando_TK_SL():
                                 min_close_notional=get_tp_min_close_notional_usdt(),
                             )
                             if stage_qty <= 0:
-                                _emit_tp_failed(
-                                    tp_idx=stage_idx_target,
-                                    symbol=symbol,
-                                    position_side="LONG",
-                                    reason=f"{_tp_stage_name(stage_idx_target)}_qty_invalid",
-                                    detail=str(qty_reason),
-                                    data_quality="inferred",
-                                    source="colocando_TK_SL",
-                                    tp_price=stage_price_ref,
-                                    tp_qty=stage_qty,
-                                )
+                                if _should_emit_tp_skip(symbol, "LONG", stage_idx_target, str(qty_reason)):
+                                    _emit_tp_failed(
+                                        tp_idx=stage_idx_target,
+                                        symbol=symbol,
+                                        position_side="LONG",
+                                        reason=f"{_tp_stage_name(stage_idx_target)}_qty_invalid",
+                                        detail=str(qty_reason),
+                                        data_quality="inferred",
+                                        source="colocando_TK_SL",
+                                        tp_price=stage_price_ref,
+                                        tp_qty=stage_qty,
+                                    )
                                 placed_all_tps = False
                             else:
                                 ok, tp_details = _post_with_retry(
@@ -3615,17 +3629,18 @@ def colocando_TK_SL():
                                 min_close_notional=get_tp_min_close_notional_usdt(),
                             )
                             if stage_qty <= 0:
-                                _emit_tp_failed(
-                                    tp_idx=stage_idx_target,
-                                    symbol=symbol,
-                                    position_side="SHORT",
-                                    reason=f"{_tp_stage_name(stage_idx_target)}_qty_invalid",
-                                    detail=str(qty_reason),
-                                    data_quality="inferred",
-                                    source="colocando_TK_SL",
-                                    tp_price=stage_price_ref,
-                                    tp_qty=stage_qty,
-                                )
+                                if _should_emit_tp_skip(symbol, "SHORT", stage_idx_target, str(qty_reason)):
+                                    _emit_tp_failed(
+                                        tp_idx=stage_idx_target,
+                                        symbol=symbol,
+                                        position_side="SHORT",
+                                        reason=f"{_tp_stage_name(stage_idx_target)}_qty_invalid",
+                                        detail=str(qty_reason),
+                                        data_quality="inferred",
+                                        source="colocando_TK_SL",
+                                        tp_price=stage_price_ref,
+                                        tp_qty=stage_qty,
+                                    )
                                 placed_all_tps = False
                             else:
                                 ok, tp_details = _post_with_retry(
