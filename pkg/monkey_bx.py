@@ -2789,6 +2789,26 @@ def colocando_ordenes():
     # Guardando Posiciones fuera del bucle
     df_positions.to_csv('./archivos/position_id_register.csv', index=False)
 
+def _recent_close_recorded(symbol: str, position_side: str, minutes: int = 30) -> bool:
+    """True si trade_closed_log ya tiene un cierre de este símbolo/lado en los últimos N min."""
+    try:
+        if not (os.path.exists(_TRADE_CLOSED_CSV) and os.path.getsize(_TRADE_CLOSED_CSV) > 0):
+            return False
+        df = pd.read_csv(_TRADE_CLOSED_CSV, low_memory=False).tail(50)
+        if df.empty:
+            return False
+        ts = pd.to_datetime(df['ts_utc'], errors='coerce', utc=True, format='mixed')
+        cutoff = pd.Timestamp.now(tz='UTC') - pd.Timedelta(minutes=int(minutes))
+        m = (
+            (df['symbol'].astype(str).str.upper() == str(symbol).upper())
+            & (df['position_side'].astype(str).str.upper() == str(position_side).upper())
+            & (ts >= cutoff)
+        )
+        return bool(m.any())
+    except Exception:
+        return False
+
+
 def sync_cooldowns_from_sl_fills():
     try:
         if not os.path.exists(SL_WATCH_CSV):
@@ -2852,6 +2872,27 @@ def sync_cooldowns_from_sl_fills():
 
         if still_pending:
             remaining_rows.append(row)
+            continue
+
+        # La orden ya no está pendiente: puede ser fill real del SL o un SL
+        # cancelado/reemplazado (trailing/BE mueve el stop cada ciclo). Solo es
+        # un cierre si la posición realmente desapareció; si sigue viva, la
+        # watch-row es huérfana y se descarta sin registrar nada.
+        try:
+            _pos = total_positions(symbol)
+            _pos_alive = bool(
+                _pos and _pos[0] is not None
+                and str(_pos[1]).upper() == position_side
+                and abs(_safe_float(_pos[3], 0.0)) > 0
+            )
+        except Exception:
+            _pos_alive = False
+        if _pos_alive:
+            continue
+
+        # Dedupe: varias watch-rows huérfanas del mismo cierre mueren juntas;
+        # si ya registramos este cierre hace poco, no duplicar fila/alerta/cooldown.
+        if _recent_close_recorded(symbol, position_side, minutes=30):
             continue
 
         minutes = _cooldown_minutes_for_symbol(params_by_symbol, symbol, default=10)
