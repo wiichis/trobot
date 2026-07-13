@@ -2405,7 +2405,19 @@ def resultado_PnL():
             return
 
         df_concat = pd.concat([df_data, df])
-        df_unique = df_concat.drop_duplicates()
+        # Normalizar 'time' a texto uniforme: releído del CSV viene como string
+        # y de la API como datetime → drop_duplicates() nunca los veía iguales
+        # y cada sync (6h) re-insertaba las filas recientes (todo lo reciente
+        # quedaba ×2 y el resumen diario salía inflado ~2x).
+        df_concat['time'] = pd.to_datetime(df_concat['time'], errors='coerce').dt.strftime('%Y-%m-%d %H:%M:%S')
+        if 'tranId' in df_concat.columns:
+            tran = df_concat['tranId'].astype(str).str.strip()
+            has_id = df_concat['tranId'].notna() & (tran != '') & (tran.str.lower() != 'nan')
+            df_ids = df_concat[has_id].drop_duplicates(subset=['tranId', 'incomeType'], keep='last')
+            df_noids = df_concat[~has_id].drop_duplicates()
+            df_unique = pd.concat([df_noids, df_ids]).sort_values('time', na_position='first')
+        else:
+            df_unique = df_concat.drop_duplicates()
         df_limited = df_unique.tail(10000)
         df_limited.to_csv(csv_path, index=False)
     else:
