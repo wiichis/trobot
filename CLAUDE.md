@@ -28,15 +28,16 @@ Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USD
 
 ## Composición actual del portfolio
 
-10 pares (al 2026-07-03, MD5 `3310f1b2`):
-APT, AVAX, BCH, BNB, CFX, DOT, ETH, LINK, ONDO, XMR.
+10 pares (al 2026-07-20, MD5 `57daca5b`):
+APT, AVAX, BCH, BNB, CFX, **DYDX**, ETH, LINK, ONDO, XMR.
 
+🔄 **DYDX NEW** (20/07, rotó a DOT): cross-val 3/3 (30/60/80d: +0.05/+1.82/+2.31), 15 trades/80d, WR 70%, baja frecuencia = perfil que menos sufre el gap sim-real. Entra con params del sweep tal cual (tp=0.012, NO TP×2 — el sweep ya optimizó su TP). Regla de vigilancia AAVE su 1ª semana. Reglas de contrato: qty_step 0.1, price_tick 0.00001 (~$0.12).
 🎯 **TP×2 aplicado** (03/07) a 8 pares (todos menos AVAX congelado y LINK NEW): el A/B de estructura de salidas mostró TPs demasiado cercanos (payoff real 0.42, perdedores 11h vs ganadores 3h). Cross-val 5/5 ventanas. Esperar: winrate más bajo, ganancias más grandes, ~20% menos trades/fees. Ver memoria `exit-structure-experiments`.
 ✅ **BCH NEW validó** (22/06): +2.02 real, 10/12 wins. El acierto del mes.
-🔄 **LINK paramset NEW** (30/06, cross-val 5/5): validar que se realice.
-⏪ **CFX revertido** a `min_vol_ratio` 1.15 (30/06): el relax del 11/06 sangró −2.02 en vivo pese a sim +362 (ver memoria `parity-sim-realization-gap`). Debería volver a quieto/plano.
-🧊 **AVAX congelado**: 2 cambios malos seguidos; NO re-optimizar sus params. Si sigue sangrando → rotar.
-⚠️ **DOT/ONDO**: mudos crónicos. Candidatos a rotación si aparece edge en LTC/DYDX/INJ.
+🔄 **LINK paramset NEW** (30/06, cross-val 5/5): validar que se realice. ⚠️ 0 trades desde 03/07 — mudo.
+⏪ **CFX revertido** a `min_vol_ratio` 1.15 (30/06): volvió a plano/positivo (+0.11 la semana 13/07).
+🧊 **AVAX congelado**: NO re-optimizar sus params. Revivió: +1.25 la semana 06/07. Sale de la fila de rotación.
+⚠️ **Mudez de portfolio**: APT/BCH/ETH/LINK/ONDO 0 trades desde 03/07 (5/10 pares). TP×2 bajó frecuencia + fresh-cross muy selectivo. Tema #1 para revisión estructural 03/08 (re-optimizar params está congelado hasta entonces).
 
 Pares removidos (no reincorporar a ciegas):
 - DOGE-USDT (02/05) — peor 90d
@@ -46,6 +47,7 @@ Pares removidos (no reincorporar a ciegas):
 - SOL-USDT (01/06) — 3 sweeps sin paramset robusto, 0 trades
 - AAVE-USDT (10/06) — regla de vigilancia: perdió −1.19 su 1ª semana; cross-val regresivo 60/90d
 - BTC-USDT (10/06) — 4 sweeps sin paramset robusto + 0 trades reales en 5 semanas
+- DOT-USDT (20/07) — mudo crónico (2 trades desde 03/07, −0.31) + semanas rojas; rotado a DYDX
 
 Candidatos evaluados y rechazados (10/06): HYPE, XRP, ZEC — overfit en 60/90d.
 Sintéticos NC* (oro/Nasdaq/petróleo/FX): descartados — gaps de finde rompen velas 5m.

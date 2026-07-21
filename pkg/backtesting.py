@@ -119,6 +119,7 @@ STEP_SIZE_DEFAULT = 0.001
 SYMBOL_TRADING_RULES = {
     'BNB-USDT': {'qty_step': 0.01, 'price_tick': 0.1},
     'DOT-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
+    'DYDX-USDT': {'qty_step': 0.1, 'price_tick': 0.00001},
     'HBAR-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
     'TRX-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
     'DOGE-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
