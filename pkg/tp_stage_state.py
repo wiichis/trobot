@@ -239,6 +239,15 @@ def upsert_tp_state(
         tp_stage_v = str(tp_stage).strip().lower()
         if tp_stage_v in TP_STAGE_VALUES:
             row["tp_stage"] = tp_stage_v
+            # Volver a "none" es el reset de plan de TPs al abrir posición: los
+            # tramos de la posición anterior no deben heredarse (la base del
+            # reparto es el tamaño de ESTA posición).
+            if tp_stage_v == "none":
+                for idx in (1, 2, 3):
+                    row[f"tp{idx}_order_id"] = ""
+                    row[f"tp{idx}_qty"] = None
+                    row[f"tp{idx}_price"] = None
+                    row[f"tp{idx}_submit_position_qty"] = None
     if break_even_state is not None:
         be_v = str(break_even_state).strip().lower()
         if be_v in BREAK_EVEN_VALUES:
@@ -310,6 +319,20 @@ def set_tp_submitted(
 ) -> Dict:
     idx = int(tp_idx)
     stage = "tp1_live" if idx <= 1 else ("tp2_live" if idx == 2 else "tp3_live")
+
+    # La base del reparto es el tamaño de la posición cuando se armó el plan de
+    # TPs, no la posición viva al momento de este submit. Si el mismo tramo se
+    # recoloca (la orden previa desapareció por fill sin confirmar), conservar
+    # la base original: degradarla encoge cada tramo sucesivo y deja un
+    # remanente que ningún TP alcanza a cubrir.
+    base_prev = _safe_float_or_none(
+        get_tp_state(symbol, position_side).get(f"tp{max(1, min(3, idx))}_submit_position_qty")
+    )
+    base_new = _safe_float_or_none(submit_position_qty)
+    if base_prev is not None and base_prev > 0:
+        if base_new is None or base_new <= 0 or base_new < base_prev:
+            submit_position_qty = base_prev
+
     kwargs = {
         "tp_stage": stage,
         "tp_mode": tp_mode,

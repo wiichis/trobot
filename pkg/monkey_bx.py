@@ -454,6 +454,16 @@ def _compute_partial_limit_stage_qty(
     px = _safe_float(price_ref, 0.0)
     min_notional = max(0.0, _safe_float(min_close_notional, 0.0))
     guard_on = px > 0 and min_notional > 0
+
+    # Guard de remanente huérfano: si servir este tramo dejaría un resto que
+    # por sí solo no alcanza el mínimo de cierre, ese resto ya no podrá
+    # cerrarse por TP en ningún ciclo posterior. Colapsar el tramo al total
+    # restante en vez de dejarlo colgando del SL.
+    if guard_on and 0 < qty < qty_now:
+        leftover = _round_step(qty_now - qty, step_sz)
+        if (leftover * px) < min_notional and (qty_now * px) >= min_notional:
+            return qty_now, "ok_collapsed_min_leftover"
+
     if qty > 0 and (not guard_on or (qty * px) >= min_notional):
         return qty, "ok"
     if guard_on and (qty_now * px) >= min_notional:
@@ -1172,9 +1182,17 @@ def _round_step(qty: float, step: float = STEP_SIZE_DEFAULT) -> float:
     """Redondea cantidad al múltiplo permitido por el contrato."""
     if step <= 0:
         return float(qty)
-    raw = math.floor(float(qty) / step) * step
     decs = max(0, -int(round(math.log10(step))))
-    return round(raw, decs)
+    # En binario 107.1/0.1 == 1070.9999... y el floor se comía un step entero
+    # (107.1 -> 107.0, 0.3 -> 0.2), dejando polvo sin gestionar en cada orden.
+    # Decimal sobre la representación decimal, igual que _split_position_qtys.
+    try:
+        q = Decimal(str(float(qty)))
+        s = Decimal(str(float(step)))
+        raw = (q / s).to_integral_value(rounding=ROUND_DOWN) * s
+        return float(round(raw, decs))
+    except Exception:
+        return round(math.floor(float(qty) / step) * step, decs)
 
 
 def _split_position_qtys(total_qty: float, splits, step: float = STEP_SIZE_DEFAULT):

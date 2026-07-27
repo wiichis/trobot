@@ -115,3 +115,76 @@ def test_sanitize_entry_limit_price_stays_maker_side():
 
     assert px_long < 100.0
     assert px_short > 100.0
+
+
+@pytest.mark.parametrize(
+    "qty,step,expected",
+    [
+        (107.1, 0.1, 107.1),
+        (314.7, 0.1, 314.7),
+        (0.3, 0.1, 0.3),
+        (0.1265, 0.00001, 0.1265),
+        (6.089, 0.001, 6.089),
+        (1.05, 0.1, 1.0),
+        (0.07, 0.1, 0.0),
+        (843.0, 1.0, 843.0),
+    ],
+)
+def test_round_step_no_pierde_un_step_por_binario(qty, step, expected):
+    """107.1/0.1 == 1070.9999... en binario: el floor se comía un step entero."""
+    import pkg.monkey_bx as mb
+
+    assert mb._round_step(qty, step) == pytest.approx(expected, abs=1e-9)
+
+
+def test_stage_qty_colapsa_cuando_el_remanente_no_alcanza_el_minimo():
+    """DYDX 26/07: el 3er tramo dejaba 37.6 u (~4.8 USDT) que ningún TP podía cerrar."""
+    import pkg.monkey_bx as mb
+
+    qty, reason = mb._compute_partial_limit_stage_qty(
+        position_qty_now=107.1,
+        step_sz=0.1,
+        splits=(0.33, 0.33, 0.34),
+        state={"tp1_submit_position_qty": 314.7},
+        stage_idx=1,
+        price_ref=0.1265,
+        min_close_notional=7.0,
+    )
+
+    assert qty == pytest.approx(107.1, abs=1e-9)
+    assert reason == "ok_collapsed_min_leftover"
+
+
+def test_stage_qty_no_colapsa_si_el_remanente_es_operable():
+    import pkg.monkey_bx as mb
+
+    qty, reason = mb._compute_partial_limit_stage_qty(
+        position_qty_now=314.7,
+        step_sz=0.1,
+        splits=(0.33, 0.33, 0.34),
+        state={"tp1_submit_position_qty": 314.7},
+        stage_idx=1,
+        price_ref=0.1265,
+        min_close_notional=7.0,
+    )
+
+    assert qty == pytest.approx(103.8, abs=1e-9)
+    assert reason == "ok"
+
+
+def test_stage_qty_sin_orden_si_ni_el_total_alcanza_el_minimo():
+    """Límite del exchange, no del bot: el SL queda como única protección."""
+    import pkg.monkey_bx as mb
+
+    qty, reason = mb._compute_partial_limit_stage_qty(
+        position_qty_now=40.0,
+        step_sz=0.1,
+        splits=(0.33, 0.33, 0.34),
+        state={"tp1_submit_position_qty": 40.0},
+        stage_idx=1,
+        price_ref=0.1265,
+        min_close_notional=7.0,
+    )
+
+    assert qty == 0.0
+    assert reason == "below_min_close_notional"
