@@ -194,18 +194,15 @@ DYDX abrió 314.7 el 26/07 y colocó tramos **103.8 / 103.8 / 69.5**; el 4º sub
 
 Replay del caso real post-fix: **103.8 / 103.8 / 107.1 y la posición cierra íntegra por TP**. 13 tests nuevos, 45 en total. Desplegado 28/07 01:48 UTC.
 
-### ⚠️ PENDIENTE P0 — el TP escalonado no escalona (los 3 tramos salen al precio de TP1)
+### ✅ Bug 28/07 — el TP escalonado no escalonaba — CORREGIDO Y DESPLEGADO
 
-**Detectado 27/07 rastreando el bug de cantidad. Es la causa raíz aguas arriba, y sigue viva** (los fixes de cantidad contienen el daño pero no arreglan esto).
+**Era la causa raíz aguas arriba del bug de cantidad del 27/07.** Cadena: el job de colocación (cada 50 s) recolocaba el mismo stage y `set_tp_submitted(tp_idx=1)` **sobrescribía `tp1_order_id` antes de que `_log_pending_order_transitions` pudiera atribuir el fill de la orden anterior**. Sin ese match, `_infer_tp_idx_from_state_order_id` devuelve `None`, el fill nunca se confirmaba → `tp_stage` se quedaba en `tp1_live` para siempre → `_next_tp_idx_from_stage` devolvía `1` indefinidamente → `price_src_idx = 0` siempre → **los 3 tramos salían al precio de TP1**.
 
-Cadena: el job de colocación (cada 50 s) recoloca el mismo stage y llama a `set_tp_submitted(tp_idx=1)`, que **sobrescribe `tp1_order_id` antes de que el job de confirmación pueda atribuir el fill de la orden anterior**. Sin ese match, `_infer_tp_idx_from_state_order_id` devuelve `None`, `is_stage_limit_candidate` es False y el fill nunca se confirma → `tp_stage` se queda en `tp1_live` para siempre → `_next_tp_idx_from_stage` devuelve `1` indefinidamente.
+Evidencia: **0 fills `tp1/tp2/tp3` en 133 cierres desde el 03/07** (`trail_stop` 116, `stop_loss` 15, `be_stop` 2). El TP escalonado llevaba ~1 mes sin escalonar; quien capturaba la ganancia era el trailing stop.
 
-Consecuencias:
-- `price_src_idx = min(stage_idx_target - 1, …)` = 0 siempre → **todos los tramos salen al precio de TP1**, nunca a TP2/TP3. El TP escalonado lleva ~1 mes sin escalonar.
-- Encaja con la telemetría: **0 fills `tp1/tp2/tp3` en 133 cierres desde el 03/07** (`trail_stop` 116, `stop_loss` 15, `be_stop` 2). Quien captura la ganancia es el trailing stop, no el TP.
-- ⚠️ **Esto contamina el veredicto de TP×2 del 03/08**: el A/B asumía TPs escalonados que se llenan. Lo que corrió en real fue "un TP al nivel de TP1 + trailing". No leer el veredicto como validación de TP×2 sin corregir esto antes.
+Fix (commit `077951b`, desplegado 28/07 04:17 UTC): `_reconcile_stage_before_submit()` confirma el fill del tramo vivo cuya orden ya no está pendiente, **justo antes de decidir el próximo stage**. Reutiliza `_infer_tp_fill_from_position` (misma regla de reducción ≥60% del tramo), así que una orden cancelada sin fill no avanza el stage. Sin doble conteo por los dos órdenes posibles: si el job de transiciones confirma primero, el stage ya es `tpN_filled` y la reconciliación es no-op; si reconcilia primero, suelta `tpN_order_id` y el otro job deja de matchear. **El stage 3 se deja al job de transiciones a propósito** (es el cierre de la posición; reconciliarlo aquí duplicaría `_record_trade_closed`). Replay del caso DYDX: TP1 → TP2 → TP3 y la posición cierra íntegra. 50 tests en verde.
 
-Dónde mirar: `pkg/monkey_bx.py` Patch 5C (~L708-803, confirmación), `_next_tp_idx_from_stage` (~L388), bloque de colocación LONG ~L3300 / SHORT ~L3660. Idea de fix: no sobrescribir `tpN_order_id` cuando la orden previa de ese stage desapareció con reducción de posición pendiente de atribuir (o confirmar el fill antes de recolocar, dándole prioridad al job de confirmación).
+⚠️ **Consecuencia para el veredicto de TP×2 del 03/08**: el A/B asumía TPs escalonados que se llenan, pero lo que corrió en real desde el 03/07 fue "un TP al nivel de TP1 + trailing". **El mes de datos NO valida ni invalida TP×2.** El reloj de observación de la estructura de salidas arranca de cero el 28/07.
 
 ### ❌ P2 Timeframe 15m — CERRADO 03/07: sweep completo, RECHAZADO
 
@@ -247,8 +244,10 @@ Contexto: el 03/07 se aplicaron 4 cambios (TP×2 en 8 pares, TPs LIMIT maker, fi
 - Métricas P4: % de TPs llenados como LIMIT vs fallback market. Distribución be_stop vs stop_loss real.
 - Si hay candidato de rotación validado (cross-val 5/5 o 3/5 con regresión ≤$2) y CFX/AVAX siguen mal → aplicar rotación (es cambio de par, no de params congelados).
 
-**Lunes 03/08 — veredicto TP×2 (4 semanas) + decisiones estructurales**
-- Veredicto TP×2 + LIMIT TPs con un mes de realización real. Revertir solo si el PnL realizado es peor que la baseline.
+**Lunes 03/08 — decisiones estructurales (el veredicto de TP×2 queda POSPUESTO)**
+- ⚠️ **NO hay veredicto de TP×2 el 03/08.** Los bugs corregidos el 27-28/07 significan que durante todo el mes los 3 tramos salieron al precio de TP1 y ninguna posición cerró por TP escalonado: lo que se midió NO fue TP×2. El reloj arranca de cero el **28/07** → veredicto realista el **~24/08** (4 semanas de ejecución correcta).
+- Verificar en su lugar que la ejecución ya es la diseñada: aparecen `tp1_filled`/`tp2_filled`/`tp3_filled` en `execution_ledger`, cierres con `close_reason` `tp1/tp2/tp3` en `trade_closed_log`, y ninguna posición deja remanente colgando del SL.
+- **Ojo con la mudez**: 5/10 pares llevan 0 trades desde el 03/07 y la semana 20-27/07 sólo operó DYDX. Con ese caudal, 4 semanas pueden no dar muestra suficiente — es el tema #1 de la revisión estructural.
 - **P-proceso (punto 3)**: arranca la cadencia MENSUAL de re-optimización — primer sweep aplicable, con presupuesto de cambios (máx. 1-2 pares/mes; cada cambio debe ganarle a "no tocar nada" en cross-val). Los lunes intermedios quedan como observación/rotación.
 - **P-pesos (punto 6)**: decidir con el mes de datos si concentrar capital (menos pares o pesos escalonados con cap por par) en vez del equal-weight 20% actual.
 
