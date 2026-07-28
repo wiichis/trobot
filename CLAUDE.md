@@ -204,6 +204,24 @@ Fix (commit `077951b`, desplegado 28/07 04:17 UTC): `_reconcile_stage_before_sub
 
 ⚠️ **Consecuencia para el veredicto de TP×2 del 03/08**: el A/B asumía TPs escalonados que se llenan, pero lo que corrió en real desde el 03/07 fue "un TP al nivel de TP1 + trailing". **El mes de datos NO valida ni invalida TP×2.** El reloj de observación de la estructura de salidas arranca de cero el 28/07.
 
+### 🔴 Mudez del portfolio — diagnóstico 28/07: DOS causas, una corregida
+
+Punto de partida: 7/10 pares con **0 señales** en 10,5 días (indicadores.csv de prod sólo retiene ~10d); todo el portfolio produjo 11 señales en 28.998 barras (0,04%). La semana 20-27/07 sólo operó DYDX.
+
+**Primero se descartó lo obvio**: la mudez es de **señales**, no de ejecución — las señales simplemente no se generan. Y NO es por falta de relajar filtros: eso ya se falsificó 4 veces (P2.1, P2.1b, P1, P2-2). El diagnóstico de blockers confirma el mismo cuadro de junio (`ema_cross_recent` blocker #1 en 9/10 pares) y la tasa de señales del **sim** apenas bajó (105 → 87 normalizado a 30d). El problema no es que los filtros se hayan endurecido: es que **live y sim divergen**.
+
+**Causa 1 — velas en formación (CORREGIDA, commit `723e5f7`, desplegada 28/07 04:53 UTC).**
+El pull corre en :01,:06,… cuando la vela de 5m aún no cerró, así que se guardaba parcial. El filtro `df_new['date'] > last_date` descartaba justamente esa vela ya cerrada en el ciclo siguiente, y el `drop_duplicates(keep='last')` nunca llegaba a reemplazarla. Firma medida contra el API (2881 velas/par, 10 pares): `open` idéntico 100%, `high_live ≤ high_api` 100%, `low_live ≥ low_api` 100%, **`close` idéntico 0,4%**. O sea: EMA/RSI/ADX/ATR del live corrían sobre closes que no eran los closes reales — y el blocker dominante (`ema_cross_recent`) se calcula sobre closes. Explica el gap de señales sim 28 vs live 10 en ventana idéntica de 10d. Fix: `>=` en vez de `>`, y `fetch_limit` 2→3. **Verificado post-deploy: 7/7 velas cerradas coinciden al 100% en OHLC** (muestra chica, ~11 min).
+⚠️ **Sigue abierto**: la *decisión* de entrada se toma sobre la vela en formación (`update_indicators` + `colocando_ordenes` corren en :03,:08,… con la vela a mitad), mientras el backtest decide sobre velas cerradas.
+
+**Causa 2 — gate de sesión heredado (NO aplicada, requiere decisión).**
+`colocando_ordenes()` retorna sin hacer nada si la hora UTC no está en `session.entry_hours_utc` = `[6,7,8,9,10,11,12,14,15,16,17,19,21,22]` (14 de 24 h; bloquea 0,1,2,3,4,5,13,18,20,23). Medido sobre las señales reales: **8 de 11 (73%) cayeron en hora bloqueada**.
+- El perfil viene del bloque `reference` de `live_benchmark_runtime.json`: `session_profile: liquid_utc_wo_13_18_20` con `entry_style: rsi_reversal` y `timeframe_combo: 30m_5m` — **otra estrategia**, no la actual (trend-following fresh-cross 5m).
+- **El backtest nunca lo simula**: `run_live_parity_portfolio` no aplica gate horario, y el `SimBacktester` lee `entry_hours_utc` de los params por símbolo (vacío en los 10). Los params se optimizaron asumiendo 24/7 y se ejecutan con 14/24. `--entry_hours_utc` no tiene efecto en `--live_parity`.
+- A/B (parity-sim, trades particionados por hora de entrada): las horas bloqueadas son **40-44% de los trades** y su PnL es −4,21 / −2,29 / **+7,62** / **+3,28** en 30/60/90/120d, con winrate igual o mejor que las permitidas (49/52/59/56% vs 49/57/58/59%). Ninguna hora bloqueada es tóxica por sí sola (peor: 05h −0,83; la mejor es 13h con +3,60).
+- **Conclusión: el gate no filtra horas malas, sólo recorta caudal.** Quitarlo restauraría la coherencia sim↔live y ~40% de los trades.
+- ⚠️ **Pero arregla la mudez, no la rentabilidad**: el sim da PnL negativo en las 4 ventanas, así que más trades de edge similar da *muestra*, no ganancia. El valor real es poder medir: con 5/10 pares mudos no hay muestra para ningún veredicto.
+
 ### ❌ P2 Timeframe 15m — CERRADO 03/07: sweep completo, RECHAZADO
 
 Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs costos. Falsificada:
