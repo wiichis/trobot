@@ -180,6 +180,32 @@ Diagnóstico con PnL real 90d: winrate 66% pero payoff 0.42 (ganador +0.16, perd
 - A/B (fills conservadores + fee maker + slippage 0 en TPs vs status quo): **+0.45/+0.80/+1.15/+1.30 en 30/60/90/120d, 4/4**, peor celda por par −0.09. Fills perdidos ~2-3%.
 - Aplicado: `tp_mode: partial_limit_tp` + `break_even_after_tp1: false` (mantiene BE por price-trigger idéntico a hoy) en `live_benchmark_runtime.json`. Reversible con flip de config + restart.
 - 🐛 **Fix 07/07**: la primera semana los 9/9 TP LIMIT fueron rechazados por BingX (`109400: Hedge mode no acepta reduceOnly`) y cayeron al fallback market (sin pérdidas, pero sin ahorro). Fix: `tp_reduce_only: false` en config (en Hedge, side+positionSide ya define el cierre), kwargs omite el campo, y el retry sin reduceOnly cubre también LIMIT. Verificar fills LIMIT reales el 13/07.
+- ✅ **Verificado 27/07**: el guard de notional del 07/07 funcionó — los 276 rechazos `101485` + 273 `110422` están todos concentrados en el 08/07 y desaparecen desde el 10/07. Residual: `101215` (~3 reintentos cada 3-5 días) = entradas LIMIT PostOnly que habrían cruzado el book; existe desde abril con la misma cadencia, es el comportamiento correcto de PostOnly, no una regresión.
+
+### 🐛 Bug 27/07 — cantidad de los TPs (DYDX) — CORREGIDO Y DESPLEGADO
+
+DYDX abrió 314.7 el 26/07 y colocó tramos **103.8 / 103.8 / 69.5**; el 4º submit salió 35.3 (4.47 USDT), bajo el mínimo de cierre de BingX, y no se envió. Quedaron **37.6 unidades (~4.8 USDT) sin cobertura de TP**, colgando sólo del SL (cerró en verde a las 06:03, +0.25). Tres defectos de cantidad, los tres reproducidos con los números reales antes de tocar código (commit `753ebd0`):
+
+1. **Base del reparto degradada**: `set_tp_submitted` reescribía `tpN_submit_position_qty` con la posición viva en cada recolocación del mismo tramo → el 33% se calculaba sobre 314.7 → 210.9 → 107.1 y cada tramo salía más chico. Ahora la base se conserva (es el tamaño de la posición cuando se armó el plan).
+2. **Remanente huérfano**: el guard del 07/07 miraba que *el tramo* llegara al mínimo, no que *lo que queda después* fuera cerrable. Un resto bajo el mínimo ya no se puede cerrar por TP en ningún ciclo posterior. Ahora `_compute_partial_limit_stage_qty` colapsa al total restante (`ok_collapsed_min_leftover`).
+3. **`_round_step` perdía un step entero por binario**: `107.1/0.1 == 1070.9999…` → floor daba `107.0`; también `0.3 → 0.2`, `314.7 → 314.6`. Dejaba polvo sin gestionar en toda orden que redondeara. Pasa a `Decimal` igual que `_split_position_qtys`. **Sólo lo usa el camino de TP; `backtesting.py` no lo referencia → los sweeps históricos no cambian.**
+
+`upsert_tp_state` con `tp_stage="none"` (apertura) ahora limpia los tramos previos, para que anclar la base no haga heredar la posición anterior. Esto además drena solo los residuos viejos de `tp_stage_state.csv` (filas `tp3_live`/`tp1_live` de posiciones ya cerradas, porque `clear_tp_state` sólo se llama en cierre por SL).
+
+Replay del caso real post-fix: **103.8 / 103.8 / 107.1 y la posición cierra íntegra por TP**. 13 tests nuevos, 45 en total. Desplegado 28/07 01:48 UTC.
+
+### ⚠️ PENDIENTE P0 — el TP escalonado no escalona (los 3 tramos salen al precio de TP1)
+
+**Detectado 27/07 rastreando el bug de cantidad. Es la causa raíz aguas arriba, y sigue viva** (los fixes de cantidad contienen el daño pero no arreglan esto).
+
+Cadena: el job de colocación (cada 50 s) recoloca el mismo stage y llama a `set_tp_submitted(tp_idx=1)`, que **sobrescribe `tp1_order_id` antes de que el job de confirmación pueda atribuir el fill de la orden anterior**. Sin ese match, `_infer_tp_idx_from_state_order_id` devuelve `None`, `is_stage_limit_candidate` es False y el fill nunca se confirma → `tp_stage` se queda en `tp1_live` para siempre → `_next_tp_idx_from_stage` devuelve `1` indefinidamente.
+
+Consecuencias:
+- `price_src_idx = min(stage_idx_target - 1, …)` = 0 siempre → **todos los tramos salen al precio de TP1**, nunca a TP2/TP3. El TP escalonado lleva ~1 mes sin escalonar.
+- Encaja con la telemetría: **0 fills `tp1/tp2/tp3` en 133 cierres desde el 03/07** (`trail_stop` 116, `stop_loss` 15, `be_stop` 2). Quien captura la ganancia es el trailing stop, no el TP.
+- ⚠️ **Esto contamina el veredicto de TP×2 del 03/08**: el A/B asumía TPs escalonados que se llenan. Lo que corrió en real fue "un TP al nivel de TP1 + trailing". No leer el veredicto como validación de TP×2 sin corregir esto antes.
+
+Dónde mirar: `pkg/monkey_bx.py` Patch 5C (~L708-803, confirmación), `_next_tp_idx_from_stage` (~L388), bloque de colocación LONG ~L3300 / SHORT ~L3660. Idea de fix: no sobrescribir `tpN_order_id` cuando la orden previa de ese stage desapareció con reducción de posición pendiente de atribuir (o confirmar el fill antes de recolocar, dándole prioridad al job de confirmación).
 
 ### ❌ P2 Timeframe 15m — CERRADO 03/07: sweep completo, RECHAZADO
 
