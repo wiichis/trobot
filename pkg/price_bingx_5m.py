@@ -169,11 +169,17 @@ def price_bingx_5m() -> None:
         last_date = df_symbol['date'].max() if not df_symbol.empty else None
 
         try:
-            fetch_limit = 2 if last_date is not None else 1000
+            # 3 velas (no 2) para tener margen si un ciclo del scheduler se atrasa.
+            fetch_limit = 3 if last_date is not None else 1000
             new_candles = _fetch_bingx_candles(symbol, fetch_limit)
             df_new = pd.DataFrame(new_candles)
             if not df_new.empty and last_date is not None:
-                df_new = df_new[df_new['date'] > last_date]
+                # `>=`, no `>`: la última vela guardada estaba EN FORMACIÓN (el pull
+                # corre en :01,:06,… y la vela de 5m aún no cerró). Con `>` nunca se
+                # volvía a bajar y quedaba parcial para siempre — open correcto pero
+                # high/low truncados y close = precio a mitad de vela. Al re-incluirla,
+                # el drop_duplicates(keep='last') de abajo la reemplaza por la cerrada.
+                df_new = df_new[df_new['date'] >= last_date]
         except Exception as error:
             print(f"Error actualizando {symbol}: {error}")
             df_new = pd.DataFrame()
