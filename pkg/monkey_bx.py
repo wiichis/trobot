@@ -560,6 +560,75 @@ def _infer_tp1_fill_from_position(symbol: str, position_side: str, state: dict):
     return _infer_tp_fill_from_position(symbol, position_side, state, tp_idx=1)
 
 
+def _reconcile_stage_before_submit(symbol: str, position_side: str, state: dict, symbol_orders) -> dict:
+    """Confirma el fill del tramo vivo cuya orden ya no está pendiente, ANTES de recolocar.
+
+    Sin esto hay una carrera: el job de colocación (50 s) recoloca el mismo stage y
+    `set_tp_submitted` sobrescribe `tpN_order_id`, con lo que el fill de la orden
+    anterior deja de ser atribuible en `_log_pending_order_transitions`. `tp_stage`
+    se queda en `tpN_live` para siempre y todos los tramos salen al precio de TP1.
+
+    Sólo reconcilia los stages 1 y 2 (los que desbloquean TP2/TP3). El stage 3 es el
+    cierre de la posición y lo sigue registrando `_log_pending_order_transitions`,
+    para no duplicar `_record_trade_closed`.
+    """
+    stage = str(state.get("tp_stage", "")).lower().strip()
+    idx = {"tp1_live": 1, "tp2_live": 2}.get(stage)
+    if idx is None:
+        return state
+
+    oid = _stage_order_id_from_state(state, idx)
+    if not oid:
+        return state
+
+    try:
+        live_ids = {_norm_order_id(x) for x in symbol_orders['orderId'].tolist()}
+    except Exception:
+        return state
+    if oid in live_ids:
+        return state
+
+    confirmed, confirm_reason, current_qty, reduction = _infer_tp_fill_from_position(
+        symbol, position_side, state, tp_idx=idx
+    )
+    if not confirmed:
+        return state
+
+    stage_name = _tp_stage_name(idx)
+    set_tp_filled(symbol, position_side, tp_idx=idx)
+    # Soltar el order_id ya atribuido: evita que _log_pending_order_transitions
+    # vuelva a contabilizar este mismo fill cuando procese la desaparición.
+    st = upsert_tp_state(symbol, position_side, **{f"tp{idx}_order_id": ""})
+
+    emit_lifecycle_event(
+        f"{stage_name}_filled",
+        "INFO",
+        symbol=str(symbol).upper(),
+        position_side=str(position_side).upper(),
+        order_id=oid,
+        source="reconcile_before_submit",
+        confirmation_mode="inferred",
+        reduction_qty=_safe_float_or_none(reduction),
+        remaining_qty=_safe_float_or_none(current_qty),
+        tp_stage=str(st.get("tp_stage", "")),
+    )
+    append_execution_ledger_event(
+        f"{stage_name}_filled",
+        data_quality="inferred",
+        source="reconcile_before_submit",
+        order_id=oid,
+        symbol=str(symbol).upper(),
+        position_side=str(position_side).upper(),
+        order_type="LIMIT",
+        submitted_price=_safe_float_or_none(state.get(f"{stage_name}_price")),
+        fill_qty=_safe_float_or_none(state.get(f"{stage_name}_qty")),
+        close_reason=stage_name,
+        partial_fill_status="inferred",
+        notes=f"stage_advanced_before_resubmit|{confirm_reason}",
+    )
+    return st
+
+
 def _submit_tp_legacy_fallback(
     *,
     tp_idx: int,
@@ -3317,6 +3386,7 @@ def colocando_TK_SL():
                 placed_all_tps = True
                 if tp_mode_effective == "partial_limit_tp":
                     st_curr = get_tp_state(symbol, "LONG")
+                    st_curr = _reconcile_stage_before_submit(symbol, "LONG", st_curr, symbol_orders)
                     stage_idx_target = _next_tp_idx_from_stage(st_curr.get("tp_stage", "none"))
                     stage_price_ref = None
 
@@ -3677,6 +3747,7 @@ def colocando_TK_SL():
                 placed_all_tps = True
                 if tp_mode_effective == "partial_limit_tp":
                     st_curr = get_tp_state(symbol, "SHORT")
+                    st_curr = _reconcile_stage_before_submit(symbol, "SHORT", st_curr, symbol_orders)
                     stage_idx_target = _next_tp_idx_from_stage(st_curr.get("tp_stage", "none"))
                     stage_price_ref = None
 

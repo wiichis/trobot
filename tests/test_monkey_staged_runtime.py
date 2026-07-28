@@ -459,3 +459,144 @@ def test_colocando_tk_sl_forces_legacy_tp_when_tp_state_unhealthy(
     categories = [x["category"] for x in runtime_event_spy["lifecycle"]]
     assert "runtime_storage_warning" in categories
     assert "legacy_fallback_used" in categories
+
+
+# --- Escalonamiento: el stage debe avanzar antes de recolocar (fix 28/07) ---
+
+def _seed_stage(tps, symbol, side, *, idx, order_id, qty, price, base):
+    tps.set_tp_submitted(
+        symbol, side, tp_idx=idx, order_id=order_id, qty=qty, price=price,
+        submit_position_qty=base, tp_mode="partial_limit_tp",
+        fill_confirmation_mode="inferred",
+    )
+
+
+def test_reconcile_avanza_el_stage_cuando_el_tramo_se_lleno(
+    temp_tp_state, runtime_event_spy, monkeypatch
+):
+    """DYDX 26/07: TP1 se llenó, el job de colocación recolocó 'tp1' y sobrescribió
+    el order_id antes de que el fill fuera atribuible -> el stage nunca avanzaba."""
+    import pkg.monkey_bx as mb
+    import pkg.tp_stage_state as tps
+    from tests.conftest import make_orders_df
+
+    _seed_stage(tps, "DYDX-USDT", "LONG", idx=1, order_id="oid-tp1",
+                qty=103.8, price=0.12632, base=314.7)
+    # Posición reducida por el fill de TP1: 314.7 -> 210.9
+    monkeypatch.setattr(mb, "total_positions",
+                        lambda _s: ("DYDX-USDT", "LONG", 0.1265, 210.9, 0.0))
+    # La orden de TP1 ya no está entre las pendientes.
+    orders = make_orders_df([{"symbol": "DYDX-USDT", "orderId": "oid-sl",
+                              "type": "STOP_MARKET"}])
+
+    st = mb._reconcile_stage_before_submit(
+        "DYDX-USDT", "LONG", tps.get_tp_state("DYDX-USDT", "LONG"), orders)
+
+    assert st["tp_stage"] == "tp1_filled"
+    assert mb._next_tp_idx_from_stage(st["tp_stage"]) == 2
+    # order_id soltado: _log_pending_order_transitions no debe recontar el fill.
+    assert mb._infer_tp_idx_from_state_order_id(st, "oid-tp1") is None
+    assert any(e["event_type"] == "tp1_filled" for e in runtime_event_spy["ledger"])
+
+
+def test_reconcile_no_toca_el_stage_si_la_orden_sigue_viva(
+    temp_tp_state, runtime_event_spy, monkeypatch
+):
+    import pkg.monkey_bx as mb
+    import pkg.tp_stage_state as tps
+    from tests.conftest import make_orders_df
+
+    _seed_stage(tps, "DYDX-USDT", "LONG", idx=1, order_id="oid-tp1",
+                qty=103.8, price=0.12632, base=314.7)
+    monkeypatch.setattr(mb, "total_positions",
+                        lambda _s: ("DYDX-USDT", "LONG", 0.1265, 210.9, 0.0))
+    orders = make_orders_df([{"symbol": "DYDX-USDT", "orderId": "oid-tp1",
+                              "type": "LIMIT"}])
+
+    st = mb._reconcile_stage_before_submit(
+        "DYDX-USDT", "LONG", tps.get_tp_state("DYDX-USDT", "LONG"), orders)
+
+    assert st["tp_stage"] == "tp1_live"
+    assert runtime_event_spy["ledger"] == []
+
+
+def test_reconcile_no_confirma_sin_reduccion_de_posicion(
+    temp_tp_state, runtime_event_spy, monkeypatch
+):
+    """Orden desaparecida por cancelación, no por fill: no debe avanzar el stage."""
+    import pkg.monkey_bx as mb
+    import pkg.tp_stage_state as tps
+    from tests.conftest import make_orders_df
+
+    _seed_stage(tps, "DYDX-USDT", "LONG", idx=1, order_id="oid-tp1",
+                qty=103.8, price=0.12632, base=314.7)
+    monkeypatch.setattr(mb, "total_positions",
+                        lambda _s: ("DYDX-USDT", "LONG", 0.1265, 314.7, 0.0))
+    orders = make_orders_df([])
+
+    st = mb._reconcile_stage_before_submit(
+        "DYDX-USDT", "LONG", tps.get_tp_state("DYDX-USDT", "LONG"), orders)
+
+    assert st["tp_stage"] == "tp1_live"
+    assert runtime_event_spy["ledger"] == []
+
+
+def test_reconcile_deja_el_stage3_al_job_de_transiciones(
+    temp_tp_state, runtime_event_spy, monkeypatch
+):
+    """El tramo 3 cierra la posición; reconciliarlo aquí duplicaría _record_trade_closed."""
+    import pkg.monkey_bx as mb
+    import pkg.tp_stage_state as tps
+    from tests.conftest import make_orders_df
+
+    _seed_stage(tps, "DYDX-USDT", "LONG", idx=3, order_id="oid-tp3",
+                qty=107.1, price=0.12695, base=107.1)
+    monkeypatch.setattr(mb, "total_positions",
+                        lambda _s: ("DYDX-USDT", "LONG", 0.1265, 0.0, 0.0))
+    orders = make_orders_df([])
+
+    st = mb._reconcile_stage_before_submit(
+        "DYDX-USDT", "LONG", tps.get_tp_state("DYDX-USDT", "LONG"), orders)
+
+    assert st["tp_stage"] == "tp3_live"
+    assert runtime_event_spy["ledger"] == []
+
+
+def test_los_tres_tramos_salen_a_precios_distintos(temp_tp_state, monkeypatch):
+    """Regresión del bug de fondo: con el stage estancado en tp1_live los tres
+    tramos usaban desired_tps[0]. Debe recorrer TP1 -> TP2 -> TP3."""
+    import pkg.monkey_bx as mb
+    import pkg.tp_stage_state as tps
+    from tests.conftest import make_orders_df
+
+    desired_tps = [0.12632, 0.12759, 0.12886]
+    splits = (0.33, 0.33, 0.34)
+    pos = 314.7
+    precios_usados = []
+
+    for n in range(1, 5):
+        if pos <= 0:  # posición cerrada: colocando_TK_SL ya no la recorre
+            break
+        monkeypatch.setattr(mb, "total_positions",
+                            lambda _s, _p=pos: ("DYDX-USDT", "LONG", 0.1265, _p, 0.0))
+        st = mb._reconcile_stage_before_submit(
+            "DYDX-USDT", "LONG", tps.get_tp_state("DYDX-USDT", "LONG"),
+            make_orders_df([]))
+        idx = mb._next_tp_idx_from_stage(st.get("tp_stage", "none"))
+        if idx is None:
+            break
+        price_src_idx = min(idx - 1, len(desired_tps) - 1)
+        precios_usados.append(desired_tps[price_src_idx])
+        qty, _r = mb._compute_partial_limit_stage_qty(
+            position_qty_now=pos, step_sz=0.1, splits=splits, state=st,
+            stage_idx=idx, price_ref=desired_tps[price_src_idx],
+            min_close_notional=7.0)
+        if qty <= 0:
+            break
+        _seed_stage(tps, "DYDX-USDT", "LONG", idx=idx, order_id=f"oid-{n}",
+                    qty=qty, price=desired_tps[price_src_idx], base=pos)
+        pos = round(pos - qty, 1)
+
+    assert precios_usados == desired_tps, (
+        f"los tramos deben escalonar TP1/TP2/TP3, se usaron {precios_usados}")
+    assert pos == 0.0, f"la posicion debe cerrar integra, quedan {pos}"
