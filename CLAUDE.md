@@ -240,34 +240,35 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 5. Cross-val anti-overfit (criterio refinado: 3/5 vale solo si regresión ≤$2 en ventanas perdidas).
 6. Presentar propuesta → confirmar con usuario → aplicar + deploy + verificar + actualizar memoria.
 
-### 📅 Plan con fechas (fijado 03/07 tras los 4 cambios del día)
+### 📅 Plan con fechas — REFIJADO 28/07
 
-Contexto: el 03/07 se aplicaron 4 cambios (TP×2 en 8 pares, TPs LIMIT maker, fix cooldown ×5, telemetría PnL). Necesitan ventana de realización limpia — **congelamiento de parámetros hasta el 03/08** salvo emergencia (par con pérdida real >2 USD/semana).
+**Julio (cerrado).** Los lunes 06, 13 y 20/07 corrieron en modo observación con params congelados. El 27-28/07 se descubrió que **buena parte de lo que se creía estar midiendo no estaba ocurriendo**: los TPs nunca escalonaron y los indicadores corrían sobre velas parciales. Los datos de julio sirven para diagnóstico, **no para veredictos**.
 
-**Lunes 06/07 — flujo semanal en modo OBSERVACIÓN (no tocar params)**
-1. Pre-check md5 local↔prod + sync PnL/ganancias/trade_closed vía SCP (velas: top-up API, no bajar long.csv).
-2. **NO re-optimizar ni aplicar sweeps.** Dry-run solo como diagnóstico si se quiere.
-3. Verificar ejecución de los cambios del 03/07:
-   - TPs colocándose como **LIMIT** reduce-only (execution_ledger/order_register); fallback a market no dispara seguido.
-   - `trade_closed_log`: cierres nuevos con `pnl_source=api`; aparecen `be_stop`/`trail_stop` (ya no todo es "stop_loss").
-   - Cooldowns: tras un SL no hay re-entradas antes de 30-75 min.
-4. Watch pares: **CFX** (¿volvió a plano tras revert 30/06?), **AVAX** (congelado; si pierde otra semana → candidato rotación), **LINK** (NEW 30/06, ¿realiza?), **DOT** (6ª semana muda).
+**Estado a 28/07 05:00 UTC — 3 fixes desplegados hoy, ninguno verificado en operación real todavía**
 
-**Lunes 13/07 — observación, semana 1.5 de TP×2**
-- Mismas verificaciones. Primera lectura de TP×2: winrate ~57% esperado con ganadores más grandes — **NO revertir por winrate bajo**.
-- Si CFX o AVAX acumulan 2 semanas malas: preparar rotación (backfill ~105d de LTC/DYDX/INJ + sweep + cross-val), **sin aplicar todavía**.
+| Fix | Commit | Desplegado | Qué falta |
+|---|---|---|---|
+| Cantidad de TPs (base, remanente, `_round_step`) | `753ebd0` | 28/07 01:48 | ver una posición real cerrar íntegra por TPs |
+| El TP escalonado no escalonaba | `077951b` | 28/07 04:17 | ver `tp1/tp2/tp3_filled` en `execution_ledger` |
+| Velas en formación | `723e5f7` | 28/07 04:53 | 7/7 velas OK post-deploy (muestra de ~11 min); confirmar con días |
 
-**Lunes 20/07 — evaluación intermedia (2.5 semanas de datos)**
-- PnL realizado desde 03/07 vs baseline (−2 a −3 USD/mes), usando solo filas `pnl_source=api`.
-- Métricas P4: % de TPs llenados como LIMIT vs fallback market. Distribución be_stop vs stop_loss real.
-- Si hay candidato de rotación validado (cross-val 5/5 o 3/5 con regresión ≤$2) y CFX/AVAX siguen mal → aplicar rotación (es cambio de par, no de params congelados).
+**Próximos días — sólo observar, no tocar**
+1. **¿Despertó el portfolio?** Contar señales en `indicadores.csv` por par. Con velas correctas debería subir de ~1 señal/día en todo el portfolio. Si NO sube, el fix de velas no era la causa principal y hay que volver al diagnóstico.
+2. **¿Escalonan los TPs?** En `execution_ledger`: `tp1_filled` → `tp2_filled` → `tp3_filled` con **precios distintos**. Si todos salen al mismo precio, el fix del escalonamiento no está actuando.
+3. **¿Cierran íntegras?** Ninguna posición debe dejar remanente colgando sólo del SL (era el caso DYDX del 26/07).
+4. **Velas**: bajar `cripto_price_5m.csv` de prod y comparar OHLC contra el API — las cerradas deben coincidir al 100% (excluir siempre la última, está en formación por diseño).
 
-**Lunes 03/08 — decisiones estructurales (el veredicto de TP×2 queda POSPUESTO)**
-- ⚠️ **NO hay veredicto de TP×2 el 03/08.** Los bugs corregidos el 27-28/07 significan que durante todo el mes los 3 tramos salieron al precio de TP1 y ninguna posición cerró por TP escalonado: lo que se midió NO fue TP×2. El reloj arranca de cero el **28/07** → veredicto realista el **~24/08** (4 semanas de ejecución correcta).
-- Verificar en su lugar que la ejecución ya es la diseñada: aparecen `tp1_filled`/`tp2_filled`/`tp3_filled` en `execution_ledger`, cierres con `close_reason` `tp1/tp2/tp3` en `trade_closed_log`, y ninguna posición deja remanente colgando del SL.
-- **Ojo con la mudez**: 5/10 pares llevan 0 trades desde el 03/07 y la semana 20-27/07 sólo operó DYDX. Con ese caudal, 4 semanas pueden no dar muestra suficiente — es el tema #1 de la revisión estructural.
-- **P-proceso (punto 3)**: arranca la cadencia MENSUAL de re-optimización — primer sweep aplicable, con presupuesto de cambios (máx. 1-2 pares/mes; cada cambio debe ganarle a "no tocar nada" en cross-val). Los lunes intermedios quedan como observación/rotación.
-- **P-pesos (punto 6)**: decidir con el mes de datos si concentrar capital (menos pares o pesos escalonados con cap por par) en vez del equal-weight 20% actual.
+**Decisión pendiente — gate de sesión** (usuario decide, esperando unos días a propósito)
+- Medido: descarta 40-44% de los trades sin aportar selectividad; calibrado para otra estrategia; el backtest no lo simula. Detalle completo en la sección "Mudez del portfolio".
+- **Quitarlo arregla la mudez, no la rentabilidad**: da muestra, no ganancia.
+- Conviene decidirlo **después** de ver el efecto del fix de velas por separado — si se cambian las dos cosas a la vez no se sabrá cuál movió qué.
+
+**~24/08 — veredicto de estructura de salidas (4 semanas de ejecución correcta desde el 28/07)**
+- Recién ahí tiene sentido juzgar TP×2 + TPs LIMIT. **No antes**, y sólo si hay muestra suficiente.
+- **P-proceso**: arranca la cadencia MENSUAL de re-optimización (máx. 1-2 pares/mes; cada cambio debe ganarle a "no tocar nada" en cross-val).
+- **P-pesos**: decidir si concentrar capital (menos pares o pesos escalonados con cap) en vez del equal-weight actual.
+
+**Congelamiento de parámetros: extendido hasta el ~24/08** (era 03/08). Los bugs de ejecución y datos se siguen corrigiendo — no son parámetros; así se trataron los fixes del 07, 08, 13, 14, 27 y 28/07.
 
 ### P2 — Mejoras estratégicas adicionales
 
@@ -286,6 +287,17 @@ Contexto: el 03/07 se aplicaron 4 cambios (TP×2 en 8 pares, TPs LIMIT maker, fi
 1. **Alerta Telegram semanal**: PnL/balance, # trades, distribución razones de cierre, top losers. Si TP-rate < 25% en 7d → recomendar pausar.
 2. **Dashboard mejorado**: agregar página de "salud del portfolio" con métricas de cada par (PnL 7/30/90d, winrate, pf, max_dd) y alertas visuales.
 3. **CI ligero**: hook que verifique `md5sum pkg/best_prod.json` local == HEAD == prod después de cualquier deploy.
+4. 🆕 **Check de paridad de datos (alto valor, barato)**: comparar semanalmente el OHLC de `cripto_price_5m.csv` de prod contra el API para las velas cerradas — deben coincidir al 100%. El bug de velas parciales del 28/07 vivió meses sin detectarse y contaminó todos los indicadores. Excluir siempre la última vela.
+5. 🆕 **Check de ejecución diseñada**: contar fills `tp1/tp2/tp3` en `execution_ledger`. Si en N cierres hay 0 fills de TP, algo está roto aguas arriba — fue la señal que gritó el bug del escalonamiento durante un mes sin que nadie la leyera.
+
+### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
+
+Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferencias entre lo que prod ejecuta y lo que el backtest simula, y **hacen que los A/B midan algo distinto de lo que se cree**.
+
+1. **La decisión de entrada se toma sobre la vela en formación.** `update_indicators` + `colocando_ordenes` corren en :03,:08,… con la vela de 5m a mitad; el backtest decide sobre velas cerradas. El fix del 28/07 (`723e5f7`) corrigió el *histórico* de velas, no esto. Opciones: decidir sobre la última vela **cerrada**, o mover el job a :00,:05,… tras cerrar. Requiere A/B — cambia el timing de todas las entradas.
+2. **El gate horario no existe en el sim.** `run_live_parity_portfolio` no aplica gate horario, y el `SimBacktester` lo lee de `params['entry_hours_utc']` (vacío en los 10 pares) en vez del runtime config. Los params se optimizan 24/7 y se ejecutan 14/24.
+3. 🐛 **`--entry_hours_utc` no tiene efecto en `--live_parity`** — se acepta el flag y se ignora en silencio. Para medir el gate hubo que particionar los trades por hora de entrada a mano. Arreglar o al menos hacer que falle ruidosamente.
+4. **`--live_parity` sin `--symbols` usa BTC-USDT por defecto** (que ni está en el portfolio) y reporta 0 trades sin avisar. Fácil de malinterpretar como "no hay señales".
 
 ### P4 — Limpieza
 
@@ -299,3 +311,18 @@ Las gotchas detectadas y validadas están en `~/.claude/projects/-Users-will-Doc
 - `backtest_history.md` — qué se rotó cada semana, monedas removidas/probadas
 - `feedback_deploy_gotchas.md` — qué hacer cuando el deploy falla
 - `feedback_atexit_bug.md` — el bug del atexit y cómo aislarse de él
+- `live_sim_data_parity.md` — velas en formación (corregido 28/07) + gate horario que el sim no simula
+- `execution_cost_notes.md` — TPs LIMIT maker, y el escalonamiento que no escalonaba
+- `parity_sim_realization_gap.md` — cuándo el sim sobrestima y por qué mandar el real
+
+---
+
+## Estado al cierre del 28/07
+
+**Prod**: activo desde 04:53 UTC, `NRestarts=0`, 0 errores. `pkg/best_prod.json` md5 `57daca5b` coincidiendo local = HEAD = prod. Sin posiciones abiertas al momento del último deploy.
+
+**Portfolio**: 10 pares, sin cambios de composición ni de parámetros hoy. Balance ~198 USDT.
+
+**Lo que cambió hoy**: 3 bugs de ejecución/datos corregidos y desplegados (`753ebd0`, `077951b`, `723e5f7`) + docs. **Ningún parámetro tocado.** Los tres estaban activos desde hacía semanas y afectaban lo que se creía estar midiendo.
+
+**Lo primero al retomar**: mirar si el portfolio despertó (conteo de señales por par) y si los TPs escalonan con precios distintos. Esos dos números deciden si los fixes de hoy sirvieron, y si el gate de sesión vale la pena tocarlo.
