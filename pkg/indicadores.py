@@ -661,6 +661,25 @@ def update_indicators():
 
 
 # ---------- utilidad para el bot ----------
+def last_closed_bar(df_symbol, bar_minutes: int = 5):
+    """Última barra ya CERRADA (la última fila del CSV es la vela en formación).
+
+    La vela en formación lleva 1-3 min de datos: su `close` cambia al cerrar
+    (medido: 10/10 pares) y sobre todo su `volume` es ~1/5 del real, con lo que
+    `Rel_Volume` cae a ~0.05-0.26 y el filtro de volumen la veta SIEMPRE. Decidir
+    entradas sobre ella hace imposible cualquier señal, además de romper la
+    paridad con el backtest, que decide sobre velas cerradas.
+    """
+    if df_symbol is None or len(df_symbol) < 1:
+        return None
+    fechas = pd.to_datetime(df_symbol["date"], errors="coerce", utc=True)
+    cierre = fechas + pd.Timedelta(minutes=bar_minutes)
+    cerradas = df_symbol[cierre <= pd.Timestamp.now(tz="UTC")]
+    if cerradas.empty:
+        return None
+    return cerradas.iloc[-1]
+
+
 def ema_alert(symbol):
     if not os.path.exists(IND_CSV):
         return None, None
@@ -669,7 +688,9 @@ def ema_alert(symbol):
     if len(df_symbol) < 1:
         return None, None
     # Tomar solo la última vela cerrada
-    last_row = df_symbol.iloc[-1]
+    last_row = last_closed_bar(df_symbol)
+    if last_row is None:
+        return None, None
 
     def _as_bool(x):
         try:

@@ -2708,6 +2708,14 @@ def colocando_ordenes():
             except (TypeError, ValueError):
                 continue
 
+            # La señal viene de la última vela CERRADA, que cerró hace 3-8 min.
+            # El sizing y el precio de la orden LIMIT deben usar el precio vivo:
+            # con el close de esa vela, la PostOnly queda descolocada respecto al
+            # book (o se rechaza por cruzarlo, code 101215).
+            _mkt = _last_traded_price(currency)
+            if _mkt is not None and _mkt > 0:
+                price_last = float(_mkt)
+
             # Añadir a la lista de monedas activas
             active_currencies.append({
                 'symbol': currency,
