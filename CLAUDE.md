@@ -222,6 +222,24 @@ El pull corre en :01,:06,… cuando la vela de 5m aún no cerró, así que se gu
 - **Conclusión: el gate no filtra horas malas, sólo recorta caudal.** Quitarlo restauraría la coherencia sim↔live y ~40% de los trades.
 - ⚠️ **Pero arregla la mudez, no la rentabilidad**: el sim da PnL negativo en las 4 ventanas, así que más trades de edge similar da *muestra*, no ganancia. El valor real es poder medir: con 5/10 pares mudos no hay muestra para ningún veredicto.
 
+### 🐛 Bug 31/07 — el bot decidía sobre la vela EN FORMACIÓN — CORREGIDO Y DESPLEGADO
+
+**3 días (28-31/07) sin una sola orden, y sin un solo submit al exchange.** No fue el mercado ni el exchange: era el bot.
+
+**Lo primero que quedó claro: el fix de velas del 28/07 SÍ funcionó.** Señales antes 9 en 7,1d (38 normalizado a 30d) → después 13 en 2,9d (**135, ×3,6**), y volvieron a producir ETH, XMR, BNB y LINK, mudos desde el 03/07. 7/10 pares generando señal vs 3/10 antes. El portfolio despertó.
+
+**Pero 0 entradas.** Causa: `ema_alert` leía `df_symbol.iloc[-1]` = **la vela en formación** (el comentario del código ya decía "solo la última vela cerrada"; la implementación no lo hacía). Esa vela lleva 1-3 min de datos, así que su volumen es ~1/5 del real → `Rel_Volume` cae a 0,04-0,49 → **el filtro de volumen la veta siempre**. Medido en prod sobre los 10 pares: `VOL_OK` **False en 10/10** en la vela en formación vs **True en 3/10** en la misma vela ya cerrada. Históricamente `VOL_OK` pasa 19,1% de las barras cerradas y ~0% de las que están en formación.
+
+**Por qué apareció justo ahora** (importante, es el patrón a recordar): antes del 28/07 la vela parcial no se corregía nunca, así que `indicadores.csv` guardaba señales calculadas sobre velas parciales — **las mismas** que el job evaluaba. Estaban mal, pero eran consistentes entre sí. Al corregir el histórico, el CSV pasó a tener señales de velas cerradas mientras el job seguía leyendo la parcial: dos poblaciones distintas, y la parcial no dispara nunca. **Arreglar los datos destapó un bug de lectura que llevaba latente desde siempre.**
+
+Fix (commit `15b1e1b`, desplegado 31/07 02:31 UTC):
+- `pkg/indicadores.py`: nuevo `last_closed_bar()` — decide por **tiempo de cierre**, no por posición, así que no asume que la última fila siempre está en formación. `ema_alert` lo usa.
+- `pkg/monkey_bx.py`: la señal viene de la vela cerrada, pero **el sizing y el precio de la orden LIMIT pasan a usar el precio vivo** (`_last_traded_price`). Con el close de una vela de hace 3-8 min la PostOnly quedaría descolocada respecto al book, o rechazada por cruzarlo (`101215`).
+
+Verificado en vivo tras el deploy: evalúa la barra 02:30 (`vol_rel=0,78`) en lugar de la 02:35 en formación (`vol_rel=0,12`). 5 tests nuevos, 57 en total.
+
+⚠️ **Queda como deuda**: los niveles TP/SL (`get_last_take_profit_stop_loss`, `latest_values` en `colocando_TK_SL`) siguen leyendo la última fila. Es menos grave (son niveles de precio que se recalculan cada 50 s, no un filtro binario), pero es la misma incoherencia. Ver P5.
+
 ### ❌ P2 Timeframe 15m — CERRADO 03/07: sweep completo, RECHAZADO
 
 Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs costos. Falsificada:
@@ -258,10 +276,11 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 3. **¿Cierran íntegras?** Ninguna posición debe dejar remanente colgando sólo del SL (era el caso DYDX del 26/07).
 4. **Velas**: bajar `cripto_price_5m.csv` de prod y comparar OHLC contra el API — las cerradas deben coincidir al 100% (excluir siempre la última, está en formación por diseño).
 
-**Decisión pendiente — gate de sesión** (usuario decide, esperando unos días a propósito)
-- Medido: descarta 40-44% de los trades sin aportar selectividad; calibrado para otra estrategia; el backtest no lo simula. Detalle completo en la sección "Mudez del portfolio".
-- **Quitarlo arregla la mudez, no la rentabilidad**: da muestra, no ganancia.
-- Conviene decidirlo **después** de ver el efecto del fix de velas por separado — si se cambian las dos cosas a la vez no se sabrá cuál movió qué.
+**Decisión pendiente — gate de sesión (ahora es el cuello de botella #1)**
+- Con el fix del 31/07 las señales por fin pueden convertirse en órdenes. Medido sobre los 3 días de 28-31/07: de **13 señales, 7 caen en hora bloqueada (54%)** y sólo 6 quedan disponibles. Quitarlo **duplicaría** el caudal.
+- Ya estaba medido antes: descarta 40-44% de los trades sin aportar selectividad, está calibrado para otra estrategia (`rsi_reversal` 30m_5m) y el backtest no lo simula. Detalle en "Mudez del portfolio".
+- **Sigue valiendo la advertencia**: quitarlo da muestra, no ganancia — el sim da PnL negativo en las 4 ventanas.
+- **Orden recomendado**: dejar correr unos días con el fix del 31/07 solo, confirmar que vuelven las órdenes, y recién entonces decidir el gate. Si se cambian las dos cosas a la vez no se sabrá cuál movió qué.
 
 **~24/08 — veredicto de estructura de salidas (4 semanas de ejecución correcta desde el 28/07)**
 - Recién ahí tiene sentido juzgar TP×2 + TPs LIMIT. **No antes**, y sólo si hay muestra suficiente.
@@ -294,7 +313,8 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 
 Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferencias entre lo que prod ejecuta y lo que el backtest simula, y **hacen que los A/B midan algo distinto de lo que se cree**.
 
-1. **La decisión de entrada se toma sobre la vela en formación.** `update_indicators` + `colocando_ordenes` corren en :03,:08,… con la vela de 5m a mitad; el backtest decide sobre velas cerradas. El fix del 28/07 (`723e5f7`) corrigió el *histórico* de velas, no esto. Opciones: decidir sobre la última vela **cerrada**, o mover el job a :00,:05,… tras cerrar. Requiere A/B — cambia el timing de todas las entradas.
+1. ~~**La decisión de entrada se toma sobre la vela en formación**~~ → ✅ **CORREGIDO 31/07** (`15b1e1b`), era la causa de 3 días sin órdenes. Ver "Bug 31/07" arriba. **Queda el residuo**: los niveles TP/SL (`get_last_take_profit_stop_loss` y `latest_values` en `colocando_TK_SL`) siguen leyendo la última fila (vela en formación). Menos grave que el filtro de volumen, pero es la misma incoherencia.
+1b. **Latencia de decisión de 3-8 min.** Con el fix, a las :03 la última vela cerrada es la de :55 (cerró a :00): se decide 3 min después del cierre. El backtest decide en el cierre exacto. Se podría reducir moviendo el pull a :00,:05,… y el job de entradas a :01,:06,… Medir antes de tocar: puede no valer el riesgo de leer velas aún no publicadas por el API.
 2. **El gate horario no existe en el sim.** `run_live_parity_portfolio` no aplica gate horario, y el `SimBacktester` lo lee de `params['entry_hours_utc']` (vacío en los 10 pares) en vez del runtime config. Los params se optimizan 24/7 y se ejecutan 14/24.
 3. 🐛 **`--entry_hours_utc` no tiene efecto en `--live_parity`** — se acepta el flag y se ignora en silencio. Para medir el gate hubo que particionar los trades por hora de entrada a mano. Arreglar o al menos hacer que falle ruidosamente.
 4. **`--live_parity` sin `--symbols` usa BTC-USDT por defecto** (que ni está en el portfolio) y reporta 0 trades sin avisar. Fácil de malinterpretar como "no hay señales".
@@ -317,12 +337,24 @@ Las gotchas detectadas y validadas están en `~/.claude/projects/-Users-will-Doc
 
 ---
 
-## Estado al cierre del 28/07
+## Estado al cierre del 31/07
 
-**Prod**: activo desde 04:53 UTC, `NRestarts=0`, 0 errores. `pkg/best_prod.json` md5 `57daca5b` coincidiendo local = HEAD = prod. Sin posiciones abiertas al momento del último deploy.
+**Prod**: activo desde 31/07 02:31 UTC, `NRestarts=0`, 0 errores. `pkg/best_prod.json` md5 `57daca5b` coincidiendo local = HEAD = prod. Sin posiciones abiertas.
 
-**Portfolio**: 10 pares, sin cambios de composición ni de parámetros hoy. Balance ~198 USDT.
+**Portfolio**: 10 pares. Balance ~198 USDT. **Ningún parámetro tocado desde el 03/07** — el congelamiento sigue.
 
-**Lo que cambió hoy**: 3 bugs de ejecución/datos corregidos y desplegados (`753ebd0`, `077951b`, `723e5f7`) + docs. **Ningún parámetro tocado.** Los tres estaban activos desde hacía semanas y afectaban lo que se creía estar midiendo.
+**Los 4 bugs corregidos esta semana** (27-31/07), todos de ejecución o datos:
 
-**Lo primero al retomar**: mirar si el portfolio despertó (conteo de señales por par) y si los TPs escalonan con precios distintos. Esos dos números deciden si los fixes de hoy sirvieron, y si el gate de sesión vale la pena tocarlo.
+| Bug | Commit | Efecto real |
+|---|---|---|
+| Cantidad de los TPs | `753ebd0` | dejaba remanente sin cobertura de TP |
+| El TP escalonado no escalonaba | `077951b` | los 3 tramos al precio de TP1, ~1 mes |
+| Velas en formación en el histórico | `723e5f7` | indicadores sobre closes falsos, meses |
+| Decisión sobre la vela en formación | `15b1e1b` | **0 órdenes en 3 días** |
+
+**Lo que se aprendió**: los tres primeros llevaban semanas activos sin que nadie los viera porque la telemetría que los delataba no se miraba. El cuarto apareció *al arreglar el tercero* — corregir los datos destapó un bug de lectura latente. Después de cada fix de datos, verificar que los consumidores leen lo que creen leer.
+
+**Al retomar, en este orden**:
+1. **¿Volvieron las órdenes?** Es la pregunta que valida el fix del 31/07. Si en 2-3 días sigue en cero con señales en el CSV, el diagnóstico está incompleto.
+2. **¿Escalonan los TPs?** (`tp1/tp2/tp3_filled` con precios distintos) — sigue sin verificarse: no ha habido ninguna posición desde el deploy del 28/07.
+3. **Gate de sesión**: bloquea 7 de cada 13 señales. Es el siguiente cuello de botella, pero decidirlo sólo después de (1).
