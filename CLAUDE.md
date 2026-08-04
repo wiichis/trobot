@@ -284,6 +284,17 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 - **En contra**: con edge negativo en el sim, más trades = más pérdida en el corto plazo. Es comprar muestra con dinero.
 - **Sin decidir — es del usuario.**
 
+**🔜 Jueves 06/08 — check condicional de PnL (decidido el 03/08)**
+- **Regla**: mirar el PnL acumulado desde el fix del 31/07. **Si sigue en pérdida → arrancar el análisis de edge** (ver abajo). Si está en verde, no hacer nada y esperar al lunes 10/08.
+- Comando de lectura rápida: PnL neto por par desde `2026-07-31 02:31` en `archivos/PnL.csv` (dedupe por `tranId`, sumar `income`), y contar `close_reason` en `trade_closed_log.csv`.
+- Referencia al 03/08: **−1,21 USDT en 5 cierres** (3 `stop_loss`, 1 ganador por TP), ritmo ~9 cierres/semana.
+
+**Análisis de edge — qué hacer si el jueves sigue en rojo**
+- Pregunta: *con la ejecución ya correcta, ¿esta estrategia tiene edge en 30/60/90/120d?* Y si no, ¿se pierde en la selección de entradas, en el tamaño de los perdedores o en costos?
+- **No toca prod ni viola el congelamiento** — es análisis sobre histórico.
+- ⚠️ **Empezar por re-verificar el propio dato base**: el "sim negativo en las 4 ventanas" viene del A/B del gate del 28/07, medido de pasada. Correrlo como medición principal y **siempre con `--symbols` explícito** (sin él, `--live_parity` usa BTC-USDT, que ni está en el portfolio, y reporta 0 trades sin avisar — ver P5.4).
+- Marco conceptual: el **sim nunca estuvo roto**; los 4 bugs eran todos del live. Lo que se hizo el 27-31/07 fue *hacer que prod se pareciera al sim*. Por tanto lo esperable es que prod converja al resultado del sim — y por eso el resultado del sim es la mejor estimación anticipada del veredicto.
+
 **~24/08 — veredicto de estructura de salidas (4 semanas de ejecución correcta desde el 28/07)**
 - Recién ahí tiene sentido juzgar TP×2 + TPs LIMIT. **No antes**, y sólo si hay muestra suficiente.
 - **P-proceso**: arranca la cadencia MENSUAL de re-optimización (máx. 1-2 pares/mes; cada cambio debe ganarle a "no tocar nada" en cross-val).
@@ -323,9 +334,9 @@ Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferenc
 
 ### P4 — Limpieza
 
-1. ~~**Borrar `pkg/best_prod.json.bak.*`**~~ → ✅ HECHO 22/06: se conservó el más reciente (`.20260502_234317`), borrados 6. Son untracked (no requieren commit).
+1. ~~**Borrar `pkg/best_prod.json.bak.*`**~~ → ✅ HECHO 22/06: se conservó el más reciente (`.20260502_234317`), borrados 6. Desde 03/08 está en `.gitignore` (sigue en disco, ya no ensucia `git status`).
 2. **Branch `main` en prod 35 commits ahead de `origin/main`**. No es problema funcional pero podría hacerse un `git push prod-merge` ocasional para mantener historia visible. No urgente.
-3. **`dashboard/jobs.py` + `5_🧪_Backtesting.py` sin commitear** (sesión del dashboard). Decidir si commitear o descartar.
+3. ~~**`dashboard/jobs.py` + `5_🧪_Backtesting.py` sin commitear**~~ → ✅ **HECHO 03/08** (`3afb438`). Verificado sin credenciales antes de commitear. `.gitignore` cubre ahora `.venv-*/`. **`git status` queda limpio.**
 
 ### Memoria persistente
 
