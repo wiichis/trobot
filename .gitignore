@@ -182,11 +182,15 @@ celerybeat.pid
 # Environments
 .env
 .venv
+.venv-*/
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Backups de best_prod.json (se conserva el más reciente en disco, no en git)
+pkg/best_prod.json.bak.*
 
 # Spyder project settings
 .spyderproject
