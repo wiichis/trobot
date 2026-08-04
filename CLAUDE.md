@@ -276,11 +276,13 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 3. **¿Cierran íntegras?** Ninguna posición debe dejar remanente colgando sólo del SL (era el caso DYDX del 26/07).
 4. **Velas**: bajar `cripto_price_5m.csv` de prod y comparar OHLC contra el API — las cerradas deben coincidir al 100% (excluir siempre la última, está en formación por diseño).
 
-**Decisión pendiente — gate de sesión (ahora es el cuello de botella #1)**
-- Con el fix del 31/07 las señales por fin pueden convertirse en órdenes. Medido sobre los 3 días de 28-31/07: de **13 señales, 7 caen en hora bloqueada (54%)** y sólo 6 quedan disponibles. Quitarlo **duplicaría** el caudal.
-- Ya estaba medido antes: descarta 40-44% de los trades sin aportar selectividad, está calibrado para otra estrategia (`rsi_reversal` 30m_5m) y el backtest no lo simula. Detalle en "Mudez del portfolio".
-- **Sigue valiendo la advertencia**: quitarlo da muestra, no ganancia — el sim da PnL negativo en las 4 ventanas.
-- **Orden recomendado**: dejar correr unos días con el fix del 31/07 solo, confirmar que vuelven las órdenes, y recién entonces decidir el gate. Si se cambian las dos cosas a la vez no se sabrá cuál movió qué.
+**Decisión pendiente — gate de sesión (prerequisito CUMPLIDO el 03/08, listo para decidir)**
+- El prerequisito que se puso el 31/07 era "confirmar primero que vuelven las órdenes". **Cumplido**: 20 submits, 7 pares, cadena completa verificada.
+- Medición actualizada 31/07→03/08: de **17 señales, 6 caen en hora bloqueada (35%)**; 11 quedaron disponibles y 7 se ejecutaron. Quitarlo daría **~+50% de caudal**.
+- Medido desde antes: no filtra horas malas (winrate igual o mejor en las bloqueadas), está calibrado para otra estrategia (`rsi_reversal` 30m_5m) y el backtest no lo simula. Detalle en "Mudez del portfolio".
+- **A favor**: sin él no hay muestra para el veredicto del ~24/08 (al ritmo actual serían ~25 cierres; con el gate quitado ~38). Y restaura la paridad sim↔live, condición para que cualquier A/B signifique algo.
+- **En contra**: con edge negativo en el sim, más trades = más pérdida en el corto plazo. Es comprar muestra con dinero.
+- **Sin decidir — es del usuario.**
 
 **~24/08 — veredicto de estructura de salidas (4 semanas de ejecución correcta desde el 28/07)**
 - Recién ahí tiene sentido juzgar TP×2 + TPs LIMIT. **No antes**, y sólo si hay muestra suficiente.
@@ -334,6 +336,34 @@ Las gotchas detectadas y validadas están en `~/.claude/projects/-Users-will-Doc
 - `live_sim_data_parity.md` — velas en formación (corregido 28/07) + gate horario que el sim no simula
 - `execution_cost_notes.md` — TPs LIMIT maker, y el escalonamiento que no escalonaba
 - `parity_sim_realization_gap.md` — cuándo el sim sobrestima y por qué mandar el real
+
+### ✅ Verificación 03/08 — los 4 fixes de la semana pasada FUNCIONAN
+
+Primera semana con la cadena completa operativa (señal → gate → orden → TP escalonado) desde el 03/07.
+
+**1. Volvieron las órdenes** (valida `15b1e1b`). 20 submits desde el 31/07 02:31, **todos aceptados** (`code=0`, sin rechazos). Operaron **7 pares** — BNB, ONDO, BCH, LINK, AVAX, APT, DYDX — incluidos APT/BCH/LINK/ONDO, mudos desde el 03/07. Ritmo de cierres: **9/semana vs 3/semana** antes de los fixes.
+
+**2. Los TPs escalonan** (valida `077951b` + `753ebd0`). Caso BCH-SHORT del 01/08, el primer `tpN_filled` tras 133 cierres sin ninguno:
+- `tp1_submitted` 0.059 @ **205.99** → `tp1_filled` (+0.1675)
+- confirmado con `notes=stage_advanced_before_resubmit` → **es la reconciliación del fix actuando**
+- `tp2_submitted` 0.059 @ **198.65** — precio distinto: escalonó de verdad
+- BE se activó tras TP1 y el resto cerró en verde. Total BCH **+0.1475**.
+
+**3. Señales estables**: 17 en 3,9 d (**130/30d**, vs 38 pre-fix), 8/10 pares produciendo. El caudal no fue un pico.
+
+**4. Sin remanentes huérfanos** ni rechazos `101485`/`110422`/`109400` en toda la semana.
+
+⚠️ **Pero el PnL de la semana es −1,21 USDT** (5 cierres: 3 `stop_loss`, BCH +0,15 por TP). Acumulado agosto −1,24. **Esto era lo esperado y está advertido desde el 28/07**: arreglar la ejecución da *muestra*, no *ganancia*. Con 5 cierres no hay veredicto posible — pero ver "Edge" abajo.
+
+### 🔴 La pregunta que queda abierta: ¿hay edge?
+
+Con la ejecución ya correcta, el diagnóstico se desplaza de "el bot no hace lo que debería" a "lo que debería hacer, ¿gana?". Señales que apuntan a que **no**, y que ya no se pueden atribuir a bugs:
+
+- El parity-sim da **PnL negativo en las 4 ventanas** (30/60/90/120d) — es el dato que hizo decir "quitar el gate da muestra, no ganancia".
+- El patrón de asimetría del 03/07 **persiste**: los 3 perdedores de esta semana vivieron 10-22 h (BNB 1358 min, AVAX 724, APT 624); el ganador salió por TP en pocas horas. Es exactamente el payoff 0,42 medido en julio.
+- 5 de los 6 A/B intentados desde junio fueron rechazados, todos con la misma lección: bloquear o desbloquear trades no crea edge donde no lo hay.
+
+**Esto NO es motivo para tocar parámetros hoy** (5 cierres no deciden nada). Es el marco para el ~24/08: si con ejecución correcta y muestra suficiente el PnL sigue negativo, el problema es la estrategia, no la infraestructura, y toca revisar el edge de raíz en vez de seguir afinando salidas.
 
 ---
 
