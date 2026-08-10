@@ -116,14 +116,32 @@ TP_R_MULTIPLES_DEFAULT = (1.0, 2.0, 3.0)
 TP1_DEFAULT_FACTOR = 0.70
 FUNDING_EVENTS_CACHE: Dict[str, Dict[str, List[Tuple[int, float]]]] = {}
 STEP_SIZE_DEFAULT = 0.001
+# Reglas de contrato verificadas contra /openApi/swap/v2/quote/contracts (10/08/2026).
+# Un tick demasiado grueso para el precio del par arruina el backtest en silencio:
+# los TP se redondean con ROUND_DOWN y pueden caer POR DEBAJO del precio de entrada,
+# cerrando como "TP" con pérdida. Los pares baratos son los que sufren.
+# Ver _assert_tick_size_sane(), que impide que un símbolo sin entrada aquí pase inadvertido.
 SYMBOL_TRADING_RULES = {
-    'BNB-USDT': {'qty_step': 0.01, 'price_tick': 0.1},
-    'DOT-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
+    'APT-USDT': {'qty_step': 0.1, 'price_tick': 0.0001},
+    'AVAX-USDT': {'qty_step': 1.0, 'price_tick': 0.001},
+    'BCH-USDT': {'qty_step': 0.01, 'price_tick': 0.01},
+    'BNB-USDT': {'qty_step': 0.01, 'price_tick': 0.01},
+    'CFX-USDT': {'qty_step': 1.0, 'price_tick': 0.00001},
     'DYDX-USDT': {'qty_step': 0.1, 'price_tick': 0.00001},
+    'ETH-USDT': {'qty_step': 0.01, 'price_tick': 0.01},
+    'LINK-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
+    'ONDO-USDT': {'qty_step': 0.01, 'price_tick': 0.0001},
+    'XMR-USDT': {'qty_step': 0.001, 'price_tick': 0.01},
+    # Pares fuera del portfolio actual (se conservan para backtests históricos).
+    'DOT-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
     'HBAR-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
     'TRX-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
     'DOGE-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
 }
+
+# Un tick legítimo ronda el 0.001%-0.03% del precio. Por encima de este umbral se asume
+# que el símbolo no tiene entrada en SYMBOL_TRADING_RULES y cayó al default de 0.01.
+MAX_TICK_PCT_OF_PRICE = 0.001  # 0.1%
 
 # ==========================
 # Configuración SIMPLE-RUN (ejecuta con un solo comando, sin flags)
@@ -1094,6 +1112,37 @@ def _step_size_for(symbol: str) -> float:
 
 def _tick_size_for(symbol: str) -> float:
     return SYMBOL_TRADING_RULES.get(str(symbol).upper(), {}).get('price_tick', 0.01)
+
+
+def _assert_tick_size_sane(symbol: str, ref_price: float) -> None:
+    """Falla ruidosamente si el tick del símbolo es absurdo para su precio.
+
+    Un símbolo sin entrada en SYMBOL_TRADING_RULES cae al default de 0.01, que para un
+    par barato es enorme (CFX a $0.042 -> 24% del precio). Como los TP se redondean con
+    ROUND_DOWN, el TP termina por debajo del precio de entrada y el trade cierra como
+    "TP" con una pérdida de dos dígitos. Eso no se ve en el resultado agregado: sólo
+    aparece como un par que "no tiene edge". Preferimos romper el backtest a publicar
+    un número envenenado.
+    """
+    if ref_price is None or not (ref_price > 0):
+        return
+    tick = _tick_size_for(symbol)
+    ratio = tick / float(ref_price)
+    if ratio <= MAX_TICK_PCT_OF_PRICE:
+        return
+    known = str(symbol).upper() in SYMBOL_TRADING_RULES
+    causa = (
+        f"'{str(symbol).upper()}' no está en SYMBOL_TRADING_RULES y usó el tick por defecto (0.01)"
+        if not known else
+        f"el tick configurado para '{str(symbol).upper()}' es demasiado grueso"
+    )
+    raise ValueError(
+        f"[TICK GUARD] {causa}: tick={tick:g} es {ratio*100:.2f}% del precio de referencia "
+        f"({ref_price:g}), por encima del máximo de {MAX_TICK_PCT_OF_PRICE*100:.2f}%. "
+        f"Los TP redondearían por debajo del precio de entrada y el backtest daría pérdidas "
+        f"falsas. Añadí el par a SYMBOL_TRADING_RULES con el tick real del exchange "
+        f"(GET /openApi/swap/v2/quote/contracts -> pricePrecision)."
+    )
 
 
 def _round_to_tick(value: float, tick: float) -> float:
@@ -3282,6 +3331,8 @@ def load_candles(template_or_path: str, symbol: str, lookback_days: Optional[int
         except Exception:
             pass
     if 'symbol_norm' in df.columns: df = df.drop(columns=['symbol_norm'])
+    if not df.empty:
+        _assert_tick_size_sane(symbol, float(df['close'].median()))
     return df
 
 
