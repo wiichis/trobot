@@ -318,6 +318,7 @@ def _sanitize_entry_limit_price(
 ) -> float:
     """Calcula precio LIMIT para entrada maker (post-only) sin cruzar el book."""
     side = str(position_side or "").upper().strip()
+    _warn_if_tick_implausible(symbol, ref_price)
     tick = _tick_size_for(symbol)
     min_px = tick if tick and tick > 0 else 1e-8
     ref = max(float(ref_price), min_px)
@@ -1188,17 +1189,36 @@ def _consume_entry_watch(symbol: str, position_side: str):
 # vuelve a añadir un diccionario STEP_SIZES y usa .get().
 
 STEP_SIZE_DEFAULT = 0.001
-# Overrides por símbolo para step/tick conocidos (completar según reglas del exchange).
+# Reglas de contrato verificadas contra /openApi/swap/v2/quote/contracts (10/08/2026).
+# Un símbolo ausente cae al tick por defecto (0.01), que para un par barato es enorme y
+# descoloca TODOS los precios que se derivan del tick: entrada LIMIT, TP y SL.
+# Medido antes del fix: ONDO colocaba las entradas LONG a −2.41% del mercado (diseñado:
+# −0.02%) — como son PostOnly, casi nunca llenaban — y operaba un TP de 3.33% cuando el
+# diseñado era 1.2%. APT igual en menor grado. Ambos figuraban como "pares mudos".
+# Ver _warn_if_tick_implausible(); no agregar un par sin traer su tick real del exchange.
 SYMBOL_TRADING_RULES = {
-    'BNB-USDT': {'qty_step': 0.01, 'price_tick': 0.1},
-    'DOT-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
+    'APT-USDT': {'qty_step': 0.1, 'price_tick': 0.0001},
+    'AVAX-USDT': {'qty_step': 1.0, 'price_tick': 0.001},
+    'BCH-USDT': {'qty_step': 0.01, 'price_tick': 0.01},
+    'BNB-USDT': {'qty_step': 0.01, 'price_tick': 0.01},
+    'CFX-USDT': {'qty_step': 1.0, 'price_tick': 0.00001},
     'DYDX-USDT': {'qty_step': 0.1, 'price_tick': 0.00001},
-    'CFX-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
+    'ETH-USDT': {'qty_step': 0.01, 'price_tick': 0.01},
+    'LINK-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
+    'ONDO-USDT': {'qty_step': 0.01, 'price_tick': 0.0001},
+    'XMR-USDT': {'qty_step': 0.001, 'price_tick': 0.01},
+    # Pares fuera del portfolio actual (se conservan por si vuelven a rotación).
+    'DOT-USDT': {'qty_step': 0.1, 'price_tick': 0.001},
     'HBAR-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
     # TRX y DOGE requieren ticks finos; con 0.01 el TP quedaba por debajo del precio de entrada
     'TRX-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
     'DOGE-USDT': {'qty_step': 1.0, 'price_tick': 0.0001},
 }
+
+# Un tick legítimo ronda el 0.001%-0.03% del precio. Por encima, se asume que el símbolo
+# no tiene entrada arriba y cayó al default.
+MAX_TICK_PCT_OF_PRICE = 0.001  # 0.1%
+_TICK_WARNED: set = set()
 # Splits legacy por defecto para TP escalonado (40%, 40%, 20%)
 TP_SPLITS = (0.40, 0.40, 0.20)
 
@@ -1320,6 +1340,43 @@ def _tick_size_for(symbol: str) -> float:
     return SYMBOL_TRADING_RULES.get(str(symbol).upper(), {}).get('price_tick', 0.01)
 
 
+def _warn_if_tick_implausible(symbol: str, ref_price) -> bool:
+    """Alerta si el tick del símbolo es absurdo para su precio. Devuelve True si lo es.
+
+    A diferencia del backtest (que rompe), en vivo sólo avisa: matar el bot es peor que
+    operar con un tick grueso. Pero el aviso tiene que salir, porque el síntoma es
+    silencioso — las órdenes se colocan descolocadas y el par simplemente "no opera".
+    Se emite una vez por símbolo por proceso para no inundar Telegram.
+    """
+    sym_u = str(symbol).upper()
+    try:
+        ref = float(ref_price)
+    except (TypeError, ValueError):
+        return False
+    if not (ref > 0):
+        return False
+    tick = _tick_size_for(sym_u)
+    ratio = tick / ref
+    if ratio <= MAX_TICK_PCT_OF_PRICE:
+        return False
+    if sym_u not in _TICK_WARNED:
+        _TICK_WARNED.add(sym_u)
+        emit_lifecycle_event(
+            "runtime_storage_warning",
+            "WARNING",
+            symbol=sym_u,
+            reason="tick_size_implausible",
+            detail=(
+                f"tick={tick:g} es {ratio * 100:.2f}% del precio ({ref:g}); máximo {MAX_TICK_PCT_OF_PRICE * 100:.2f}%. "
+                f"{'No está en SYMBOL_TRADING_RULES' if sym_u not in SYMBOL_TRADING_RULES else 'Tick configurado demasiado grueso'}. "
+                "Entradas LIMIT, TP y SL quedan descolocados. Traer pricePrecision de "
+                "/openApi/swap/v2/quote/contracts."
+            ),
+            source="_warn_if_tick_implausible",
+        )
+    return True
+
+
 def _round_to_tick(value: float, tick: float, rounding=ROUND_DOWN) -> float:
     if tick is None or tick <= 0:
         return float(value)
@@ -1343,6 +1400,7 @@ def _trigger_rounding(position_side: str, order_type: str):
 
 
 def _round_trigger_price(raw_price: float, symbol: str, position_side: str, order_type: str) -> float:
+    _warn_if_tick_implausible(symbol, raw_price)
     tick = _tick_size_for(symbol)
     return _round_to_tick(float(raw_price), tick, rounding=_trigger_rounding(position_side, order_type))
 
