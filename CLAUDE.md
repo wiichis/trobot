@@ -306,7 +306,7 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 
 **Decisión pendiente — gate de sesión (prerequisito CUMPLIDO el 03/08, listo para decidir)**
 - El prerequisito que se puso el 31/07 era "confirmar primero que vuelven las órdenes". **Cumplido**: 20 submits, 7 pares, cadena completa verificada.
-- Medición actualizada 31/07→03/08: de **17 señales, 6 caen en hora bloqueada (35%)**; 11 quedaron disponibles y 7 se ejecutaron. Quitarlo daría **~+50% de caudal**.
+- Medición 31/07→03/08: de **17 señales, 6 en hora bloqueada (35%)**. **Confirmado el 18/08**: de **15 señales, 5 bloqueadas (33%)** — APT 20h, BNB 03h, LINK 13h, AVAX 23h, LINK 01h. Dos semanas independientes dan el mismo tercio.
 - Medido desde antes: no filtra horas malas (winrate igual o mejor en las bloqueadas), está calibrado para otra estrategia (`rsi_reversal` 30m_5m) y el backtest no lo simula. Detalle en "Mudez del portfolio".
 - **A favor**: sin él no hay muestra para el veredicto del ~24/08 (al ritmo actual serían ~25 cierres; con el gate quitado ~38). Y restaura la paridad sim↔live, condición para que cualquier A/B signifique algo.
 - **En contra**: con edge negativo en el sim, más trades = más pérdida en el corto plazo. Es comprar muestra con dinero.
@@ -316,9 +316,7 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 - Receta que funcionó, para repetirla: top-up de velas desde el API (los datos locales estaban 41 días viejos; **NO bajar `long.csv` de prod**), `--live_parity` con **`--symbols` explícito** (sin él usa BTC-USDT y reporta 0 trades sin avisar — P5.4), y descomponer los trades en bruto vs costos, no mirar sólo el neto.
 - **Regla que se ganó con sangre**: si un solo par explica >50% del PnL del portfolio, **es una alarma de datos, no una conclusión**. CFX explicaba el 55-97% y resultó ser el tick roto.
 
-**🔜 ~17/08 — rehacer el análisis de edge con datos limpios**
-- Los paramsets de **CFX, APT y ONDO** se optimizaron con los ticks rotos → sus números no son confiables ni siquiera en la medición del 10/08.
-- Verificar primero que el fix del 10/08 actuó: que ONDO/APT dejen de expirar entradas por `protection_timeout` y empiecen a abrir posiciones.
+**✅ ~17/08 — análisis de edge rehecho con datos limpios — HECHO el 18/08.** Resultado en "¿hay edge?" abajo. Sigue negativo en 4/4 y el diagnóstico se afina: 7 de 10 pares no cubren su propio costo.
 
 **~24/08 — veredicto de estructura de salidas**
 - ⚠️ **El reloj se movió otra vez.** Arrancaba el 28/07 (ejecución correcta), pero ONDO y APT recién operan con precios correctos desde el **10/08**. Para esos dos, la muestra útil empieza ahí.
@@ -395,39 +393,61 @@ Primera semana con la cadena completa operativa (señal → gate → orden → T
 
 ⚠️ **Pero el PnL de la semana es −1,21 USDT** (5 cierres: 3 `stop_loss`, BCH +0,15 por TP). Acumulado agosto −1,24. **Esto era lo esperado y está advertido desde el 28/07**: arreglar la ejecución da *muestra*, no *ganancia*. Con 5 cierres no hay veredicto posible — pero ver "Edge" abajo.
 
+### ✅ Revisión semanal 18/08 — primera semana en verde; el fix de ticks NO despertó a ONDO/APT
+
+**Sistema**: 7,3 días estable desde el deploy del 10/08. `NRestarts=0`, 0 errores, md5 consistente, **0 avisos `tick_size_implausible`**. 9 fills de TP en la semana.
+
+**PnL: +0,62 USDT** (vs −3,62 la semana previa) — LINK +0,80, DYDX +0,26, BCH +0,14, XMR −0,59. Balance 193,74. Sólo **2 cierres, ambos `be_stop`**: el BE protegió capital. Con 2 cierres no hay veredicto, pero rompe la racha.
+
+⚠️ **La predicción del 10/08 falló y hay que registrarlo.** Se esperaba que el fix de ticks hiciera despertar a ONDO y APT. **Tuvieron cero eventos en 7,3 días** — ni un submit. Los `protection_timeout` pasaron de 2 a 0, pero con n=2 eso no prueba nada.
+- La causa real de su mudez **no era (sólo) el precio**: es que **casi no generan señal** — 1 cada uno en 2.112 barras.
+- El fix seguía siendo necesario (los precios estaban objetivamente mal), pero **no era la causa principal**. Tercera vez que se atribuye a una causa y aparece otra encima: no cerrar el diagnóstico de un par mudo con una sola explicación.
+
+**El gate es ahora el cuello de botella medido**: de **15 señales, 5 en hora bloqueada (33%)** — APT 20h, BNB 03h, LINK 13h, AVAX 23h, LINK 01h. Las 10 que pasaron dieron 7 submits (las 3 perdidas son cooldown de DYDX y 1 de ONDO). **La única señal de APT en toda la semana murió en el gate.**
+
+**Caudal de señales**: 15 en 7,3d = ~62/30d, la mitad de las ~130/30d medidas el 03/08. Vigilar si sigue cayendo.
+
 ### 🔴 La pregunta que queda abierta: ¿hay edge?
 
 Con la ejecución ya correcta, el diagnóstico se desplaza de "el bot no hace lo que debería" a "lo que debería hacer, ¿gana?".
 
-**Medición del 10/08** (parity-sim, datos al día por top-up del API, `--symbols` explícito, **ticks ya corregidos**). Ojo con las magnitudes: el sim corre con capital 1000 y compounding mientras el balance real ronda los 198 USDT, así que están infladas ~5×. **Leer signos y proporciones, no USDT.**
+**Medición del 18/08** (parity-sim, top-up de 160k velas del API — serie continua, 0 huecos —, `--symbols` explícito, ticks corregidos). Ojo con las magnitudes: el sim corre con capital 1000 y compounding mientras el balance real ronda los 194 USDT, así que están infladas ~5×. **Leer signos y proporciones, no USDT.**
 
-| Ventana | Trades | Bruto | Costos | **Neto** | Winrate |
-|---|---|---|---|---|---|
-| 30d | 155 | −12,22 | 35,29 | −47,51 | 56,1% |
-| 60d | 298 | +8,47 | 70,97 | −62,51 | 55,7% |
-| 90d | 443 | +81,63 | 105,56 | −23,92 | 59,4% |
-| 120d | 541 | +109,17 | 127,84 | **−18,67** | 60,4% |
+| Ventana | Trades | Bruto | Costos | **Neto** | Winrate | Payoff |
+|---|---|---|---|---|---|---|
+| 30d | 144 | −4,88 | 32,38 | −37,26 | 56,2% | 0,44 |
+| 60d | 282 | −5,32 | 66,44 | −71,76 | 54,3% | 0,48 |
+| 90d | 430 | +65,29 | 100,68 | −35,40 | 58,6% | 0,59 |
+| 120d | 552 | +121,43 | 130,70 | **−9,26** | 60,9% | 0,62 |
 
-**El hallazgo central: el problema son los COSTOS, no la selección de entradas.** Bruto/trade **0,2018** vs costo/trade **0,2363** — el edge bruto es positivo en 3 de 4 ventanas y los costos se lo comen entero, con un 17% de exceso. Slippage (63,79 en 120d) supera a comisiones (60,12).
+Negativo en 4/4, consistente con la medición del 10/08 (que daba −47,5/−62,5/−23,9/−18,7). **El bruto es negativo en 30 y 60d**: en el período reciente no hay ni siquiera edge bruto.
 
-Esto reencuadra por qué **5 de 6 A/B fallaron desde junio**: todos movían *qué* trades tomar, ninguno tocó la relación bruto/costo por trade.
+**El hallazgo accionable: 7 de 10 pares no generan bruto suficiente para pagar su propio costo.**
 
-Pares negativos en las 4 ventanas: **XMR, LINK, AVAX, ONDO, APT** (5/10). Único positivo en 4/4: **BCH**. AVAX es el caso extremo de sobre-operación — 129-133 trades (el que más opera) con bruto casi nulo.
+| ¿bruto/trade > costo/trade? | ventanas que sí |
+|---|---|
+| **BCH** | **4/4** ✅ |
+| AVAX, BNB, CFX | 1/4 |
+| APT, DYDX, ETH, LINK, ONDO, XMR | **0/4** |
 
-⚠️ **Estos números todavía arrastran un sesgo**: los parámetros de CFX, APT y ONDO se optimizaron **con los ticks rotos**, así que el paramset de esos 3 pares no es confiable. **Rehacer el análisis de edge** tras unos días de datos limpios post-deploy del 10/08.
+- **LINK y XMR tienen bruto NEGATIVO** en 120d (−0,33 y −4,17): perderían aunque los costos fueran cero. No es un problema de costos, es que no tienen edge.
+- **El slippage es el 50% de los costos** (65,2 vs 61,5 de comisiones y 4,0 de funding). Es el componente más grande y el menos atacado.
+- Esto reencuadra por qué **5 de 6 A/B fallaron desde junio**: todos movían *qué* trades tomar, ninguno tocó la relación bruto/costo por trade.
 
-- El patrón de asimetría del 03/07 **persiste**: payoff 0,42-0,61 según ventana; los perdedores viven más que los ganadores en todas.
+⚠️ **Trampa de selección detectada, no caer en ella**: el subconjunto "solo BCH/BNB/CFX" da −0,17/+4,73/+19,48/+40,78 en 30/60/90/120d. Se ve bien, pero **mejora monótonamente con la ventana** — la selección la manda el período más largo, o sea que es selección in-sample. Sólo BCH tiene perfil robusto (4/4). No usar esto como base de una rotación sin cross-val fuera de muestra.
+
+- El patrón de asimetría del 03/07 **persiste**: payoff 0,44-0,62 según ventana; los perdedores viven menos que los ganadores en el sim (277-321 vs 294-359 min), al revés que en el real.
 - **Esto NO es motivo para tocar parámetros hoy.** Es el marco para el ~24/08: si con ejecución correcta y muestra suficiente el PnL sigue negativo, el problema es la estrategia y toca revisar el edge de raíz.
 
 ---
 
-## Estado al cierre del 10/08
+## Estado al cierre del 18/08
 
-**Prod**: activo desde **10/08 16:49 UTC** (deploy del fix de ticks), `NRestarts=0`, 0 errores. HEAD `e14d927` (merge de `c0e453e`). `pkg/best_prod.json` md5 `57daca5b` coincidiendo local = HEAD = prod. Punto de rollback del deploy: `93a111b`. Una posición abierta: AVAX-SHORT en `tp2_live`.
+**Prod**: activo desde **10/08 16:49 UTC**, 7,3 días sin reinicios ni errores. HEAD `ff68534`. `pkg/best_prod.json` md5 `57daca5b` coincidiendo local = HEAD = prod. Balance **193,74 USDT**. Tres posiciones abiertas: AVAX-SHORT (`tp2_live`), DYDX-SHORT (`tp3_live`), DYDX-LONG (`tp2_live`).
 
-**Portfolio**: 10 pares. **Ningún parámetro tocado desde el 03/07** — el congelamiento sigue.
+**Portfolio**: 10 pares. **Ningún parámetro tocado desde el 03/07** — el congelamiento sigue (vence ~24/08).
 
-**PnL desde el fix del 31/07: −4,87 USDT en 10 días** (fuente: `PnL.csv`, dedupe por `tranId`). Sólo ONDO en verde (+1,73). Peores: AVAX −1,66, XMR −1,63, DYDX −1,32.
+**PnL semana 10→18/08: +0,62 USDT** — primera semana en verde. Semana previa −3,62.
 
 **Los 5 bugs corregidos**, todos de ejecución o datos, ninguno de parámetros:
 
@@ -442,7 +462,7 @@ Pares negativos en las 4 ventanas: **XMR, LINK, AVAX, ONDO, APT** (5/10). Único
 **Lo que se aprendió, y ya van tres veces**: cada uno de estos bugs se leía como una *conclusión sobre la estrategia* — "CFX no tiene edge", "ONDO y APT son mudos", "los filtros son muy selectivos" — cuando era un defecto de ejecución o de datos. La telemetría que los delataba existía y no se miraba. **Antes de concluir algo sobre la estrategia, verificar que el bot hizo lo que se cree que hizo.**
 
 **Al retomar, en este orden**:
-1. **¿Actuó el fix de ticks?** Que ONDO/APT dejen de acumular `entry_order_canceled_or_expired` / `protection_timeout` y empiecen a abrir posiciones. Es la validación del deploy del 10/08.
-2. **Rehacer el análisis de edge** (~17/08) con datos limpios — los paramsets de CFX/APT/ONDO salieron de una función objetivo corrupta.
-3. **Gate de sesión**: sigue sin decidir, bloquea ~35% de las señales. Detalle y argumentos en "Decisión pendiente".
-4. **El lever real es el costo por trade** (bruto 0,2018 vs costo 0,2363), no la selección de entradas. Ver "¿hay edge?".
+1. **~24/08 — vence el congelamiento y toca el veredicto de estructura de salidas.** Es el hito. Ver "Plan con fechas".
+2. **El lever real es el costo por trade**: 7/10 pares no cubren su propio costo, y el **slippage es el 50% de los costos** — el componente más grande y el menos atacado. Ver "¿hay edge?".
+3. **Gate de sesión**: bloquea 33% de las señales (medido 18/08). Detalle en "Decisión pendiente".
+4. **Caudal de señales a la baja**: ~62/30d vs ~130/30d el 03/08. Si sigue cayendo, la muestra para cualquier veredicto se evapora.
