@@ -13,9 +13,8 @@
     "symbols": []
   },
   "session": {
-    "entry_hours_utc": [
-      6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 21, 22
-    ]
+    "_comment_entry_hours_utc": "Gate horario DESACTIVADO el 18/08/2026. Lista vacia = 24/7 (is_entry_hour_allowed_utc devuelve True si no hay horas). Bloqueaba 1 de cada 3 senales (35% y 33% en dos semanas independientes), no filtraba horas malas (winrate igual o mejor en las bloqueadas), venia calibrado para otra estrategia (rsi_reversal 30m_5m) y el backtest nunca lo simulaba, asi que los params se optimizan 24/7 y se ejecutaban 14/24. Para revertir: restaurar [6,7,8,9,10,11,12,14,15,16,17,19,21,22] y reiniciar el servicio.",
+    "entry_hours_utc": []
   },
   "side_mode": "both",
   "entry_style_overrides": {},

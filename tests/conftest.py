@@ -7,6 +7,22 @@ import pandas as pd
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _reset_live_runtime_config_cache():
+    """Aísla el runtime config entre tests.
+
+    `get_live_runtime_config` está bajo `lru_cache`, así que un test que apunta
+    `DEFAULT_CONFIG_PATH` a un temp y recarga deja la config cacheada para todos los
+    que siguen — y `monkeypatch` restaura el atributo pero no el caché. Eso hacía que
+    los tests del gate horario pasaran aislados y fallaran dentro de la suite.
+    """
+    import pkg.live_runtime_config as lrc
+
+    lrc.reload_live_runtime_config()
+    yield
+    lrc.reload_live_runtime_config()
+
+
 @pytest.fixture
 def isolated_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Aisla rutas relativas ./archivos usadas por runtime."""
