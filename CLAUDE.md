@@ -268,6 +268,19 @@ Las entradas son **PostOnly**: una orden a −2,41% del mercado casi nunca llena
 
 **Al incorporar un par nuevo**: traer `pricePrecision`/`quantityPrecision` del endpoint de contratos (tick = 10^-pricePrecision) y agregarlo a **las dos** tablas. Ver memoria `backtest_tick_size_poisoning`.
 
+### 🐛 Bug 25/08 — el parity-sim llenaba los TP con un simple toque — CORREGIDO (`cc36b90`)
+
+`run_live_parity_portfolio` decidía el fill con `high >= price` y podía llenar TP1, TP2 y TP3 en la **misma vela**. Ninguna de las dos cosas ocurre en vivo:
+
+- El live deja órdenes **LIMIT maker** (`tp_mode: partial_limit_tp`). Una orden que espera en el book no se ejecuta porque el precio la toque y rebote: está en una cola, y el toque ejecuta a los de adelante. Hace falta que el mercado **atraviese** el nivel (trade-through ≥ `limit_fill_buffer_bps`, 2 bps) o que el cierre lo confirme.
+- El live manda **un tramo por vez** (`tp_one_at_a_time: true`) y espera el fill antes de someter el siguiente. Medido en prod: TP1 de XMR 02:17, TP2 02:31 — 14 min de diferencia.
+
+La lógica conservadora (`should_fill_tp_limit` / `LimitFillPolicy`) **ya existía** y se usaba en `class Backtester`, el camino del **sweep**. El parity —el que decide todos los A/B de estructura de salidas— nunca la invocaba. Dos meses de A/B de salidas se apoyaron en fills optimistas.
+
+**El modelo se ata a la config del LIVE** (`get_tp_mode`, `get_tp_one_at_a_time`), no al flag `conservative_limit_fills` de los params: ese flag existe para que un sweep elija su supuesto de ejecución y está en `False` en los 10 pares, así que colgarlo de ahí habría dejado el parity optimista igual. Si el live vuelve a TPs market, el parity lo sigue solo.
+
+⚠️ **El fix corrige el modelo pero NO cierra el gap**: la tasa de posiciones que tocan TP pasó de 57% a 55% (90d), contra un **38% real**. Se probó además armar el BE intrabarra (como el live, que revisa cada 50 s, en vez de con el cierre de la vela): sólo lleva 55% → 50%. **La causa dominante del resto sigue sin identificar** — queda en P5.
+
 ### ❌ P2 Timeframe 15m — CERRADO 03/07: sweep completo, RECHAZADO
 
 Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs costos. Falsificada:
@@ -304,13 +317,11 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 3. **¿Cierran íntegras?** Ninguna posición debe dejar remanente colgando sólo del SL (era el caso DYDX del 26/07).
 4. **Velas**: bajar `cripto_price_5m.csv` de prod y comparar OHLC contra el API — las cerradas deben coincidir al 100% (excluir siempre la última, está en formación por diseño).
 
-**Decisión pendiente — gate de sesión (prerequisito CUMPLIDO el 03/08, listo para decidir)**
-- El prerequisito que se puso el 31/07 era "confirmar primero que vuelven las órdenes". **Cumplido**: 20 submits, 7 pares, cadena completa verificada.
-- Medición 31/07→03/08: de **17 señales, 6 en hora bloqueada (35%)**. **Confirmado el 18/08**: de **15 señales, 5 bloqueadas (33%)** — APT 20h, BNB 03h, LINK 13h, AVAX 23h, LINK 01h. Dos semanas independientes dan el mismo tercio.
-- Medido desde antes: no filtra horas malas (winrate igual o mejor en las bloqueadas), está calibrado para otra estrategia (`rsi_reversal` 30m_5m) y el backtest no lo simula. Detalle en "Mudez del portfolio".
-- **A favor**: sin él no hay muestra para el veredicto del ~24/08 (al ritmo actual serían ~25 cierres; con el gate quitado ~38). Y restaura la paridad sim↔live, condición para que cualquier A/B signifique algo.
-- **En contra**: con edge negativo en el sim, más trades = más pérdida en el corto plazo. Es comprar muestra con dinero.
-- **Sin decidir — es del usuario.**
+**✅ Gate de sesión — QUITADO el 18/08 (`e172f72`) y VALIDADO el 25/08**
+- Medición previa: 6/17 señales bloqueadas (35%) del 31/07-03/08 y 5/15 (33%) del 10-18/08. Dos semanas independientes, el mismo tercio.
+- Implementación: flip de config, `session.entry_hours_utc: []` en `live_benchmark_runtime.json` (`is_entry_hour_allowed_utc` devuelve True si no hay horas). Revertir = restaurar `[6,7,8,9,10,11,12,14,15,16,17,19,21,22]` + restart.
+- **Resultado a 7,1 días**: entradas 7 → **17**, pares operando 4 → **9/10**, PnL +0,62 → **+2,87**. Y el test directo por hora de entrada: las horas **antes bloqueadas** dieron **+1,77 con 67% de winrate** contra −0,39 y 43% de las ya permitidas.
+- Se esperaba comprar *muestra* pagando pérdida a corto plazo; salió muestra **y** ganancia. No reponer el gate.
 
 **✅ Análisis de edge — HECHO el 10/08** (el check del 06/08 no se corrió; el PnL del 10/08 lo respondió igual: −4,87 USDT en 10 días, sólo ONDO en verde). Resultado y matices en "¿hay edge?" abajo. De paso destapó el bug de tick size.
 - Receta que funcionó, para repetirla: top-up de velas desde el API (los datos locales estaban 41 días viejos; **NO bajar `long.csv` de prod**), `--live_parity` con **`--symbols` explícito** (sin él usa BTC-USDT y reporta 0 trades sin avisar — P5.4), y descomponer los trades en bruto vs costos, no mirar sólo el neto.
@@ -318,14 +329,17 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 
 **✅ ~17/08 — análisis de edge rehecho con datos limpios — HECHO el 18/08.** Resultado en "¿hay edge?" abajo. Sigue negativo en 4/4 y el diagnóstico se afina: 7 de 10 pares no cubren su propio costo.
 
-**~24/08 — veredicto de estructura de salidas**
-- ⚠️ **El reloj se movió otra vez.** Arrancaba el 28/07 (ejecución correcta), pero ONDO y APT recién operan con precios correctos desde el **10/08**. Para esos dos, la muestra útil empieza ahí.
-- Recién ahí tiene sentido juzgar TP×2 + TPs LIMIT. **No antes**, y sólo si hay muestra suficiente.
-- **P-proceso**: arranca la cadencia MENSUAL de re-optimización (máx. 1-2 pares/mes; cada cambio debe ganarle a "no tocar nada" en cross-val).
-- **P-pesos**: decidir si concentrar capital (menos pares o pesos escalonados con cap) en vez del equal-weight actual.
-- **P-costos** 🆕: es el lever que la medición del 10/08 señala como el real (bruto/trade ≈ costo/trade). Dos vías: bajar frecuencia en los sobre-operadores (AVAX, 129-133 trades con bruto casi nulo) y subir el bruto por trade — que es literalmente lo que TP×2 debía hacer y sigue sin veredicto.
+**✅ ~24/08 — veredicto de estructura de salidas — EMITIDO el 25/08: NO revertir TP×2.**
+Pierde en 3 de 4 ventanas con el parity ya corregido. Detalle en "Revisión semanal 25/08". Lo que queda abierto de la estructura es **TP3, que nunca llena** (0 de 39).
 
-**Congelamiento de parámetros: extendido hasta el ~24/08** (era 03/08). Los bugs de ejecución y datos se siguen corrigiendo — no son parámetros; así se trataron los fixes del 07, 08, 13, 14, 27, 28/07 y 10/08.
+**🔓 Congelamiento de parámetros: VENCIDO el 24/08.** Rigió desde el 03/07. Durante su vigencia se corrigieron 7 bugs de ejecución/datos (07, 08, 13, 14, 27, 28/07, 10/08) y ninguno era un parámetro. Ahora se pueden tocar params, pero con la cadencia de abajo y **con cross-val obligatoria**.
+
+**Cola de trabajo — en este orden**
+1. **P-TP3** 🆕 *(el más maduro; evidencia directa, no depende del gap de paridad)*: TP3 está a 3,84%-7,04% y nunca llena. Opciones a medir: acercarlo, redistribuir el ladder (`TP_LADDER_FACTORS` (0.6, 1.0, 1.6)) o eliminar el tercer tramo y repartir en dos. **Ojo**: el tercer tramo hoy es el que corre con el trailing, así que quitarlo no es gratis — hay que medirlo, no asumirlo.
+2. **P-paridad** *(P5.2c)*: cerrar el gap de realización de TP (sim 50-55% vs vivo 38%). Mientras siga abierto, todo A/B de salidas —incluido P-TP3— conserva un sesgo optimista de ~12-15 puntos.
+3. **P-costos**: el lever que señala la medición del edge (bruto/trade ≈ costo/trade, slippage = 50% de los costos). Bajar frecuencia en los sobre-operadores (AVAX) y subir el bruto por trade.
+4. **P-proceso**: cadencia MENSUAL de re-optimización (máx. 1-2 pares/mes; cada cambio debe ganarle a "no tocar nada" en cross-val).
+5. **P-pesos**: concentrar capital (menos pares o pesos escalonados con cap) en vez del equal-weight actual. ⚠️ Ver la trampa de selección in-sample en "¿hay edge?".
 
 ### P2 — Mejoras estratégicas adicionales
 
@@ -345,7 +359,8 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 2. **Dashboard mejorado**: agregar página de "salud del portfolio" con métricas de cada par (PnL 7/30/90d, winrate, pf, max_dd) y alertas visuales.
 3. **CI ligero**: hook que verifique `md5sum pkg/best_prod.json` local == HEAD == prod después de cualquier deploy.
 4. 🆕 **Check de paridad de datos (alto valor, barato)**: comparar semanalmente el OHLC de `cripto_price_5m.csv` de prod contra el API para las velas cerradas — deben coincidir al 100%. El bug de velas parciales del 28/07 vivió meses sin detectarse y contaminó todos los indicadores. Excluir siempre la última vela.
-5. 🆕 **Check de ejecución diseñada**: contar fills `tp1/tp2/tp3` en `execution_ledger`. Si en N cierres hay 0 fills de TP, algo está roto aguas arriba — fue la señal que gritó el bug del escalonamiento durante un mes sin que nadie la leyera.
+5. 🆕 **Check de ejecución diseñada**: contar fills `tp1/tp2/tp3` en `execution_ledger`. Si en N cierres hay 0 fills de TP, algo está roto aguas arriba — fue la señal que gritó el bug del escalonamiento durante un mes sin que nadie la leyera. **Medir siempre por EVENTOS** (`tp1_filled` / `entry_order_filled`), nunca agrupando cierres de `PnL.csv` por proximidad temporal: eso dio 12% cuando el valor real era 38%.
+7. 🆕 **Tests anclados a fechas fijas caducan en silencio** (25/08): `test_price_pull_partial_candles` usaba el 23/07 y empezó a fallar al pasar los 30 días de `SIGNAL_HISTORY_DAYS` — la purga borraba las velas del fixture. Falló días sin que hubiera regresión, justo en los tests que cubren el bug de velas parciales. Cualquier test que dependa de una ventana de retención debe anclarse al presente.
 6. 🆕 **Entradas que expiran sin llenar** (10/08, barato y de alto valor): contar `entry_order_canceled_or_expired` con `reason=protection_timeout` por par. Un par que acumula timeouts **no está mudo por señal, está mudo por precio** — su orden PostOnly se coloca donde no puede llenar. Fue el síntoma del bug de tick size y se confundió con selectividad de filtros durante un mes.
 
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
@@ -354,7 +369,9 @@ Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferenc
 
 1. ~~**La decisión de entrada se toma sobre la vela en formación**~~ → ✅ **CORREGIDO 31/07** (`15b1e1b`), era la causa de 3 días sin órdenes. Ver "Bug 31/07" arriba. **Queda el residuo**: los niveles TP/SL (`get_last_take_profit_stop_loss` y `latest_values` en `colocando_TK_SL`) siguen leyendo la última fila (vela en formación). Menos grave que el filtro de volumen, pero es la misma incoherencia.
 1b. **Latencia de decisión de 3-8 min.** Con el fix, a las :03 la última vela cerrada es la de :55 (cerró a :00): se decide 3 min después del cierre. El backtest decide en el cierre exacto. Se podría reducir moviendo el pull a :00,:05,… y el job de entradas a :01,:06,… Medir antes de tocar: puede no valer el riesgo de leer velas aún no publicadas por el API.
-2. **El gate horario no existe en el sim.** `run_live_parity_portfolio` no aplica gate horario, y el `SimBacktester` lo lee de `params['entry_hours_utc']` (vacío en los 10 pares) en vez del runtime config. Los params se optimizan 24/7 y se ejecutan 14/24.
+2. ~~**El gate horario no existe en el sim**~~ → ✅ **RESUELTO 18/08 quitando el gate del live**: ahora live y sim son ambos 24/7, que era la condición de paridad. Si alguna vez se repone un gate, hay que simularlo.
+2b. ~~**El parity llenaba los TP con un simple toque**~~ → ✅ **CORREGIDO 25/08** (`cc36b90`). Ver "Bug 25/08".
+2c. 🔴 **Gap de realización de TP, sin causa identificada (abierto).** El sim da 50-55% de posiciones que tocan TP; en vivo es **38%** (15 `tp1_filled` sobre 39 entradas desde el 28/07). Ya descartados por medición: el modelo de fill (57→55%) y el BE armado con el cierre en vez de intrabarra (55→50%). **Mientras siga abierto, todo A/B de salidas conserva un sesgo optimista de ~12-15 puntos.** Próximos sospechosos a medir: (a) la latencia de 50 s entre que se confirma un tramo y se somete el siguiente, que el sim no modela; (b) el trailing stop del live, que puede cerrar antes de TP y en el sim se actualiza sólo una vez por vela; (c) que el sim abre más posiciones que el live y el mix es distinto.
 3. 🐛 **`--entry_hours_utc` no tiene efecto en `--live_parity`** — se acepta el flag y se ignora en silencio. Para medir el gate hubo que particionar los trades por hora de entrada a mano. Arreglar o al menos hacer que falle ruidosamente.
 4. **`--live_parity` sin `--symbols` usa BTC-USDT por defecto** (que ni está en el portfolio) y reporta 0 trades sin avisar. Fácil de malinterpretar como "no hay señales".
 
@@ -407,6 +424,27 @@ Primera semana con la cadena completa operativa (señal → gate → orden → T
 
 **Caudal de señales**: 15 en 7,3d = ~62/30d, la mitad de las ~130/30d medidas el 03/08. Vigilar si sigue cayendo.
 
+### ✅ Revisión semanal 25/08 — la mejor semana; gate validado; veredicto de salidas emitido
+
+**PnL +2,87 USDT en 7,1 días** — la mejor semana registrada. Balance **196,61** (era 193,74). Sistema estable, `NRestarts=0`, 0 errores.
+
+**El gate quedó validado por el resultado.** Entradas que llenaron: **7 → 17**. Pares operando: **4 → 9 de 10**. APT (+0,84) y ONDO (+1,00) volvieron a operar. Y el test directo, particionando por la hora de entrada:
+
+| Origen de la entrada | n | PnL | Winrate |
+|---|---|---|---|
+| Hora que ya estaba permitida | 7 | −0,39 | 43% |
+| **Hora antes bloqueada** | 6 | **+1,77** | **67%** |
+
+Las horas que el gate bloqueaba fueron las buenas. Muestra chica (n=6), pero contradice el miedo de que abrir el caudal sumaría perdedores. **No reponer el gate.**
+
+**✅ Veredicto de estructura de salidas (el hito del ~24/08): NO revertir TP×2.** Con el parity ya corregido (ver "Bug 25/08"), revertir pierde en **3 de 4** ventanas: 30d +3,35 / 60d −3,26 / 90d −0,60 / 120d −5,63. *Antes* del fix daba 2/4 y era no concluyente — o sea que el fix del instrumento fue el que permitió emitir el veredicto.
+
+🔴 **Lo que queda abierto y es el hallazgo más sólido: TP3 nunca llena.** **0 fills en 39 entradas** desde el 28/07 (tp1 15, tp2 8, tp3 **0**). Está a 3,84%-7,04% según el par (ETH y ONDO en 7,04%) en una estrategia de velas de 5m. El tercer tramo es el **34% de cada posición** y jamás captura: siempre termina colgado del stop. No depende del modelo de fill ni del gap de paridad — es geometría.
+
+**La geometría del problema, para tenerla escrita** (ejemplo APT): `be_trigger` **+0,4%**, TP1 **+1,44%**, `sl_pct` **−1,5%**. Entre +0,4% y +1,44% hay **un punto entero de zona muerta** donde el BE ya está armado pero no hay TP: cualquier retroceso cierra plano. La firma en los datos: de 52 posiciones que nunca tocaron TP1, 15 perdieron −10,00 mientras 26 ganaron apenas +6,84.
+
+⚠️ **Gotcha de medición, no repetirlo**: la tasa de TP en vivo se mide contando **eventos** (`tp1_filled` vs `entry_order_filled`), no agrupando cierres de `PnL.csv` por proximidad temporal. Agrupar con una ventana de 90 min dio 12% —cifra errónea que casi motiva un cambio de parámetros— porque parte en dos las posiciones cuyos tramos se separan horas (XMR: TP1 15:21, TP2 22:58). El número correcto es **38%**.
+
 ### 🔴 La pregunta que queda abierta: ¿hay edge?
 
 Con la ejecución ya correcta, el diagnóstico se desplaza de "el bot no hace lo que debería" a "lo que debería hacer, ¿gana?".
@@ -437,19 +475,21 @@ Negativo en 4/4, consistente con la medición del 10/08 (que daba −47,5/−62,
 ⚠️ **Trampa de selección detectada, no caer en ella**: el subconjunto "solo BCH/BNB/CFX" da −0,17/+4,73/+19,48/+40,78 en 30/60/90/120d. Se ve bien, pero **mejora monótonamente con la ventana** — la selección la manda el período más largo, o sea que es selección in-sample. Sólo BCH tiene perfil robusto (4/4). No usar esto como base de una rotación sin cross-val fuera de muestra.
 
 - El patrón de asimetría del 03/07 **persiste**: payoff 0,44-0,62 según ventana; los perdedores viven menos que los ganadores en el sim (277-321 vs 294-359 min), al revés que en el real.
-- **Esto NO es motivo para tocar parámetros hoy.** Es el marco para el ~24/08: si con ejecución correcta y muestra suficiente el PnL sigue negativo, el problema es la estrategia y toca revisar el edge de raíz.
+- ⚠️ **Estas cifras son del 18/08 y traen el sesgo optimista del fill de TP** (corregido el 25/08). Rehacer la descomposición bruto/costos con el parity ya arreglado antes de usarla para decidir. El signo —negativo en las ventanas cortas— no debería cambiar, pero las magnitudes sí.
 
 ---
 
-## Estado al cierre del 18/08
+## Estado al cierre del 25/08
 
-**Prod**: activo desde **10/08 16:49 UTC**, 7,3 días sin reinicios ni errores. HEAD `ff68534`. `pkg/best_prod.json` md5 `57daca5b` coincidiendo local = HEAD = prod. Balance **193,74 USDT**. Tres posiciones abiertas: AVAX-SHORT (`tp2_live`), DYDX-SHORT (`tp3_live`), DYDX-LONG (`tp2_live`).
+**Prod**: activo desde **18/08 01:16 UTC**, 7,1 días sin reinicios ni errores. HEAD `c0fc7c2`. `pkg/best_prod.json` md5 `57daca5b` coincidiendo local = HEAD = prod. Balance **196,61 USDT**.
 
-**Portfolio**: 10 pares. **Ningún parámetro tocado desde el 03/07** — el congelamiento sigue (vence ~24/08).
+**Portfolio**: 10 pares. **Ningún parámetro tocado desde el 03/07** — el congelamiento venció el 24/08 y hasta hoy no se tocó nada.
 
-**PnL semana 10→18/08: +0,62 USDT** — primera semana en verde. Semana previa −3,62.
+**PnL semana 18→25/08: +2,87 USDT** — la mejor semana registrada. Previa +0,62, anterior −3,62. Tres semanas de mejora consecutiva.
 
-**Los 5 bugs corregidos**, todos de ejecución o datos, ninguno de parámetros:
+**El cambio de la semana fue el gate**: entradas 7 → 17, pares operando 4 → 9/10. Ver "Revisión semanal 25/08".
+
+**Los 6 bugs corregidos**, todos de ejecución, datos o medición — **ninguno de parámetros**:
 
 | Bug | Commit | Efecto real |
 |---|---|---|
@@ -457,12 +497,13 @@ Negativo en 4/4, consistente con la medición del 10/08 (que daba −47,5/−62,
 | El TP escalonado no escalonaba | `077951b` | los 3 tramos al precio de TP1, ~1 mes |
 | Velas en formación en el histórico | `723e5f7` | indicadores sobre closes falsos, meses |
 | Decisión sobre la vela en formación | `15b1e1b` | **0 órdenes en 3 días** |
-| **Tick size ausente** (10/08) | `d895c7b` + `c0e453e` | backtest envenenado (CFX 55-97% de la pérdida) + ONDO/APT colocando entradas donde no llenaban |
+| Tick size ausente (10/08) | `d895c7b` + `c0e453e` | backtest envenenado (CFX 55-97% de la pérdida) + ONDO/APT colocando entradas donde no llenaban |
+| **Fill de TP por simple toque** (25/08) | `cc36b90` | el parity infló la tasa de TP; **2 meses de A/B de salidas** se decidieron con fills fantasma |
 
-**Lo que se aprendió, y ya van tres veces**: cada uno de estos bugs se leía como una *conclusión sobre la estrategia* — "CFX no tiene edge", "ONDO y APT son mudos", "los filtros son muy selectivos" — cuando era un defecto de ejecución o de datos. La telemetría que los delataba existía y no se miraba. **Antes de concluir algo sobre la estrategia, verificar que el bot hizo lo que se cree que hizo.**
+**Lo que se aprendió, y ya van cuatro veces**: cada uno de estos bugs se leía como una *conclusión sobre la estrategia* — "CFX no tiene edge", "ONDO y APT son mudos", "los filtros son muy selectivos", "TP×2 gana 5/5" — cuando era un defecto de ejecución, de datos o **del instrumento de medición**. La telemetría que los delataba existía y no se miraba. **Antes de concluir algo sobre la estrategia, verificar que el bot hizo lo que se cree que hizo — y que el sim mide lo que se cree que mide.**
 
 **Al retomar, en este orden**:
-1. **~24/08 — vence el congelamiento y toca el veredicto de estructura de salidas.** Es el hito. Ver "Plan con fechas".
-2. **El lever real es el costo por trade**: 7/10 pares no cubren su propio costo, y el **slippage es el 50% de los costos** — el componente más grande y el menos atacado. Ver "¿hay edge?".
-3. **Gate de sesión**: bloquea 33% de las señales (medido 18/08). Detalle en "Decisión pendiente".
-4. **Caudal de señales a la baja**: ~62/30d vs ~130/30d el 03/08. Si sigue cayendo, la muestra para cualquier veredicto se evapora.
+1. **P-TP3**: nunca llena, 0 de 39. Es el trabajo más maduro y no depende del gap de paridad. Ver la cola en "Plan con fechas".
+2. **P-paridad (P5.2c)**: sim 50-55% vs vivo 38% de realización de TP, causa sin identificar. Sesga ~12-15 puntos todo A/B de salidas.
+3. **Rehacer la descomposición bruto/costos** con el parity corregido: las cifras de "¿hay edge?" son del 18/08 y traen el sesgo del fill.
+4. **Vigilar el caudal de señales**: venía cayendo (~62/30d el 18/08 vs ~130/30d el 03/08) y el gate off lo compensó. Si vuelve a caer con el gate ya quitado, no queda palanca de caudal.
