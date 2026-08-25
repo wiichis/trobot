@@ -2729,6 +2729,33 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
         # SimBacktester/sweep). El live lo convierte a minutos (bars*5).
         cooldown_map[sym] = max(0, bars)
 
+    # Modelo de fill de los TP. El parity tiene que espejar lo que hace el live, no lo
+    # que pida un flag de sweep: si el live manda TPs LIMIT maker (tp_mode
+    # partial_limit_tp) entonces un TP sólo se llena si el mercado ATRAVIESA el nivel
+    # —o si el cierre lo confirma—, porque una orden que espera en el book no se ejecuta
+    # porque el precio la toque y rebote. Antes esto llenaba con `high >= price`, lo que
+    # inflaba la tasa de TP del sim a 57% contra un 12% real medido en prod.
+    # `tp_one_at_a_time` refleja que el live manda un tramo, espera el fill y recién
+    # entonces manda el siguiente: nunca se llenan TP1+TP2+TP3 en la misma vela.
+    try:
+        from pkg.live_runtime_config import get_tp_mode, get_tp_one_at_a_time
+        _tp_limit_maker = str(get_tp_mode()).lower() == 'partial_limit_tp'
+        _tp_one_at_a_time = bool(get_tp_one_at_a_time())
+    except Exception:
+        _tp_limit_maker = False
+        _tp_one_at_a_time = True
+
+    tp_fill_policy = {}
+    if _tp_limit_maker and LimitFillPolicy is not None:
+        for sym in symbols:
+            sym_u = str(sym).upper()
+            p = params_by_symbol.get(sym_u) or params_norm.get(_norm_symbol(sym_u)) or {}
+            tp_fill_policy[sym] = LimitFillPolicy(
+                buffer_bps=_as_float(p.get('limit_fill_buffer_bps', 2.0), 2.0),
+                require_close_confirmation=_as_bool(
+                    p.get('limit_fill_require_close_confirmation', True), True),
+            )
+
     # P2.2 — cooldown extendido tras SL (global, en barras). Lee la misma config
     # runtime que el live, así el A/B vía TROBOT_RUNTIME_CONFIG_PATH es fiel.
     try:
@@ -2789,15 +2816,38 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                 pos.bars_held += 1
 
                 tp_hits = []
+                _policy = tp_fill_policy.get(sym)
+                _bar_high = float(row.get('high', price))
+                _bar_low = float(row.get('low', price))
                 for target in pos.tp_plan:
                     if target.get('filled') or target.get('qty', 0.0) <= 0:
                         continue
-                    if pos.side == 'long':
-                        if float(row.get('high', price)) >= float(target['price']):
-                            tp_hits.append(target)
+                    if _policy is not None and should_fill_tp_limit is not None:
+                        try:
+                            hit = should_fill_tp_limit(
+                                position_side=pos.side,
+                                limit_price=float(target['price']),
+                                bar_high=_bar_high,
+                                bar_low=_bar_low,
+                                bar_close=price,
+                                policy=_policy,
+                            )
+                        except Exception:
+                            hit = False
+                    elif pos.side == 'long':
+                        hit = _bar_high >= float(target['price'])
                     else:
-                        if float(row.get('low', price)) <= float(target['price']):
-                            tp_hits.append(target)
+                        hit = _bar_low <= float(target['price'])
+                    if hit:
+                        tp_hits.append(target)
+                        if _tp_one_at_a_time:
+                            # El live manda un tramo por vez: el siguiente no se somete
+                            # hasta confirmar el fill del anterior.
+                            break
+                    elif _tp_one_at_a_time:
+                        # Los tramos están ordenados: si el más cercano no llenó,
+                        # los de más allá tampoco pueden haberse sometido todavía.
+                        break
 
                 if tp_hits:
                     for target in tp_hits:

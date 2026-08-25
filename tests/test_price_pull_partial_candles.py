@@ -9,6 +9,16 @@ def _candle(sym, ts, o, h, l, c, v=100.0):
             "volume": v, "date": ts}
 
 
+def _vela_reciente(minutos_atras: int = 10) -> pd.Timestamp:
+    """Timestamp de vela 5m alineado, dentro de la ventana de retención.
+
+    `price_bingx_5m` purga lo anterior a SIGNAL_HISTORY_DAYS (30 d). Con fechas fijas
+    estos tests caducaban en silencio: pasaban hasta que el calendario dejaba atrás la
+    fecha del fixture y después fallaban por CSV vacío, sin que hubiera regresión.
+    """
+    return (pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=minutos_atras)).floor("5min")
+
+
 def test_la_vela_en_formacion_se_corrige_al_cerrar(tmp_path, monkeypatch):
     """El pull corre en :01,:06,… y guarda la vela de 5m aún abierta. Con el filtro
     `>` nunca se volvía a bajar: quedaba con high/low truncados y close a mitad de
@@ -19,8 +29,8 @@ def test_la_vela_en_formacion_se_corrige_al_cerrar(tmp_path, monkeypatch):
     monkeypatch.setattr(px, "CSV_PATH", csv)
     monkeypatch.setattr(px, "currencies_list", lambda: ["ETH-USDT"])
 
-    t0 = pd.Timestamp("2026-07-23T01:05:00Z")
-    t1 = pd.Timestamp("2026-07-23T01:10:00Z")
+    t0 = _vela_reciente(10)
+    t1 = t0 + pd.Timedelta(minutes=5)
 
     # Estado previo: la vela t0 se guardó en formación (rango parcial).
     pd.DataFrame([_candle("ETH-USDT", t0, 1933.95, 1935.63, 1933.31, 1935.63)]).to_csv(csv, index=False)
@@ -51,7 +61,7 @@ def test_no_se_pierden_velas_si_el_ciclo_se_atrasa(tmp_path, monkeypatch):
     monkeypatch.setattr(px, "CSV_PATH", csv)
     monkeypatch.setattr(px, "currencies_list", lambda: ["ETH-USDT"])
 
-    base = pd.Timestamp("2026-07-23T01:05:00Z")
+    base = _vela_reciente(15)
     ts = [base + pd.Timedelta(minutes=5 * i) for i in range(3)]
     pd.DataFrame([_candle("ETH-USDT", ts[0], 10, 10, 10, 10)]).to_csv(csv, index=False)
 
