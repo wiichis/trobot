@@ -31,7 +31,7 @@ Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USD
 10 pares (al 2026-07-20, MD5 `57daca5b`):
 APT, AVAX, BCH, BNB, CFX, **DYDX**, ETH, LINK, ONDO, XMR.
 
-🔄 **DYDX NEW** (20/07, rotó a DOT): cross-val 3/3 (30/60/80d: +0.05/+1.82/+2.31), 15 trades/80d, WR 70%, baja frecuencia = perfil que menos sufre el gap sim-real. Entra con params del sweep tal cual (tp=0.012, NO TP×2 — el sweep ya optimizó su TP). Regla de vigilancia AAVE su 1ª semana. Reglas de contrato: qty_step 0.1, price_tick 0.00001 (~$0.12).
+🔧 **DYDX RE-OPTIMIZADO** (25/08, `f54bfc2`) — **primer cambio de params desde el 03/07**. Era el peor par: −3,32 USDT/30d reales, payoff 0,19. `tp` 0.012→**0.015**, `sl_pct` 0.015→**0.010**, `sl_mode` percent→atr_then_trailing (19 params en total). **TP1/SL de 0,48 a 0,90.** Portfolio mejor en 4/4 (+17,8/+13,3/+18,6/+14,3); cobertura de costos 0/4 → **4/4** (bruto/trade 0,097→0,292, trades 110→47 en 120d). ⚠️ **REGLA DE VIGILANCIA: si pierde su 1ª semana (check 01/09), revertir sin discusión** — rollback md5 `57daca5b`. Reglas de contrato: qty_step 0.1, price_tick 0.00001.
 🎯 **TP×2 aplicado** (03/07) a 8 pares (todos menos AVAX congelado y LINK NEW): el A/B de estructura de salidas mostró TPs demasiado cercanos (payoff real 0.42, perdedores 11h vs ganadores 3h). Cross-val 5/5 ventanas. Esperar: winrate más bajo, ganancias más grandes, ~20% menos trades/fees. Ver memoria `exit-structure-experiments`.
 ✅ **BCH NEW validó** (22/06): +2.02 real, 10/12 wins. El acierto del mes.
 🔄 **LINK paramset NEW** (30/06, cross-val 5/5): validar que se realice. ⚠️ 0 trades desde 03/07 — mudo.
@@ -334,12 +334,15 @@ Pierde en 3 de 4 ventanas con el parity ya corregido. Detalle en "Revisión sema
 
 **🔓 Congelamiento de parámetros: VENCIDO el 24/08.** Rigió desde el 03/07. Durante su vigencia se corrigieron 7 bugs de ejecución/datos (07, 08, 13, 14, 27, 28/07, 10/08) y ninguno era un parámetro. Ahora se pueden tocar params, pero con la cadencia de abajo y **con cross-val obligatoria**.
 
+**❌ P-TP3 — CANCELADO el 25/08, la premisa era falsa.** Se propuso porque "TP3 nunca llena (0 de 39)". Cierto sobre los *fills*, pero el encuadre era erróneo: hubo **4 `tp3_submitted`** en la semana (XMR ×2, LINK, AVAX) — y para someter TP3, TP1 y TP2 **ya se llenaron**. Esas 4 posiciones hicieron **+2,21 de los +2,87 de la semana (77%)**, y en 3 de 4 el **último tramo fue el que más aportó** (+0,826, +0,449, +0,374), capturado por el **trailing**, no por la orden TP3. El tercer tramo no es peso muerto: es donde está la ganancia. *(Lo detectó el usuario al contar alertas de Telegram — la telemetría de `tp3_submitted` decía lo contrario que la de `tp3_filled`.)*
+- Lo único que sí vale mirar: **AVAX**, el 1 de 4 donde el trailing devolvió todo lo capturado en TP1+TP2 (−0,426 en el último tramo).
+
 **Cola de trabajo — en este orden**
-1. **P-TP3** 🆕 *(el más maduro; evidencia directa, no depende del gap de paridad)*: TP3 está a 3,84%-7,04% y nunca llena. Opciones a medir: acercarlo, redistribuir el ladder (`TP_LADDER_FACTORS` (0.6, 1.0, 1.6)) o eliminar el tercer tramo y repartir en dos. **Ojo**: el tercer tramo hoy es el que corre con el trailing, así que quitarlo no es gratis — hay que medirlo, no asumirlo.
-2. **P-paridad** *(P5.2c)*: cerrar el gap de realización de TP (sim 50-55% vs vivo 38%). Mientras siga abierto, todo A/B de salidas —incluido P-TP3— conserva un sesgo optimista de ~12-15 puntos.
-3. **P-costos**: el lever que señala la medición del edge (bruto/trade ≈ costo/trade, slippage = 50% de los costos). Bajar frecuencia en los sobre-operadores (AVAX) y subir el bruto por trade.
-4. **P-proceso**: cadencia MENSUAL de re-optimización (máx. 1-2 pares/mes; cada cambio debe ganarle a "no tocar nada" en cross-val).
-5. **P-pesos**: concentrar capital (menos pares o pesos escalonados con cap) en vez del equal-weight actual. ⚠️ Ver la trampa de selección in-sample en "¿hay edge?".
+1. **📅 01/09 — veredicto de DYDX** (regla de vigilancia). Es la próxima cita.
+2. **P-geometría** 🆕 *(el hilo más productivo; ver "La geometría TP1/SL")*: LINK y AVAX tienen TP1/SL de 0,48 y 0,50, la misma geometría que hundía a DYDX. Uno por vez y sólo si DYDX se realiza.
+3. **P-paridad** *(P5.2c)*: cerrar el gap de realización de TP (sim 50-55% vs vivo 38%). Mientras siga abierto, todo A/B de salidas conserva un sesgo optimista de ~12-15 puntos.
+4. **P-proceso**: cadencia MENSUAL de re-optimización (máx. 1-2 pares/mes; cada cambio debe ganarle a "no tocar nada" en cross-val). **Al re-optimizar, usar siempre `--conservative_limit_fills`** — sin eso el sweep vuelve a premiar TP cercanos.
+5. **P-pesos**: concentrar capital en vez del equal-weight actual. ⚠️ Ver la trampa de selección in-sample en "¿hay edge?".
 
 ### P2 — Mejoras estratégicas adicionales
 
@@ -445,6 +448,28 @@ Las horas que el gate bloqueaba fueron las buenas. Muestra chica (n=6), pero con
 
 ⚠️ **Gotcha de medición, no repetirlo**: la tasa de TP en vivo se mide contando **eventos** (`tp1_filled` vs `entry_order_filled`), no agrupando cierres de `PnL.csv` por proximidad temporal. Agrupar con una ventana de 90 min dio 12% —cifra errónea que casi motiva un cambio de parámetros— porque parte en dos las posiciones cuyos tramos se separan horas (XMR: TP1 15:21, TP2 22:58). El número correcto es **38%**.
 
+### 🆕 La geometría TP1/SL — el diagnóstico que destapó DYDX (25/08)
+
+Modelo simple y potente: **TP1 sólo cierra el 33% de la posición**, y si el resto sale en BE, el ganador banca `0,33 × TP1` mientras el perdedor paga el **SL entero**. De ahí sale el winrate mínimo para empatar:
+
+| Par | TP1 | SL | TP1/SL | WR necesaria |
+|---|---|---|---|---|
+| ~~DYDX~~ (antes) | 0,72% | 1,50% | **0,48** | **86%** |
+| **LINK** | 0,72% | 1,50% | **0,48** | **86%** |
+| **AVAX** | 0,90% | 1,80% | **0,50** | **86%** |
+| XMR | 1,44% | 1,80% | 0,80 | 79% |
+| APT | 1,44% | 1,50% | 0,96 | 76% |
+| BNB | 1,80% | 1,80% | 1,00 | 75% |
+| BCH / CFX | 2,16% / 1,44% | 1,80% / 1,20% | 1,20 | 72% |
+| ETH / ONDO | 2,64% | 1,00% | 2,64 | 53% |
+| **DYDX (nuevo)** | 0,90% | 1,00% | **0,90** | **77%** |
+
+Es un modelo de **peor caso** (en la práctica el trailing captura más que el BE, y el tercer tramo suele ser el que más aporta), así que subestima el resultado real. Pero el **orden** es informativo y se validó contra datos reales: DYDX tenía winrate 53% contra un 86% necesario, y sus pérdidas eran −0,63 constantes (SL completo) contra ganancias de +0,07 a +0,14 — exactamente lo que predice la fórmula.
+
+**Por qué los sweeps eligieron geometrías malas**: corrían con el modelo de fill optimista (ver "Bug 25/08"). Un TP1 cercano "llena" fácil cuando basta con tocarlo, así que la función objetivo **premiaba sistemáticamente TP cercanos** que en la realidad bancan un tercio y dejan el resto salir en BE. **Los paramsets de TP1/SL bajo son víctimas directas de ese bug.**
+
+🎯 **LINK (0,48) y AVAX (0,50) son los siguientes candidatos naturales**, con la misma geometría que tenía DYDX. Pero **uno por vez** (cadencia mensual acordada) y sólo si DYDX se realiza.
+
 ### 🔴 La pregunta que queda abierta: ¿hay edge?
 
 Con la ejecución ya correcta, el diagnóstico se desplaza de "el bot no hace lo que debería" a "lo que debería hacer, ¿gana?".
@@ -481,9 +506,9 @@ Negativo en 4/4, consistente con la medición del 10/08 (que daba −47,5/−62,
 
 ## Estado al cierre del 25/08
 
-**Prod**: activo desde **18/08 01:16 UTC**, 7,1 días sin reinicios ni errores. HEAD `c0fc7c2`. `pkg/best_prod.json` md5 `57daca5b` coincidiendo local = HEAD = prod. Balance **196,61 USDT**.
+**Prod**: activo desde **25/08 06:14 UTC** (deploy del paramset de DYDX). HEAD `04a0620`. `pkg/best_prod.json` md5 **`50a05c0a`** coincidiendo local = HEAD = prod. Balance **196,61 USDT**. Rollback del deploy: commit `cf2962f`, md5 `57daca5b`. Posiciones al momento del cambio: BNB `tp1_live`, AVAX `tp3_live`, BCH `tp1_live` — **sin DYDX abierto**, que era la condición para tocarle los params.
 
-**Portfolio**: 10 pares. **Ningún parámetro tocado desde el 03/07** — el congelamiento venció el 24/08 y hasta hoy no se tocó nada.
+**Portfolio**: 10 pares. **Primer cambio de parámetros desde el 03/07** (DYDX, 25/08) tras casi dos meses de congelamiento. Se rompió con evidencia, no por corazonada — ver la composición del portfolio arriba.
 
 **PnL semana 18→25/08: +2,87 USDT** — la mejor semana registrada. Previa +0,62, anterior −3,62. Tres semanas de mejora consecutiva.
 
@@ -502,8 +527,14 @@ Negativo en 4/4, consistente con la medición del 10/08 (que daba −47,5/−62,
 
 **Lo que se aprendió, y ya van cuatro veces**: cada uno de estos bugs se leía como una *conclusión sobre la estrategia* — "CFX no tiene edge", "ONDO y APT son mudos", "los filtros son muy selectivos", "TP×2 gana 5/5" — cuando era un defecto de ejecución, de datos o **del instrumento de medición**. La telemetría que los delataba existía y no se miraba. **Antes de concluir algo sobre la estrategia, verificar que el bot hizo lo que se cree que hizo — y que el sim mide lo que se cree que mide.**
 
-**Al retomar, en este orden**:
-1. **P-TP3**: nunca llena, 0 de 39. Es el trabajo más maduro y no depende del gap de paridad. Ver la cola en "Plan con fechas".
-2. **P-paridad (P5.2c)**: sim 50-55% vs vivo 38% de realización de TP, causa sin identificar. Sesga ~12-15 puntos todo A/B de salidas.
-3. **Rehacer la descomposición bruto/costos** con el parity corregido: las cifras de "¿hay edge?" son del 18/08 y traen el sesgo del fill.
-4. **Vigilar el caudal de señales**: venía cayendo (~62/30d el 18/08 vs ~130/30d el 03/08) y el gate off lo compensó. Si vuelve a caer con el gate ya quitado, no queda palanca de caudal.
+**📅 PRÓXIMA CITA: lunes 01/09 — veredicto de DYDX.**
+- **La regla es binaria y ya está acordada: si DYDX pierde su primera semana, se revierte sin discusión.** Rollback: `git checkout cf2962f -- pkg/best_prod.json` (md5 `57daca5b`) + restart.
+- Medir el PnL de DYDX desde **25/08 06:14 UTC** en `PnL.csv` (dedupe por `tranId`), y de paso el conteo de trades: debería bajar a ~la mitad (el sim predice 110→47 en 120d).
+- Si se realiza, el siguiente candidato es **LINK** por la misma geometría (TP1/SL 0,48). Uno por vez.
+
+**Después, en este orden**:
+1. **P-paridad (P5.2c)**: sim 50-55% vs vivo 38% de realización de TP, causa sin identificar. Sesga ~12-15 puntos todo A/B de salidas.
+2. **Rehacer la descomposición bruto/costos** con el parity corregido: las cifras de "¿hay edge?" son del 18/08 y traen el sesgo del fill.
+3. **Vigilar el caudal de señales**: venía cayendo (~62/30d el 18/08 vs ~130/30d el 03/08) y el gate off lo compensó. Si vuelve a caer con el gate ya quitado, no queda palanca de caudal.
+
+**La lección de esta semana, y vale para las próximas**: el usuario detectó dos cosas que las métricas agregadas escondían — que sí hubo posiciones llegando a TP3 (contando alertas de Telegram) y que DYDX perdía sistemáticamente. **Las dos resultaron ciertas y las dos corrigieron una conclusión mía.** Contrastar siempre el número agregado contra lo que se ve operar.
