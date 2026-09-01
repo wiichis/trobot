@@ -121,8 +121,14 @@ python3 pkg/backtesting.py \
 - `archivos/indicadores.csv` → señales actuales
 - `archivos/PnL.csv` → resultados reales
 
-## 5) Flujo diario automatizado
+## 5) Flujo diario automatizado — ELIMINADO (31/08/2026)
 
-Para automatizar backtesting diario + pase controlado a produccion, usar:
+Existía un tuner diario (`loss_recovery_tuner.py` + `daily_loss_recovery.sh`, timer
+systemd `trobot-loss-recovery` a las 04:10 UTC) que re-optimizaba los pares con pérdidas
+en las últimas 24 h. **Se eliminó**: el servidor de producción no da abasto para correr
+sweeps, y llevaba 142 ejecuciones fallidas consecutivas desde el 12/04 (buscaba
+`pkg/best_prod_consistent.json`, borrado el 11/04 por el refactor de fuente única
+`16ffe06`).
 
-- `docs/daily_backtesting_produccion.md`
+La re-optimización se hace **a mano en la revisión semanal**, con cadencia mensual y
+cross-val obligatoria. Ver `CLAUDE.md`.
