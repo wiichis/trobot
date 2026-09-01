@@ -1363,6 +1363,26 @@ def _adjust_tp1(entry_price: float, tp_price: float, side: str,
     return entry_price + (tp_price - entry_price) * float(factor)
 
 
+def _runtime_tp_splits_parity() -> Tuple[float, ...]:
+    """Reparto de tramos de TP tal como lo aplica el live, normalizado a 1.
+
+    Espeja `_runtime_tp_splits` de `monkey_bx`: lee `tp_partial_distribution` del runtime
+    config y cae a la constante del módulo sólo si la config no sirve.
+    """
+    try:
+        from pkg.live_runtime_config import get_tp_partial_distribution
+        raw = tuple(float(x) for x in get_tp_partial_distribution())
+    except Exception:
+        return TP_SPLITS_DEFAULT
+    if len(raw) < 3:
+        return TP_SPLITS_DEFAULT
+    vals = [max(float(v), 0.0) for v in raw[:3]]
+    total = sum(vals)
+    if total <= 0:
+        return TP_SPLITS_DEFAULT
+    return tuple(float(v / total) for v in vals)
+
+
 def _prepare_live_tp_plan(row: pd.Series, side: str, entry_price: float, qty: float, symbol: str,
                           params: Dict[str, object]) -> List[Dict[str, float]]:
     side = str(side).lower()
@@ -1430,7 +1450,12 @@ def _prepare_live_tp_plan(row: pd.Series, side: str, entry_price: float, qty: fl
         if _as_bool(params.get('use_r_multiple_tps', False), False):
             splits = TP_SPLITS_R_DEFAULT
         else:
-            splits = TP_SPLITS_DEFAULT
+            # El reparto de tramos sale de la config del LIVE, no de la constante del
+            # módulo: prod usa tp_partial_distribution (hoy 33/33/34) mientras acá estaba
+            # hardcodeado 40/40/20, así que el parity venía simulando otro ladder. Además
+            # dejaba el reparto fuera del alcance de TROBOT_RUNTIME_CONFIG_PATH, con lo
+            # que cualquier A/B sobre la distribución era un no-op silencioso.
+            splits = _runtime_tp_splits_parity()
     else:
         splits = (1.0,)
     step = _step_size_for(symbol)
