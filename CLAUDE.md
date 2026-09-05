@@ -417,7 +417,9 @@ Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferenc
 ### P4 — Limpieza
 
 1. ~~**Borrar `pkg/best_prod.json.bak.*`**~~ → ✅ HECHO 22/06: se conservó el más reciente (`.20260502_234317`), borrados 6. Desde 03/08 está en `.gitignore` (sigue en disco, ya no ensucia `git status`).
-2. **Branch `main` en prod 35 commits ahead de `origin/main`**. No es problema funcional pero podría hacerse un `git push prod-merge` ocasional para mantener historia visible. No urgente.
+2. ~~**Branch `main` en prod ahead de `origin/main`**~~ → ✅ **HECHO 04/09**: `origin/main` estaba congelado en el 30/03 (`c23831f`) y se puso al día con la rama de desarrollo (`43a542a`, 74 commits, +7382/−3489). Fue **fast-forward** — `origin/main` no tenía ningún commit que la rama no tuviera, así que no se perdió nada. **No afectó a prod**: el servidor mergea desde `origin/codex/nuevo-bot-estrategia`, no desde `origin/main`.
+   - ⚠️ **Riesgo latente que esto elimina**: el `main` de prod tiene `origin/main` como upstream, así que un `git pull` a secas en el servidor habría traído código de marzo. Ahora prod queda **0 commits detrás** de `origin/main` (los 56 por delante son sus merges locales, que nunca se pushean — normal).
+   - Repetir cuando `origin/main` vuelva a quedar rezagado: `git checkout main && git merge --ff-only origin/main && git merge --ff-only codex/nuevo-bot-estrategia && git push origin main`. Verificar antes que `git rev-list --count codex/nuevo-bot-estrategia..origin/main` sea **0**.
 3. ~~**`dashboard/jobs.py` + `5_🧪_Backtesting.py` sin commitear**~~ → ✅ **HECHO 03/08** (`3afb438`). Verificado sin credenciales antes de commitear. `.gitignore` cubre ahora `.venv-*/`. **`git status` queda limpio.**
 
 ### Memoria persistente
