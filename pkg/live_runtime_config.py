@@ -77,6 +77,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "tp_legacy_fallback_on_error": True,
         "tp_fill_confirmation_mode": "inferred",
     },
+    # Ratchet temporal del stop. Si un tramo de TP ya llenó y el SIGUIENTE tarda más de
+    # `after_min` minutos, el stop sube a pegarse al mejor precio que alcanzó el trade,
+    # menos `buffer_pct`. Nunca baja del break-even: asegura, no arriesga.
+    # Motivación: el recorrido favorable medio a 8h es +1,85% pero el trade termina
+    # mucho peor — el ratchet convierte parte de ese máximo en ganancia realizada.
+    # Desactivado por defecto; se enciende desde live_benchmark_runtime.json.
+    "ratchet": {
+        "enabled": False,
+        "after_min": 30,
+        "buffer_pct": 0.0025,
+        "min_improve_pct": 0.0005,  # no recolocar el stop por mejoras triviales
+    },
 }
 
 
@@ -411,3 +423,27 @@ def get_tp_fill_confirmation_mode() -> str:
     if mode not in ("exchange_state", "inferred"):
         return "inferred"
     return mode
+
+
+def get_ratchet_config() -> Dict[str, Any]:
+    """Config del ratchet temporal del stop, saneada.
+
+    Los límites no son decorativos: un `buffer_pct` muy chico pone el stop dentro del
+    ruido intrabarra (el backtest usa velas de 5m y NO lo ve, así que ahí "más ceñido"
+    siempre parece mejor). Se acota a >=0,1% para no operar sobre esa ilusión.
+    """
+    cfg = get_live_runtime_config().get("ratchet")
+    cfg = cfg if isinstance(cfg, dict) else {}
+
+    def _f(k, default, lo, hi):
+        try:
+            return min(max(float(cfg.get(k, default)), lo), hi)
+        except Exception:
+            return default
+
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "after_min": _f("after_min", 30.0, 5.0, 720.0),
+        "buffer_pct": _f("buffer_pct", 0.0025, 0.001, 0.05),
+        "min_improve_pct": _f("min_improve_pct", 0.0005, 0.0, 0.01),
+    }

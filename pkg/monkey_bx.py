@@ -14,6 +14,7 @@ from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from .live_runtime_config import (
     get_cooldown_minutes_override,
     get_post_sl_cooldown_bars,
+    get_ratchet_config,
     is_entry_hour_allowed_utc,
     get_entry_mode,
     get_entry_limit_offset_bps,
@@ -1403,6 +1404,59 @@ def _round_trigger_price(raw_price: float, symbol: str, position_side: str, orde
     _warn_if_tick_implausible(symbol, raw_price)
     tick = _tick_size_for(symbol)
     return _round_to_tick(float(raw_price), tick, rounding=_trigger_rounding(position_side, order_type))
+
+
+def _ratchet_stop_candidate(df_ind, symbol, position_side, entry_price, st_tp, cfg, be_stop):
+    """Stop propuesto por el ratchet temporal, o None si no corresponde.
+
+    Regla: si un tramo de TP ya llenó y el SIGUIENTE tarda más de `after_min` minutos,
+    el stop sube a pegarse al mejor precio que alcanzó el trade menos `buffer_pct`.
+    Nunca por debajo de `be_stop` — asegura, no arriesga — y sólo se propone si mejora.
+
+    El "mejor precio" sale del OHLC de indicadores.csv desde que arrancó la etapa: no
+    hace falta estado nuevo y sobrevive a un reinicio del bot.
+
+    Devuelve None si: el ratchet está apagado, TP1 no se confirmó, ya no quedan tramos,
+    el reloj no venció, o no hay velas para medir el máximo.
+    """
+    if not cfg.get("enabled"):
+        return None
+
+    stage = str(st_tp.get("tp_stage", "none")).lower()
+    # Debe haber un tramo YA lleno y otro PENDIENTE. En tp3_* no queda nada que esperar.
+    if stage not in ("tp1_filled", "tp2_live", "tp2_filled", "tp3_live"):
+        return None
+
+    try:
+        desde = pd.to_datetime(st_tp.get("updated_at_utc"), utc=True)
+    except Exception:
+        return None
+    if pd.isna(desde):
+        return None
+    esperado = (pd.Timestamp.now(tz="UTC") - desde).total_seconds() / 60.0
+    if esperado < float(cfg["after_min"]):
+        return None
+
+    try:
+        d = df_ind[(df_ind["symbol"] == symbol)].copy()
+        d["date"] = pd.to_datetime(d["date"], utc=True, errors="coerce")
+        d = d[d["date"] >= desde]
+        if d.empty:
+            return None
+        es_long = str(position_side).upper() == "LONG"
+        mejor = float(d["high"].max()) if es_long else float(d["low"].min())
+    except Exception:
+        return None
+    if not (mejor > 0):
+        return None
+
+    buf = float(cfg["buffer_pct"])
+    cand = mejor * (1.0 - buf) if es_long else mejor * (1.0 + buf)
+    # piso: nunca peor que el break-even
+    cand = max(cand, float(be_stop)) if es_long else min(cand, float(be_stop))
+    # y nunca peor que la propia entrada
+    cand = max(cand, float(entry_price)) if es_long else min(cand, float(entry_price))
+    return float(cand)
 
 
 def _last_traded_price(symbol: str):
@@ -4244,6 +4298,8 @@ def unrealized_profit_positions():
         # el BE se arma aunque el muestreo de precio se lo haya perdido. Es la garantía
         # determinista; el precio vivo de arriba es la mejora estadística.
         be_forzado_por_tp1 = bool(tp1_confirmed)
+        ratchet_cfg = get_ratchet_config()
+        ratchet_aplicado = False
 
         # Obtener el último valor de 'stopPrice' y 'orderId' para el símbolo
         filtered_data = data_filtered[data_filtered['symbol'] == symbol]
@@ -4277,6 +4333,13 @@ def unrealized_profit_positions():
                         be_stop = float(price) * (1.0 + TINY_BE)
                         potencial_nuevo_sl = max(potencial_nuevo_sl, be_stop)
                         be_applied = bool(potencial_nuevo_sl >= be_stop)
+                        # Ratchet: el tramo siguiente tarda demasiado -> pegar el stop
+                        # al mejor precio alcanzado. Sólo por encima del BE.
+                        _r = _ratchet_stop_candidate(df_indicadores, symbol, 'LONG',
+                                                     price, st_tp, ratchet_cfg, be_stop)
+                        if _r is not None and _r > potencial_nuevo_sl * (1 + ratchet_cfg['min_improve_pct']):
+                            potencial_nuevo_sl = _r
+                            ratchet_aplicado = True
                 except Exception:
                     pass
             if potencial_nuevo_sl > last_stop_price and potencial_nuevo_sl != last_stop_price:
@@ -4300,6 +4363,27 @@ def unrealized_profit_positions():
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'LONG', order_id)
                     except Exception:
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'LONG', None)
+                    if ratchet_aplicado:
+                        emit_lifecycle_event(
+                            "ratchet_activated",
+                            "INFO",
+                            symbol=str(symbol).upper(),
+                            position_side="LONG",
+                            new_sl=float(potencial_nuevo_sl),
+                            entry_price=float(price),
+                            after_min=float(ratchet_cfg["after_min"]),
+                            buffer_pct=float(ratchet_cfg["buffer_pct"]),
+                            source="unrealized_profit_positions",
+                        )
+                        append_execution_ledger_event(
+                            "ratchet_activated",
+                            data_quality="inferred",
+                            source="unrealized_profit_positions",
+                            symbol=str(symbol).upper(),
+                            position_side="LONG",
+                            order_type="STOP_MARKET",
+                            stop_price=float(potencial_nuevo_sl),
+                        )
                     if be_applied:
                         set_break_even_state(symbol, positionSide, "active")
                         emit_lifecycle_event(
@@ -4337,6 +4421,12 @@ def unrealized_profit_positions():
                         be_stop = float(price) * (1.0 - TINY_BE)
                         potencial_nuevo_sl = min(potencial_nuevo_sl, be_stop)
                         be_applied = bool(potencial_nuevo_sl <= be_stop)
+                        # Ratchet (simétrico): pegar el stop al mejor precio alcanzado.
+                        _r = _ratchet_stop_candidate(df_indicadores, symbol, 'SHORT',
+                                                     price, st_tp, ratchet_cfg, be_stop)
+                        if _r is not None and _r < potencial_nuevo_sl * (1 - ratchet_cfg['min_improve_pct']):
+                            potencial_nuevo_sl = _r
+                            ratchet_aplicado = True
                 except Exception:
                     pass
             if potencial_nuevo_sl < last_stop_price and potencial_nuevo_sl != last_stop_price:
@@ -4360,6 +4450,27 @@ def unrealized_profit_positions():
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'SHORT', order_id)
                     except Exception:
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'SHORT', None)
+                    if ratchet_aplicado:
+                        emit_lifecycle_event(
+                            "ratchet_activated",
+                            "INFO",
+                            symbol=str(symbol).upper(),
+                            position_side="SHORT",
+                            new_sl=float(potencial_nuevo_sl),
+                            entry_price=float(price),
+                            after_min=float(ratchet_cfg["after_min"]),
+                            buffer_pct=float(ratchet_cfg["buffer_pct"]),
+                            source="unrealized_profit_positions",
+                        )
+                        append_execution_ledger_event(
+                            "ratchet_activated",
+                            data_quality="inferred",
+                            source="unrealized_profit_positions",
+                            symbol=str(symbol).upper(),
+                            position_side="SHORT",
+                            order_type="STOP_MARKET",
+                            stop_price=float(potencial_nuevo_sl),
+                        )
                     if be_applied:
                         set_break_even_state(symbol, positionSide, "active")
                         emit_lifecycle_event(

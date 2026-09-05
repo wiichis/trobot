@@ -44,5 +44,12 @@
     "break_even_after_tp1": false,
     "tp_legacy_fallback_on_error": true,
     "tp_fill_confirmation_mode": "inferred"
+  },
+  "ratchet": {
+    "_comment": "Ratchet temporal del stop, activado 05/09/2026. Si un tramo de TP llen\u00f3 y el siguiente tarda mas de after_min, el stop sube a pegarse al mejor precio alcanzado menos buffer_pct. Nunca baja del break-even. Apagar = enabled:false + restart (no requiere deploy).",
+    "enabled": true,
+    "after_min": 30,
+    "buffer_pct": 0.0025,
+    "min_improve_pct": 0.0005
   }
 }
