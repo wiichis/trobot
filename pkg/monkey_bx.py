@@ -4225,6 +4225,26 @@ def unrealized_profit_positions():
             if str(st_tp.get("break_even_state", "inactive")).lower() != "active":
                 set_break_even_state(symbol, positionSide, "pending")
 
+        # Precio de referencia del BE: el PRECIO VIVO, no el close de la vela.
+        # `precio_actual` sale de la última fila de indicadores.csv, que es la vela EN
+        # FORMACIÓN (P5.1). Este job corre cada 5 min, así que el BE veía una muestra
+        # parcial y desfasada, mientras el TP1 es una orden LIMIT descansando en el
+        # exchange que llena con cualquier toque. Esa asimetría hacía que el BE se armara
+        # en el 16% de las posiciones: de 22 que llenaron TP1 entre el 28/07 y el 04/09,
+        # sólo 7 registraron `break_even_activated`. Y el resultado depende de eso —
+        # con BE armado: 7/7 ganadoras; sin BE: 8/15.
+        be_ref_price = precio_actual
+        if allow_be_overlay and be_trigger > 0.0:
+            _vivo = _last_traded_price(symbol)   # sólo se pide si el BE puede actuar
+            if _vivo is not None and float(_vivo) > 0:
+                be_ref_price = float(_vivo)
+
+        # Un fill de TP1 PRUEBA que el precio cruzó el umbral de BE: TP1 (tp*0.6) está
+        # siempre más lejos que `be_trigger` en los 10 pares. Así que si TP1 se confirmó,
+        # el BE se arma aunque el muestreo de precio se lo haya perdido. Es la garantía
+        # determinista; el precio vivo de arriba es la mejora estadística.
+        be_forzado_por_tp1 = bool(tp1_confirmed)
+
         # Obtener el último valor de 'stopPrice' y 'orderId' para el símbolo
         filtered_data = data_filtered[data_filtered['symbol'] == symbol]
 
@@ -4253,7 +4273,7 @@ def unrealized_profit_positions():
             if allow_be_overlay and be_trigger > 0.0:
                 try:
                     be_price = float(price) * (1.0 + be_trigger)
-                    if float(precio_actual) >= be_price:
+                    if be_forzado_por_tp1 or float(be_ref_price) >= be_price:
                         be_stop = float(price) * (1.0 + TINY_BE)
                         potencial_nuevo_sl = max(potencial_nuevo_sl, be_stop)
                         be_applied = bool(potencial_nuevo_sl >= be_stop)
@@ -4313,7 +4333,7 @@ def unrealized_profit_positions():
             if allow_be_overlay and be_trigger > 0.0:
                 try:
                     be_price = float(price) * (1.0 - be_trigger)
-                    if float(precio_actual) <= be_price:
+                    if be_forzado_por_tp1 or float(be_ref_price) <= be_price:
                         be_stop = float(price) * (1.0 - TINY_BE)
                         potencial_nuevo_sl = min(potencial_nuevo_sl, be_stop)
                         be_applied = bool(potencial_nuevo_sl <= be_stop)
