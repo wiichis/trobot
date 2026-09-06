@@ -1408,7 +1408,11 @@ def _round_trigger_price(raw_price: float, symbol: str, position_side: str, orde
     return _round_to_tick(float(raw_price), tick, rounding=_trigger_rounding(position_side, order_type))
 
 
-def _ratchet_stop_candidate(df_ind, symbol, position_side, entry_price, st_tp, cfg, be_stop):
+RATCHET_MARGEN_PRECIO = 0.001  # el stop debe quedar a >=0.1% del precio vivo
+
+
+def _ratchet_stop_candidate(df_ind, symbol, position_side, entry_price, st_tp, cfg, be_stop,
+                            precio_actual=None):
     """Stop propuesto por el ratchet temporal, o None si no corresponde.
 
     Regla: si un tramo de TP ya llenó y el SIGUIENTE tarda más de `after_min` minutos,
@@ -1463,6 +1467,23 @@ def _ratchet_stop_candidate(df_ind, symbol, position_side, entry_price, st_tp, c
 
     buf = float(cfg["buffer_pct"])
     cand = mejor * (1.0 - buf) if es_long else mejor * (1.0 + buf)
+
+    # El stop tiene que quedar del lado válido del precio VIVO: por debajo en un LONG,
+    # por encima en un SHORT. Si el precio rebotó desde el extremo, el candidato queda
+    # del lado equivocado y el exchange lo rechaza (110412, "Stop Loss price should be
+    # greater than the current price"). Antes se emitía el evento igual y se guardaba
+    # un stop inexistente, y el candado lo reintentaba en bucle.
+    if precio_actual is not None:
+        try:
+            px = float(precio_actual)
+            if px > 0:
+                limite = px * (1.0 - RATCHET_MARGEN_PRECIO) if es_long else px * (1.0 + RATCHET_MARGEN_PRECIO)
+                if es_long and cand > limite:
+                    return None
+                if (not es_long) and cand < limite:
+                    return None
+        except (TypeError, ValueError):
+            pass
     # piso: nunca peor que el break-even
     cand = max(cand, float(be_stop)) if es_long else min(cand, float(be_stop))
     # y nunca peor que la propia entrada
@@ -4352,7 +4373,8 @@ def unrealized_profit_positions():
                         # Ratchet: el tramo siguiente tarda demasiado -> pegar el stop
                         # al mejor precio alcanzado. Sólo por encima del BE.
                         _r = _ratchet_stop_candidate(df_indicadores, symbol, 'LONG',
-                                                     price, st_tp, ratchet_cfg, be_stop)
+                                                     price, st_tp, ratchet_cfg, be_stop,
+                                                     precio_actual=be_ref_price)
                         if _r is not None and _r > potencial_nuevo_sl * (1 + ratchet_cfg['min_improve_pct']):
                             potencial_nuevo_sl = _r
                             ratchet_aplicado = True
@@ -4379,7 +4401,8 @@ def unrealized_profit_positions():
                     set_sl_guard(symbol, positionSide, seconds=25)
                     pkg.bingx.cancel_order(symbol, orderId)
                     time.sleep(1)
-                    _post_with_retry(symbol, position_qty, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
+                    _sl_post_ok = _post_with_retry(
+                        symbol, position_qty, 0, potencial_nuevo_sl, "LONG", "STOP_MARKET", "SELL")
                     # Actualizar watch con el nuevo SL
                     try:
                         _ = obteniendo_ordenes_pendientes()
@@ -4395,6 +4418,21 @@ def unrealized_profit_positions():
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'LONG', order_id)
                     except Exception:
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'LONG', None)
+                    # Sólo registrar y avisar si el exchange ACEPTÓ la orden. Antes se
+                    # emitía `ratchet_activated` y se guardaba el `protective_stop` aunque
+                    # el post fallara (110412), dejando anotado un stop inexistente que el
+                    # candado reintentaba en bucle.
+                    if not _sl_post_ok:
+                        emit_lifecycle_event(
+                            "stop_update_failed",
+                            "CRITICAL",
+                            symbol=str(symbol).upper(),
+                            position_side="LONG",
+                            intento_stop=float(potencial_nuevo_sl),
+                            ratchet=bool(ratchet_aplicado),
+                            source="unrealized_profit_positions",
+                        )
+                        continue
                     bump_protective_stop(symbol, positionSide,
                                          potencial_nuevo_sl, True)
                     if ratchet_aplicado:
@@ -4457,7 +4495,8 @@ def unrealized_profit_positions():
                         be_applied = bool(potencial_nuevo_sl <= be_stop)
                         # Ratchet (simétrico): pegar el stop al mejor precio alcanzado.
                         _r = _ratchet_stop_candidate(df_indicadores, symbol, 'SHORT',
-                                                     price, st_tp, ratchet_cfg, be_stop)
+                                                     price, st_tp, ratchet_cfg, be_stop,
+                                                     precio_actual=be_ref_price)
                         if _r is not None and _r < potencial_nuevo_sl * (1 - ratchet_cfg['min_improve_pct']):
                             potencial_nuevo_sl = _r
                             ratchet_aplicado = True
@@ -4484,7 +4523,8 @@ def unrealized_profit_positions():
                     set_sl_guard(symbol, positionSide, seconds=25)
                     pkg.bingx.cancel_order(symbol, orderId)
                     time.sleep(1)
-                    _post_with_retry(symbol, position_qty, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
+                    _sl_post_ok = _post_with_retry(
+                        symbol, position_qty, 0, potencial_nuevo_sl, "SHORT", "STOP_MARKET", "BUY")
                     # Actualizar watch con el nuevo SL
                     try:
                         _ = obteniendo_ordenes_pendientes()
@@ -4500,6 +4540,21 @@ def unrealized_profit_positions():
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'SHORT', order_id)
                     except Exception:
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'SHORT', None)
+                    # Sólo registrar y avisar si el exchange ACEPTÓ la orden. Antes se
+                    # emitía `ratchet_activated` y se guardaba el `protective_stop` aunque
+                    # el post fallara (110412), dejando anotado un stop inexistente que el
+                    # candado reintentaba en bucle.
+                    if not _sl_post_ok:
+                        emit_lifecycle_event(
+                            "stop_update_failed",
+                            "CRITICAL",
+                            symbol=str(symbol).upper(),
+                            position_side="SHORT",
+                            intento_stop=float(potencial_nuevo_sl),
+                            ratchet=bool(ratchet_aplicado),
+                            source="unrealized_profit_positions",
+                        )
+                        continue
                     bump_protective_stop(symbol, positionSide,
                                          potencial_nuevo_sl, False)
                     if ratchet_aplicado:

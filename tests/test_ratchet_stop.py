@@ -155,3 +155,62 @@ def test_el_evento_es_distinguible_del_break_even():
     src = (Path(__file__).resolve().parents[1] / 'pkg' / 'monkey_bx.py').read_text(encoding='utf-8')
     assert src.count('"ratchet_activated"') == 4, 'evento en lifecycle+ledger, ambas ramas'
     assert '"break_even_activated"' in src, 'el evento del BE sigue existiendo aparte'
+
+
+class TestLadoValidoDelPrecio:
+    """El stop tiene que quedar del lado correcto del precio VIVO.
+
+    Caso real (06/09, BNB-USDT SHORT): el precio rebotó desde el mínimo, el ratchet
+    propuso 744,29 con el precio en 747,4, y BingX lo rechazó —
+
+        110412: "Stop Loss price should be greater than the current price"
+
+    El código emitía `ratchet_activated` igual y guardaba `protective_stop=744.29`,
+    un stop que NO existía; el candado lo reintentaba en cada ciclo y el fallback
+    terminó poniendo un stop PEOR (760,89 contra los 756,28 que había).
+    """
+
+    def test_short_no_propone_por_debajo_del_precio(self):
+        """El caso exacto: mínimo 742,3 pero el precio ya rebotó a 747,4."""
+        df = _velas('B', highs=[760.0, 755.0], lows=[742.3, 747.0])
+        r = _ratchet_stop_candidate(df, 'B', 'SHORT', 771.29, _estado(), CFG,
+                                    be_stop=771.13, precio_actual=747.44)
+        assert r is None, 'un stop de SHORT bajo el precio lo rechaza el exchange'
+
+    def test_short_si_propone_cuando_queda_por_encima(self):
+        df = _velas('B', highs=[760.0], lows=[755.0])
+        r = _ratchet_stop_candidate(df, 'B', 'SHORT', 771.29, _estado(), CFG,
+                                    be_stop=771.13, precio_actual=740.0)
+        assert r == pytest.approx(755.0 * 1.0025)
+
+    def test_long_no_propone_por_encima_del_precio(self):
+        df = _velas('L', highs=[110.0], lows=[100.0])
+        r = _ratchet_stop_candidate(df, 'L', 'LONG', 100.0, _estado(), CFG,
+                                    be_stop=100.02, precio_actual=105.0)
+        assert r is None, 'un stop de LONG sobre el precio se dispara al instante'
+
+    def test_long_si_propone_cuando_queda_por_debajo(self):
+        df = _velas('L', highs=[110.0], lows=[100.0])
+        r = _ratchet_stop_candidate(df, 'L', 'LONG', 100.0, _estado(), CFG,
+                                    be_stop=100.02, precio_actual=120.0)
+        assert r == pytest.approx(110.0 * 0.9975)
+
+    def test_sin_precio_se_comporta_como_antes(self):
+        """Compatibilidad: el parámetro es opcional."""
+        df = _velas('B', highs=[760.0], lows=[742.3])
+        assert _ratchet_stop_candidate(df, 'B', 'SHORT', 771.29, _estado(), CFG,
+                                       be_stop=771.13) is not None
+
+
+def test_no_se_registra_un_stop_que_el_exchange_rechazo():
+    """Guard: el bump y los eventos van DESPUÉS de comprobar que el post salió bien."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / 'pkg' / 'monkey_bx.py').read_text(encoding='utf-8')
+    assert src.count('if not _sl_post_ok:') == 2, 'ambas ramas comprueban el resultado'
+    assert src.count('"stop_update_failed"') == 2
+    for i in range(len(src)):
+        i = src.find('bump_protective_stop(symbol, positionSide,', i)
+        if i < 0:
+            break
+        assert 'if not _sl_post_ok:' in src[max(0, i - 900):i], 'el gate va antes del bump'
+        i += 1
