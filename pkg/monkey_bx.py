@@ -4153,11 +4153,16 @@ def filtrando_posiciones_antiguas() -> pd.DataFrame:
         # Cargar los datos
         data = pd.read_csv('./archivos/order_id_register.csv')
         
-        # Ajustar por zona horaria sumando 5 horas al tiempo actual
-        # Tiempo Server AWS
-        current_time = pd.Timestamp.now() - timedelta(hours=9)
-        # Tiempo Mac
-        # current_time = pd.Timestamp.now() + timedelta(hours=5)
+        # `time` del registro es epoch ms -> UTC naive, así que el "ahora" debe ser UTC
+        # naive también. Antes había un `- timedelta(hours=9)` (y un `+5` comentado para
+        # Mac): un parche de zona horaria que en un server UTC no corrige nada y abre una
+        # VENTANA CIEGA DE 9 HORAS — una posición sólo entraba a este job cuando su
+        # STOP_MARKET tenía más de 9 h, y como el BE/ratchet RECREAN el stop, cada ajuste
+        # reiniciaba el bloqueo. Es la causa de que el BE se armara sólo en el 16% de las
+        # posiciones: la mayoría cierra antes de las 9 h y el job nunca las miraba.
+        # `utcnow()` es correcto sea cual sea el huso del server, así que además elimina
+        # la divergencia Mac/AWS que motivó el parche.
+        current_time = pd.Timestamp.utcnow().tz_localize(None)
         
         # Comprobar si la columna 'symbol' está en el DataFrame
         if 'symbol' not in data.columns:
