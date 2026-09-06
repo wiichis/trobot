@@ -1434,7 +1434,11 @@ def _ratchet_stop_candidate(df_ind, symbol, position_side, entry_price, st_tp, c
     # cada vez que disparaba — se veía como disparos en diente de sierra cada 30 min.
     # `stage_since_utc` sólo avanza cuando la ETAPA cambia de verdad.
     try:
-        _desde_raw = st_tp.get("stage_since_utc") or st_tp.get("updated_at_utc")
+        from .tp_stage_state import _ts_o_vacio
+        _desde_raw = (_ts_o_vacio(st_tp.get("stage_since_utc"))
+                      or _ts_o_vacio(st_tp.get("updated_at_utc")))
+        if not _desde_raw:
+            return None
         desde = pd.to_datetime(_desde_raw, utc=True)
     except Exception:
         return None

@@ -512,6 +512,23 @@ def is_sl_guard_active(symbol: object, position_side: object, now_utc: Optional[
     return bool(ts.to_pydatetime() > now)
 
 
+def _ts_o_vacio(v) -> str:
+    """Normaliza un timestamp del CSV a texto usable, o "" si no lo es.
+
+    Los campos vacíos se guardan como "" pero `pd.read_csv` los devuelve como NaN, y
+    `str(nan)` == "nan", que es NO vacío y por lo tanto VERDADERO. Encadenar con `or`
+    sobre eso nunca cae al respaldo: pasa "nan" al parser, sale NaT, y el llamador se
+    queda sin reloj. Fue lo que dejó al ratchet muerto en BNB tras la migración.
+    """
+    try:
+        if v is None or pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    txt = str(v).strip()
+    return "" if txt.lower() in ("", "nan", "nat", "none") else txt
+
+
 def get_stage_since_utc(symbol: object, position_side: object) -> str:
     """Cuándo cambió la ETAPA de TP por última vez.
 
@@ -519,8 +536,7 @@ def get_stage_since_utc(symbol: object, position_side: object) -> str:
     usar cualquier regla basada en "cuánto lleva esperando el tramo siguiente".
     """
     st = get_tp_state(symbol, position_side)
-    v = str(st.get("stage_since_utc", "") or "").strip()
-    return v or str(st.get("updated_at_utc", "") or "").strip()
+    return _ts_o_vacio(st.get("stage_since_utc")) or _ts_o_vacio(st.get("updated_at_utc"))
 
 
 def get_protective_stop(symbol: object, position_side: object):

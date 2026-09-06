@@ -115,3 +115,46 @@ def test_el_candado_esta_cableado_en_ambas_ramas():
     src = (Path(__file__).resolve().parents[1] / 'pkg' / 'monkey_bx.py').read_text(encoding='utf-8')
     assert src.count('_prot = get_protective_stop(symbol, positionSide)') == 2
     assert src.count('bump_protective_stop(symbol, positionSide,') == 2
+
+
+class TestTimestampsVaciosDelCSV:
+    """Un campo vacío vuelve del CSV como NaN, y `str(nan)` == "nan" es VERDADERO.
+
+    Encadenar con `or` sobre eso nunca cae al respaldo: le pasa "nan" al parser, sale
+    NaT, y el llamador se queda sin reloj. Eso dejó el ratchet MUERTO en BNB-USDT tras
+    la migración del 06/09 — con el precio 0,9% por debajo del umbral y sin disparar.
+    """
+
+    @pytest.mark.parametrize('vacio', [None, float('nan'), '', '  ', 'nan', 'NaT', 'None'])
+    def test_se_normalizan_a_vacio(self, vacio):
+        assert tps._ts_o_vacio(vacio) == ''
+
+    def test_un_timestamp_real_pasa_intacto(self):
+        assert tps._ts_o_vacio('2026-09-06T15:08:38.453910Z') == '2026-09-06T15:08:38.453910Z'
+
+    def test_el_reloj_cae_al_respaldo_cuando_el_campo_es_nan(self):
+        """El caso exacto de BNB: fila migrada, stage_since_utc NaN."""
+        tps.upsert_tp_state('BNB-USDT', 'SHORT', tp_stage='tp2_live')
+        # simula la fila migrada: el campo vuelve del CSV como NaN
+        df = tps._load_state_df()
+        df.loc[df.symbol == 'BNB-USDT', 'stage_since_utc'] = float('nan')
+        tps._save_state_df(df)
+
+        reloj = tps.get_stage_since_utc('BNB-USDT', 'SHORT')
+        assert reloj, 'debe caer a updated_at_utc, no devolver "nan"'
+        assert reloj.lower() not in ('nan', 'nat')
+        assert not pd.isna(pd.to_datetime(reloj, utc=True)), 'y debe ser parseable'
+
+    def test_el_ratchet_sobrevive_a_la_fila_migrada(self):
+        """Con el reloj roto devolvía None siempre: el ratchet quedaba inerte."""
+        from pkg.monkey_bx import _ratchet_stop_candidate
+        ahora = pd.Timestamp.now(tz='UTC')
+        st = {'tp_stage': 'tp2_live', 'stage_since_utc': float('nan'),
+              'updated_at_utc': (ahora - pd.Timedelta(minutes=45)).isoformat()}
+        df = pd.DataFrame({'symbol': ['B'], 'high': [760.0], 'low': [747.0],
+                           'date': [(ahora - pd.Timedelta(minutes=5)).isoformat()]})
+        cfg = {'enabled': True, 'after_min': 30.0, 'buffer_pct': 0.0025,
+               'min_improve_pct': 0.0005}
+        r = _ratchet_stop_candidate(df, 'B', 'SHORT', 771.29, st, cfg, be_stop=771.13)
+        assert r is not None, 'con el bug devolvía None'
+        assert r == pytest.approx(747.0 * 1.0025)
