@@ -125,13 +125,36 @@ def _safe_float_or_none(value):
         return None
 
 
+class TpStateUnreadable(RuntimeError):
+    """El archivo de estado existe pero no se pudo leer."""
+
+
 def _load_state_df() -> pd.DataFrame:
+    """Carga el estado. Si el archivo EXISTE y no se puede leer, LEVANTA.
+
+    Antes devolvía un DataFrame vacío en silencio, y eso es catastrófico: el upsert
+    siguiente no encontraba la fila, la creaba desde `_default_row` (tp_stage=none,
+    tp_mode=legacy_market_tp) y al guardar escribía un archivo con ESA SOLA FILA,
+    borrando el seguimiento de TP de todos los demás pares. Un único error de lectura
+    transitorio destruía todo el estado sin dejar rastro.
+
+    Es la firma que dejó BCH-USDT el 06/09: llenó TP1 y el ladder dejó de seguirse,
+    con la fila reducida a valores por defecto y sin ningún `clear_tp_state` de por
+    medio. Ahora se falla CERRADO: mejor no escribir que escribir sobre la nada.
+    """
     if not TP_STAGE_STATE_CSV.exists():
         return pd.DataFrame(columns=TP_STAGE_COLUMNS)
     try:
         df = pd.read_csv(TP_STAGE_STATE_CSV)
-    except Exception:
-        return pd.DataFrame(columns=TP_STAGE_COLUMNS)
+    except Exception as exc:
+        _emit_state_event(
+            "tp_state_read_failed",
+            "CRITICAL",
+            detail=str(exc)[:220],
+            path=str(TP_STAGE_STATE_CSV),
+        )
+        _set_persist_status(False, f"read_failed:{exc}")
+        raise TpStateUnreadable(str(exc)) from exc
     for c in TP_STAGE_COLUMNS:
         if c not in df.columns:
             df[c] = ""
@@ -204,7 +227,12 @@ def get_tp_state(symbol: object, position_side: object) -> Dict:
     side = _norm_side(position_side)
     if not sym or not side:
         return _default_row(sym, side)
-    df = _load_state_df()
+    try:
+        df = _load_state_df()
+    except TpStateUnreadable:
+        # Lectura degradada: se devuelve el default para no tumbar al llamador, pero
+        # NADIE escribe. El archivo real queda intacto.
+        return _default_row(sym, side)
     m = (df["symbol"] == sym) & (df["position_side"] == side)
     if not m.any():
         return _default_row(sym, side)
@@ -242,7 +270,15 @@ def upsert_tp_state(
     if not sym or not side:
         return _default_row(sym, side)
 
-    df = _load_state_df()
+    try:
+        df = _load_state_df()
+    except TpStateUnreadable as exc:
+        # FALLA CERRADO: escribir sobre un estado que no se pudo leer borraría el
+        # seguimiento de TP de todos los demás pares. Mejor no persistir este ciclo.
+        out = _default_row(sym, side)
+        out["persist_ok"] = False
+        out["persist_error"] = f"read_failed:{exc}"
+        return out
     m = (df["symbol"] == sym) & (df["position_side"] == side)
     if m.any():
         row = df[m].tail(1).iloc[0].to_dict()
@@ -358,7 +394,10 @@ def clear_tp_state(symbol: object, position_side: object, source: str = "") -> N
     side = _norm_side(position_side)
     if not sym or not side:
         return
-    df = _load_state_df()
+    try:
+        df = _load_state_df()
+    except TpStateUnreadable:
+        return          # no borrar a ciegas
     m = (df["symbol"] == sym) & (df["position_side"] == side)
     if not m.any():
         return
