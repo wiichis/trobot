@@ -39,6 +39,8 @@ from .tp_stage_state import (
     set_tp_submitted,
     set_tp_filled,
     set_break_even_state,
+    bump_protective_stop,
+    get_protective_stop,
     set_sl_guard,
     is_sl_guard_active,
     clear_tp_state,
@@ -1427,8 +1429,13 @@ def _ratchet_stop_candidate(df_ind, symbol, position_side, entry_price, st_tp, c
     if stage not in ("tp1_filled", "tp2_live", "tp2_filled", "tp3_live"):
         return None
 
+    # OJO: `updated_at_utc` se reescribe en CADA upsert (incl. set_break_even_state, que
+    # corre cada ciclo). Usarlo como reloj hacía que el ratchet se auto-bloqueara 30 min
+    # cada vez que disparaba — se veía como disparos en diente de sierra cada 30 min.
+    # `stage_since_utc` sólo avanza cuando la ETAPA cambia de verdad.
     try:
-        desde = pd.to_datetime(st_tp.get("updated_at_utc"), utc=True)
+        _desde_raw = st_tp.get("stage_since_utc") or st_tp.get("updated_at_utc")
+        desde = pd.to_datetime(_desde_raw, utc=True)
     except Exception:
         return None
     if pd.isna(desde):
@@ -4347,6 +4354,15 @@ def unrealized_profit_positions():
                             ratchet_aplicado = True
                 except Exception:
                     pass
+            # CANDADO DE MONOTONÍA: `potencial_nuevo_sl` se recalcula desde cero cada
+            # ciclo a partir del SL del indicador, que puede ser MÁS FLOJO que el stop
+            # que el ratchet ya colocó. `last_stop_price` sale del registro CSV y puede
+            # venir desfasado, así que no alcanza como protección. El stop protector se
+            # persiste y nunca retrocede. (Caso BNB 06/09: el ratchet dejó 743,25 y el
+            # indicador lo devolvió a 756,47.)
+            _prot = get_protective_stop(symbol, positionSide)
+            if _prot is not None:
+                potencial_nuevo_sl = max(potencial_nuevo_sl, float(_prot))
             if potencial_nuevo_sl > last_stop_price and potencial_nuevo_sl != last_stop_price:
                 try:
                     set_sl_guard(symbol, positionSide, seconds=25)
@@ -4368,6 +4384,8 @@ def unrealized_profit_positions():
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'LONG', order_id)
                     except Exception:
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'LONG', None)
+                    bump_protective_stop(symbol, positionSide,
+                                         potencial_nuevo_sl, True)
                     if ratchet_aplicado:
                         emit_lifecycle_event(
                             "ratchet_activated",
@@ -4434,6 +4452,15 @@ def unrealized_profit_positions():
                             ratchet_aplicado = True
                 except Exception:
                     pass
+            # CANDADO DE MONOTONÍA: `potencial_nuevo_sl` se recalcula desde cero cada
+            # ciclo a partir del SL del indicador, que puede ser MÁS FLOJO que el stop
+            # que el ratchet ya colocó. `last_stop_price` sale del registro CSV y puede
+            # venir desfasado, así que no alcanza como protección. El stop protector se
+            # persiste y nunca retrocede. (Caso BNB 06/09: el ratchet dejó 743,25 y el
+            # indicador lo devolvió a 756,47.)
+            _prot = get_protective_stop(symbol, positionSide)
+            if _prot is not None:
+                potencial_nuevo_sl = min(potencial_nuevo_sl, float(_prot))
             if potencial_nuevo_sl < last_stop_price and potencial_nuevo_sl != last_stop_price:
                 try:
                     set_sl_guard(symbol, positionSide, seconds=25)
@@ -4455,6 +4482,8 @@ def unrealized_profit_positions():
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'SHORT', order_id)
                     except Exception:
                         _append_sl_watch(symbol, float(potencial_nuevo_sl), 'SHORT', None)
+                    bump_protective_stop(symbol, positionSide,
+                                         potencial_nuevo_sl, False)
                     if ratchet_aplicado:
                         emit_lifecycle_event(
                             "ratchet_activated",

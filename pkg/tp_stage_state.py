@@ -55,6 +55,8 @@ TP_STAGE_COLUMNS = [
     "tp2_submit_position_qty",
     "tp3_submit_position_qty",
     "sl_guard_until_utc",
+    "stage_since_utc",
+    "protective_stop",
     "updated_at_utc",
 ]
 
@@ -177,6 +179,8 @@ def _default_row(symbol: str, position_side: str) -> Dict:
         "tp2_submit_position_qty": None,
         "tp3_submit_position_qty": None,
         "sl_guard_until_utc": "",
+        "stage_since_utc": _now_iso_utc(),
+        "protective_stop": None,
         "updated_at_utc": _now_iso_utc(),
     }
 
@@ -217,6 +221,7 @@ def upsert_tp_state(
     tp2_submit_position_qty=None,
     tp3_submit_position_qty=None,
     sl_guard_until_utc: Optional[str] = None,
+    protective_stop=None,
 ) -> Dict:
     sym = _norm_symbol(symbol)
     side = _norm_side(position_side)
@@ -238,11 +243,20 @@ def upsert_tp_state(
     if tp_stage is not None:
         tp_stage_v = str(tp_stage).strip().lower()
         if tp_stage_v in TP_STAGE_VALUES:
+            # `stage_since_utc` marca cuándo cambió la ETAPA, no cuándo se tocó la fila.
+            # `updated_at_utc` se reescribe en CADA upsert (incluido `set_break_even_state`,
+            # que corre cada ciclo), así que no sirve como reloj: el ratchet lo usaba y se
+            # auto-bloqueaba 30 min cada vez que disparaba.
+            if str(row.get("tp_stage", "")).strip().lower() != tp_stage_v:
+                row["stage_since_utc"] = _now_iso_utc()
             row["tp_stage"] = tp_stage_v
             # Volver a "none" es el reset de plan de TPs al abrir posición: los
             # tramos de la posición anterior no deben heredarse (la base del
             # reparto es el tamaño de ESTA posición).
             if tp_stage_v == "none":
+                # Reset de apertura: el stop protector es de la posición ANTERIOR.
+                # Heredarlo pinaría el candado de monotonía en un precio ajeno.
+                row["protective_stop"] = None
                 for idx in (1, 2, 3):
                     row[f"tp{idx}_order_id"] = ""
                     row[f"tp{idx}_qty"] = None
@@ -283,6 +297,9 @@ def upsert_tp_state(
 
     if sl_guard_until_utc is not None:
         row["sl_guard_until_utc"] = str(sl_guard_until_utc).strip()
+
+    if protective_stop is not None:
+        row["protective_stop"] = _safe_float_or_none(protective_stop)
 
     row["updated_at_utc"] = _now_iso_utc()
     df.loc[len(df)] = {c: row.get(c, "") for c in TP_STAGE_COLUMNS}
@@ -400,3 +417,40 @@ def is_sl_guard_active(symbol: object, position_side: object, now_utc: Optional[
         return False
     now = now_utc if now_utc is not None else _now_utc()
     return bool(ts.to_pydatetime() > now)
+
+
+def get_stage_since_utc(symbol: object, position_side: object) -> str:
+    """Cuándo cambió la ETAPA de TP por última vez.
+
+    Distinto de `updated_at_utc`, que se reescribe en cada upsert. Es el reloj que debe
+    usar cualquier regla basada en "cuánto lleva esperando el tramo siguiente".
+    """
+    st = get_tp_state(symbol, position_side)
+    v = str(st.get("stage_since_utc", "") or "").strip()
+    return v or str(st.get("updated_at_utc", "") or "").strip()
+
+
+def get_protective_stop(symbol: object, position_side: object):
+    """Mejor stop protector alcanzado, o None."""
+    return _safe_float_or_none(get_tp_state(symbol, position_side).get("protective_stop"))
+
+
+def bump_protective_stop(symbol: object, position_side: object, stop, is_long: bool):
+    """Registra `stop` sólo si MEJORA al guardado. Devuelve el mejor vigente.
+
+    Es la garantía de monotonía: el stop protector nunca retrocede. Hacía falta porque
+    `potencial_nuevo_sl` se recalcula desde cero en cada ciclo a partir del SL del
+    indicador, y ese valor puede ser más flojo que el que ya había puesto el ratchet
+    (caso BNB del 06/09: el ratchet dejó 743,25 y el indicador lo devolvió a 756,47).
+    """
+    nuevo = _safe_float_or_none(stop)
+    if nuevo is None:
+        return get_protective_stop(symbol, position_side)
+    actual = get_protective_stop(symbol, position_side)
+    if actual is not None:
+        mejor = max(actual, nuevo) if is_long else min(actual, nuevo)
+    else:
+        mejor = nuevo
+    if actual is None or mejor != actual:
+        upsert_tp_state(symbol, position_side, protective_stop=mejor)
+    return mejor
