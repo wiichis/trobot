@@ -4363,6 +4363,13 @@ def unrealized_profit_positions():
             _prot = get_protective_stop(symbol, positionSide)
             if _prot is not None:
                 potencial_nuevo_sl = max(potencial_nuevo_sl, float(_prot))
+            # Redondear al tick ANTES de comparar: el exchange guarda el precio ya
+            # redondeado, así que comparar el valor crudo contra el registrado daba
+            # siempre distinto y recolocaba la orden en cada ciclo, para siempre
+            # (BCH 06/09: calculábamos 258.608268 y el exchange tenía 258.61 —
+            # 8 recolocaciones seguidas del mismo stop).
+            potencial_nuevo_sl = _round_trigger_price(
+                potencial_nuevo_sl, symbol, "LONG", "STOP_MARKET")
             if potencial_nuevo_sl > last_stop_price and potencial_nuevo_sl != last_stop_price:
                 try:
                     set_sl_guard(symbol, positionSide, seconds=25)
@@ -4461,6 +4468,13 @@ def unrealized_profit_positions():
             _prot = get_protective_stop(symbol, positionSide)
             if _prot is not None:
                 potencial_nuevo_sl = min(potencial_nuevo_sl, float(_prot))
+            # Redondear al tick ANTES de comparar: el exchange guarda el precio ya
+            # redondeado, así que comparar el valor crudo contra el registrado daba
+            # siempre distinto y recolocaba la orden en cada ciclo, para siempre
+            # (BCH 06/09: calculábamos 258.608268 y el exchange tenía 258.61 —
+            # 8 recolocaciones seguidas del mismo stop).
+            potencial_nuevo_sl = _round_trigger_price(
+                potencial_nuevo_sl, symbol, "SHORT", "STOP_MARKET")
             if potencial_nuevo_sl < last_stop_price and potencial_nuevo_sl != last_stop_price:
                 try:
                     set_sl_guard(symbol, positionSide, seconds=25)
