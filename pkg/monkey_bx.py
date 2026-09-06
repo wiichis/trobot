@@ -3161,7 +3161,7 @@ def sync_cooldowns_from_sl_fills():
             notes=f"cooldown_applied_min={minutes}",
         )
         try:
-            clear_tp_state(symbol, position_side)
+            clear_tp_state(symbol, position_side, source="sl_watch_stop_loss_inferido")
         except Exception:
             pass
         # Alerta de trade cerrado

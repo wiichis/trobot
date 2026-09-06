@@ -61,6 +61,20 @@ TP_STAGE_COLUMNS = [
 ]
 
 
+def _emit_state_event(category: str, severity: str = "WARN", **fields) -> None:
+    """Telemetría de transiciones del estado de TP. Nunca debe romper la persistencia.
+
+    Se agregó el 06/09/2026 al no poder reconstruir cómo la fila de BCH-USDT llegó a
+    `tp_stage=none` con TPs vivos: no había ningún registro de creación, borrado ni
+    cambio de `tp_mode`, así que la ventana era inobservable después del hecho.
+    """
+    try:
+        from .lifecycle_events import emit_lifecycle_event
+        emit_lifecycle_event(category, severity, **fields)
+    except Exception:
+        pass
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -235,11 +249,39 @@ def upsert_tp_state(
         df = df[~m].copy()
     else:
         row = _default_row(sym, side)
+        # Una fila creada desde defaults por un upsert que NO declara la etapa es
+        # anómala: ese llamador (set_break_even_state, bump_protective_stop...) asume
+        # que la fila ya existe. Si aparece, alguien borró el estado de una posición
+        # viva y quedó con `tp_stage=none` — el pozo del que no se sale solo.
+        if tp_stage is None:
+            _emit_state_event(
+                "tp_state_row_recreated",
+                "CRITICAL",
+                symbol=sym,
+                position_side=side,
+                reason="upsert_incidental_sin_tp_stage",
+                detail="fila inexistente materializada con defaults (tp_stage=none, "
+                       "tp_mode=legacy_market_tp); el ladder de TP queda sin seguimiento",
+            )
 
     row["symbol"] = sym
     row["position_side"] = side
+    _tp_mode_prev = str(row.get("tp_mode", "") or "").strip()
     if tp_mode is not None:
         row["tp_mode"] = str(tp_mode).strip().lower()
+        # Un cambio de modo en caliente explica que el ladder deje de seguirse: el
+        # camino legacy no avanza `tp_stage`, así que el ratchet y el BE-tras-TP1
+        # quedan ciegos. Se registra para poder atribuirlo, no para bloquearlo.
+        if _tp_mode_prev and _tp_mode_prev != row["tp_mode"]:
+            _emit_state_event(
+                "tp_mode_changed",
+                "WARN",
+                symbol=sym,
+                position_side=side,
+                tp_mode_anterior=_tp_mode_prev,
+                tp_mode_nuevo=row["tp_mode"],
+                tp_stage=str(row.get("tp_stage", "")),
+            )
     if tp_stage is not None:
         tp_stage_v = str(tp_stage).strip().lower()
         if tp_stage_v in TP_STAGE_VALUES:
@@ -309,7 +351,9 @@ def upsert_tp_state(
     return row
 
 
-def clear_tp_state(symbol: object, position_side: object) -> None:
+def clear_tp_state(symbol: object, position_side: object, source: str = "") -> None:
+    """Borra el estado de TP. `source` queda registrado: borrar el estado de una
+    posición viva deja el ladder sin seguimiento y no hay forma de recuperarlo solo."""
     sym = _norm_symbol(symbol)
     side = _norm_side(position_side)
     if not sym or not side:
@@ -318,8 +362,18 @@ def clear_tp_state(symbol: object, position_side: object) -> None:
     m = (df["symbol"] == sym) & (df["position_side"] == side)
     if not m.any():
         return
+    _prev = df[m].tail(1).iloc[0].to_dict()
     df = df[~m].copy()
     _save_state_df(df)
+    _emit_state_event(
+        "tp_state_cleared",
+        "INFO",
+        symbol=sym,
+        position_side=side,
+        source=str(source or "sin_origen"),
+        tp_stage_previo=str(_prev.get("tp_stage", "")),
+        tp_mode_previo=str(_prev.get("tp_mode", "")),
+    )
 
 
 def set_tp_submitted(
