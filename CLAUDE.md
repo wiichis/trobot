@@ -349,11 +349,29 @@ Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs
 ### Flujo semanal estándar (referencia, ya consolidado)
 
 1. Pre-check consistencia local ↔ prod (`md5sum`); restaurar con `git checkout` si hay drift.
-2. Sync PnL/ganancias/trade_closed de prod vía SCP. Para velas: **NO bajar long.csv de prod** (es la versión thin ~10-40d) — hacer **top-up directo del API BingX** (4 batches × 1000 velas por par cubren ~2 semanas de gap; dedupe por symbol+date). Backfill profundo (~35 batches ≈ 105d, el techo del API) solo para pares nuevos.
+2. Sync PnL/ganancias/trade_closed de prod vía SCP. Para velas, ver **"De dónde sacar velas"** abajo — la regla vieja de "NO bajar long.csv de prod, es la versión thin ~10-40d" era **FALSA** y se corrigió el 11/09.
 3. Análisis PnL real de la semana.
 4. ⚠️ **El sweep NO va en el flujo semanal** — ver "Cadencia del sweep" abajo. La revisión semanal es **sólo diagnóstico**: PnL, señales, fills, cobertura de costos, sin tocar params.
 5. Cross-val anti-overfit (criterio refinado: 3/5 vale solo si regresión ≤$2 en ventanas perdidas).
 6. Presentar propuesta → confirmar con usuario → aplicar + deploy + verificar + actualizar memoria.
+
+### 📊 De dónde sacar velas — corregido el 11/09
+
+Había una afirmación **falsa** en esta guía desde julio: *"NO bajar long.csv de prod, es la versión thin ~10-40d"*. Verificado el 11/09: el `cripto_price_5m_long.csv` de prod tiene **190 días continuos** (06/03→12/09, 54.720 velas por par, 33 MB). La regla falsa costó un rodeo entero de top-up por API y una limitación artificial a ventanas de 45 días.
+
+Las tres fuentes, con lo que cada una sirve y en qué falla:
+
+| Fuente | Cobertura | Calidad |
+|---|---|---|
+| **API BingX** (`/quote/klines`) | **sólo ~45 días** hacia atrás | verdad de referencia. `startTime` se ignora/rechaza: caminar hacia atrás con `endTime` |
+| **`long.csv` de prod** | 190 días continuos | ⚠️ **12,7% de velas truncadas**, concentradas en may-jun 2026 |
+| **`long.csv` del repo local** | ~290 días, con huecos | la copia **completa** de may-jun; le faltaba 30/06→28/07 |
+
+⚠️ **El long.csv de prod arrastra velas EN FORMACIÓN.** Firma medida contra el API: `open` idéntico al 100%, y **59.412 casos de `high` más bajo contra 1 en sentido contrario** (ídem `low`) — truncamiento de un solo lado, no ruido. Por mes: mar 0,00% · abr 0,90% · **may 20,94%** · **jun 86,86%** · jul 0,44% · ago 0,65% · sep 0,60%. O sea: **limpio desde julio** (el fix `723e5f7` funcionó), envenenado antes.
+
+**Receta que funciona** (11/09): API para los últimos 45 días → prod **sólo** para tapar huecos anteriores y **sólo en el tramo ≥29/06** → el local conserva may-jun, que ahí es la copia buena. Resultado: serie continua sin huecos, 130 días, los 10 pares. Con eso la cross-val de 4 ventanas (30/60/90/120d) vuelve a ser posible.
+
+**Antes de confiar en cualquier archivo de velas**, correr el check de paridad contra el API en la ventana solapada (P3.4), excluyendo siempre la última vela de cada serie. Es barato y ya evitó dos análisis envenenados.
 
 ### 🔁 Cadencia del sweep — decidido el 31/08
 

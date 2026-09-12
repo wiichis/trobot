@@ -302,7 +302,7 @@
   {
     "symbol": "ETH-USDT",
     "params": {
-      "tp": 0.044,
+      "tp": 0.025,
       "tp_mode": "fixed",
       "tp_atr_mult": 0.0,
       "ema_fast": 8,
@@ -314,7 +314,7 @@
       "max_atr_pct": 0.012,
       "atr_mult": 1.8,
       "sl_mode": "percent",
-      "sl_pct": 0.01,
+      "sl_pct": 0.018,
       "be_trigger": 0.005,
       "cooldown": 6,
       "logic": "strict",
@@ -402,7 +402,7 @@
   {
     "symbol": "ONDO-USDT",
     "params": {
-      "tp": 0.044,
+      "tp": 0.025,
       "tp_mode": "fixed",
       "tp_atr_mult": 0.6,
       "ema_fast": 8,
