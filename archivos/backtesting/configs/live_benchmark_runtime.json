@@ -41,10 +41,10 @@
     "tp_limit_offset_bps": 0.0,
     "tp_reduce_only": false,
     "tp_one_at_a_time": true,
-    "break_even_after_tp1": true,
+    "break_even_after_tp1": false,
     "tp_legacy_fallback_on_error": true,
     "tp_fill_confirmation_mode": "inferred",
-    "_comment_break_even_after_tp1": "Puesto en true el 08/09/2026. Con false el BE se armaba por price-trigger a +0,4-0,6% mientras TP1 esta a +0,72-2,64%: esa zona muerta cosechaba las posiciones en plano antes de que llegaran a TP1 (tasa TP1 39% -> 0%, be_stop medio +0,147 -> +0,032 tras arreglar el BE el 06/09) y dejaba al ratchet sin materia prima. Con true el BE espera a que TP1 llene: protege lo bancado, no cosecha lo que todavia no lo esta. Revertir = false + restart, sin deploy."
+    "_comment_break_even_after_tp1": "REVERTIDO a false el 11/09/2026 tras 2,9 dias en true. El experimento resulto INTESTABLE, no fallido: TP1 no llego a ocurrir ni una vez en las 13 entradas desde el 06/09 (el precio no alcanzo el nivel en 11 de 13; MFE medio +0,75% contra un TP1 a +1,51%), asi que el mecanismo nunca pudo actuar y las 6 posiciones corrieron sin ninguna proteccion hasta el stop completo. OJO: el ratchet exige tp_stage en tp1_filled/tp2_live/tp2_filled/tp3_live en LAS DOS configuraciones, asi que este flag NO decide si el ratchet corre, solo si hay break-even ANTES de TP1. A/B sobre las 70 posiciones reales recorriendo sus velas 5m con horizonte fijo: false gana en 3 de 5 horizontes (4 de 5 excluyendo LINK), convierte 13 stops completos en break-evens a 24h, pero por poco (~+0,04 USDT/posicion) y con BCH explicando el 68%. La zona muerta del 08/09 sigue existiendo; el arreglo de fondo es el NIVEL de TP1, no el disparador del BE. Volver a true = true + restart, sin deploy."
   },
   "ratchet": {
     "_comment": "Ratchet temporal del stop, activado 05/09/2026. Si un tramo de TP llen\u00f3 y el siguiente tarda mas de after_min, el stop sube a pegarse al mejor precio alcanzado menos buffer_pct. Nunca baja del break-even. Apagar = enabled:false + restart (no requiere deploy).",
