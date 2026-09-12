@@ -643,6 +643,74 @@ Los 9 cambios de modo son **siempre `legacy → partial`, nunca al revés**: ent
 
 **No se implementó la recuperación a propósito**: para "recuperar" habría que afirmar que TP1 llenó, y eso activa `be_forzado_por_tp1`, que pone el stop en la entrada **sin mirar el precio**. En una posición bajo el agua ese stop ya está traspasado → **cierre inmediato a pérdida**. Una recuperación mal fundada convierte un bug de seguimiento en pérdidas reales, y la evidencia que la haría segura (el tamaño original de la posición) es justo lo que el estado corrupto pierde.
 
+### ✅ Revisión 11/09 — el TP1 estaba donde el precio no llega
+
+#### ❌ `break_even_after_tp1` REVERTIDO a false (`e7e1c1a`) — el experimento era INTESTABLE
+
+No fracasó: **no se pudo probar**. En las 13 entradas desde el 06/09 **TP1 no ocurrió ni una vez**, así que el mecanismo (que sólo actúa después de TP1) nunca llegó a correr, y las 6 posiciones del período corrieron **sin protección alguna** hasta el stop completo (−0,176 por cierre contra el −0,122 de referencia).
+
+**Lo primero fue descartar que se hubiera roto la detección** — era la hipótesis obvia y es el bug que ya pasó en julio. **No lo era**: reconstruyendo el recorrido de las 13 posiciones contra las velas reales, **el precio no llegó al TP1 en 11 de 13**. MFE medio **+0,75%** contra un TP1 medio a **+1,51%**.
+
+⚠️ **Corrección al modelo mental del ratchet**: `_ratchet_stop_candidate` exige `tp_stage` en `tp1_filled`/`tp2_live`/`tp2_filled`/`tp3_live` **en las dos configuraciones**. Este flag NO decide si el ratchet corre — sólo si hay break-even **antes** de TP1. Mientras TP1 esté fuera de alcance el ratchet está muerto haga lo que haga el BE.
+
+A/B sobre las **70 posiciones reales** recorriendo sus velas 5m: `false` gana en 3 de 5 horizontes (4 de 5 sin LINK) y convierte 13 stops completos en break-evens a 24 h, pero por poco (~+0,04 USDT/posición) y con BCH explicando el 68%.
+> 🐛 **Trampa metodológica que casi invierte el resultado**: la primera versión cortaba cada posición en su **hora de cierre real**, que la produjo la política vigente entonces. Como `true` cierra menos, más posiciones quedaban "abiertas" y se valuaban a un corte arbitrario — y eso daba `true` ganador por 4,54 USDT. Con **horizonte fijo e igual para las dos ramas** el signo se invierte. Al comparar políticas de salida, el horizonte no puede depender de la política.
+
+#### 🎯 El hallazgo: sólo el 41% de las posiciones alcanza su TP1
+
+Medido sobre las **70 posiciones reales desde el 28/07** contra sus velas 5m. MFE mediano del portfolio **1,23%**. Curva de alcanzabilidad: TP1 a 0,4% → 77% · 1,0% → 54% · 1,5% → 43% · 2,0% → 36% · 2,5% → 29%. **Explica el 38-40% de realización en vivo sin apelar a ningún "edge".**
+
+⚠️ **Medir el MFE de las dos formas: hasta el cierre real Y a horizonte fijo. La diferencia ES el diagnóstico.** Si el MFE a horizonte fijo es mucho mayor, el culpable es el **stop**; si los dos son bajos, es el **TP**. ETH pasa de 0,59% (hasta el cierre) a **2,02%** (a 24 h): el movimiento está, la posición no vive para cobrarlo.
+
+#### ✅ ETH y ONDO re-parametrizados (`348e3a2`) — ver el commit para la evidencia completa
+
+| Par | Cambio | Queda | Cross-val |
+|---|---|---|---|
+| **ETH** | `tp` 0,044→0,025 · `sl_pct` 0,010→**0,018** | TP1 1,50% · SL 1,80% | sim **4/4** (+10,8 a +11,0) · replay real **3/3** |
+| **ONDO** | `tp` 0,044→0,025 | TP1 1,50% · SL 1,00% | sim **3/4** (regresión −0,19) · replay real **3/3** |
+
+Eran los dos pares con el stop **más ceñido** (1,0%) y el objetivo **más lejano** (2,64%) — la combinación que la tabla de geometría TP1/SL premiaba con el mejor ratio (2,64) **precisamente porque el numerador no se cobra nunca**. Es la falla del modelo de geometría, ahora con nombre.
+
+En ETH bajar el `tp` solo da **exactamente cero** en 30/60/90d (mismo n, mismo PnL): la prueba más limpia de que el cuello de botella es el stop. **Prueba de falsación superada**: BCH 1,8%→2,4% da −5 a −6 en las 4 ventanas y CFX 2/4, así que el sim no premia stops anchos en general.
+⚠️ Coste real: el riesgo por trade de ETH pasa de 0,38 a **0,68 USDT** (0,20%→0,36% del balance). Juzgar por los primeros **5-8 cierres**, no por calendario.
+
+#### ❌ Asignación de capital por rendimiento — SIMULADO y RECHAZADO
+
+Walk-forward sobre los trades **reales** (los pesos no cambian qué trades se toman, sólo su tamaño, así que el contrafactual es limpio). Restricción dura hallada primero: el tramo de TP es 33% del notional y BingX rechaza cierres <7 USDT → **por debajo de peso 0,113 el escalonamiento se rompe**.
+
+| Regla | PnL | control de mismo tamaño | **Δ del ranking** |
+|---|---|---|---|
+| equal weight (hoy) | −5,48 | −5,48 | 0 |
+| escalones 0,12/0,20/0,32 | −4,45 | −4,91 | +0,46 |
+| sólo castigo | −4,16 | −4,63 | +0,46 |
+| **PLACEBO al azar** | −4,96 | −5,09 | **+0,13** |
+
+**Casi toda la "mejora" es el efecto trivial de operar más chico en un período perdedor** — bajar todo un 15% da lo mismo sin rankear nada. El test de permutación sí da señal (p=0,010 y 0,037: recortar a los perdedores reales le gana a recortar al azar), **pero la alarma de concentración se dispara en las dos ventanas** (BNB 58%, DYDX 68%) y la regla castiga al que está por revertir (XMR aporta −0,75: lo recortó justo antes de que pasara de −0,20 a +1,27).
+
+**La razón de fondo para no hacerlo**: no hay con qué medir el rendimiento por par — ver "No hay instrumento para rankear pares" abajo.
+
+✅ **La versión que sí tiene sentido, pendiente de decisión**: **tamaño por confianza, no por rendimiento.** Un par con paramset nuevo o sin validar opera al piso (0,12) hasta acumular sus 5-8 cierres, y recién ahí pasa a 0,20. No exige rankear nada — sólo contar evidencia. Es lo que habría contenido a DYDX.
+
+#### 🔴 No hay instrumento para rankear pares
+
+| | Spearman |
+|---|---|
+| sim 30d vs sim 45d | +0,66 |
+| **sim 45d vs PnL real 45d** | **−0,31** |
+| sim 30d vs PnL real 45d | +0,02 |
+
+BNB y DYDX **cambian de signo** entre dos ventanas adyacentes del mismo simulador, y el sim abre de **1,5× a 12×** más trades que el bot real (LINK: 24 vs 2; DYDX: 17 simulados vs **1 orden real en 17 días**). El PnL real, por su lado, tiene **8 trades por par de mediana** — para detectar 0,15 USDT/trade harían falta entre 11 y 212.
+
+⚠️ El test de correlación **no distingue** "el sim se equivoca" de "la muestra real es muy chica". Lo que sí acusa al sim solo es que se contradice entre ventanas y que sobre-opera. **El sim sigue sirviendo para agregados y para comparar variantes DEL MISMO par** (que es como se decidió ETH/ONDO, y ahí el sesgo de nivel se cancela). No para ordenar pares ni para predecir cuánto va a operar uno.
+
+#### 🔴 DYDX: veredicto por imposibilidad, no por PnL
+
+Desde el cambio del 25/08, en 17 días: **una sola orden**, expirada sin llenar. Cero fills. La re-optimización endureció **seis filtros a la vez** (`adx_min` 18→22, `adx_slope_min` 0,2→0,6, `fresh_cross_max_bars` 7→3, `max_dist_emaslow` 0,015→0,012, `min_vol_ratio` 1,0→1,05, y `require_rsi_cross` False→**True**). A este ritmo los 5-8 cierres del criterio tardarían 4-8 meses: **el paramset es inmedible en producción.** Endurecer seis knobs de una vez es la firma de un sweep sobreajustado — al re-optimizar, mover pocos.
+
+#### 🐛 Bug abierto: el precio del TP1 se re-coloca MÁS LEJOS
+
+Cuando el TP1 se vuelve a someter, su precio cambia — **7 de 7 veces, y siempre alejándose de la entrada** (drift medio 129 bps, máximo 302). Caso AVAX del 09/09: el precio atravesó el TP1 a las 09:45 y a las **09:53 el bot movió la orden de 7,922 a 7,890**, debajo del mercado; la posición cerró minutos después sin registrar el fill. El nivel se recalcula desde el indicador vivo en vez de anclarse a la entrada — es el residuo de **P5.1a** anotado en `get_last_take_profit_stop_loss`. Sólo afecta a 7 de 71 posiciones, así que no es la causa dominante del gap de realización, pero es un defecto real y de dirección sistemática.
+
 ### 🔴 La pregunta que queda abierta: ¿hay edge?
 
 Con la ejecución ya correcta, el diagnóstico se desplaza de "el bot no hace lo que debería" a "lo que debería hacer, ¿gana?".
@@ -693,21 +761,24 @@ Cobertura de costos mejoró de **3/10 a 6/10** pares (cubren: BCH, BNB, CFX, AVA
 
 ---
 
-## Estado al cierre del 08/09
+## Estado al cierre del 11/09
 
-**Prod**: activo, HEAD `f5be6dd`, `NRestarts=0`, 0 errores. `pkg/best_prod.json` md5 **`50a05c0a`** coincidiendo local = HEAD = prod. Balance **190,22 USDT**.
+**Prod**: activo, `NRestarts=0`, 0 errores. `pkg/best_prod.json` md5 **`d868c273`** coincidiendo local = HEAD = prod. Balance **188,51 USDT**.
 
-**Portfolio**: 10 pares. Único cambio de params desde el 03/07: DYDX (25/08), **todavía sin validar — 0 cierres en dos semanas**. El criterio son 5-8 trades cerrados, no calendario; si sigue mudo, discutir si el paramset quedó demasiado selectivo.
+**Portfolio**: 10 pares. Cambios de params desde el 03/07: DYDX (25/08) y **ETH + ONDO (11/09)**.
+- **ETH**: `tp` 0,025 · `sl_pct` **0,018** — EN PRUEBA, juzgar por 5-8 cierres.
+- **ONDO**: `tp` 0,025 — EN PRUEBA, juzgar por 5-8 cierres.
+- **DYDX**: sin veredicto y sin forma de obtenerlo — 1 orden en 17 días, sin llenar. Ver "Revisión 11/09".
 
-**PnL semanal**: 25-31/08 −4,79 · **01-09/09 −1,61**. Mejora, sigue en rojo.
+**PnL semanal**: 25-31/08 −4,79 · 01-09/09 −1,61 · 09-11/09 **−1,06** (6 cierres, los 6 por `stop_loss`).
 
 **Configuración viva** (todo por flip de config, sin deploy):
 | Knob | Valor | Desde |
 |---|---|---|
 | `session.entry_hours_utc` | `[]` (24/7) | 18/08, validado |
 | `tp_mode` | `partial_limit_tp` | 03/07 |
-| `ratchet.enabled` | `true` (30 min, buffer 0,25%) | 05/09 |
-| `break_even_after_tp1` | **`true`** | **08/09, EN PRUEBA** |
+| `ratchet.enabled` | `true` (30 min, buffer 0,25%) | 05/09 — inerte mientras TP1 no llene |
+| `break_even_after_tp1` | **`false`** | **11/09, revertido** |
 
 **Los 13 bugs corregidos**, todos de ejecución, datos o medición — **ninguno de parámetros**:
 
@@ -730,10 +801,15 @@ Cobertura de costos mejoró de **3/10 a 6/10** pares (cubren: BCH, BNB, CFX, AVA
 **Lo que se aprendió, y ya van seis veces**: cada bug se leía como una *conclusión sobre la estrategia* — "CFX no tiene edge", "ONDO y APT son mudos", "TP×2 gana 5/5", "el ratchet no funciona en BCH" — cuando era ejecución, datos o el instrumento de medición. **Y esta semana se agregó una variante peor: un bug que TAPABA una falla de diseño.** El BE roto dejaba correr las posiciones hasta TP1 por accidente; arreglarlo expuso la zona muerta que estaba ahí desde siempre.
 
 **Al retomar, en este orden**:
-1. **Evaluar `break_even_after_tp1: true`** (~10/09). Criterios escritos en "Revisión semanal 08/09" — respetarlos, incluido el "dejarlo correr si es ambiguo".
-2. **DYDX**: 0 cierres en dos semanas. Decidir si se espera más o se revisa el paramset.
-3. **La paradoja del edge** sigue siendo lo más valioso sin resolver: la señal da +0,198% neto por señal a 8 h y el sistema pierde. Ver "¿hay edge?".
-4. **Ventana `legacy → partial`** (9 eventos esta semana): entre el cierre de una posición y el registro de la siguiente la fila vive con defaults. No urgente, pero es lo que arruinó a BCH.
-5. **Rehacer bruto/costos** con el parity corregido: las cifras de "¿hay edge?" son del 18/08.
+1. **Evaluar ETH y ONDO** por sus primeros **5-8 cierres**, no por calendario. ETH es el que más hay que mirar: su riesgo por trade subió de 0,38 a 0,68 USDT. Rollback md5 `50a05c0a`.
+2. **Revisar el resto de la geometría con la medición de MFE a horizonte fijo.** ETH/ONDO salieron de ahí y son los dos casos extremos, pero la tabla completa está en "Revisión 11/09": **BNB** (TP1 1,80% contra MFE 1,10%, lo alcanza el 30%) y **LINK** (el error opuesto: TP1 0,72% alcanzado por el 80% con MFE mediano 3,53%) son los siguientes candidatos. Uno por vez.
+3. **DYDX**: decidir. El paramset no puede generar evidencia (1 orden en 17 días). Revertir al viejo no sirve —perdía— así que las opciones reales son aflojar **un** filtro o aceptar que es un portfolio de 9.
+4. **Bug del TP1 que se re-coloca más lejos** (P5.1a): anclar el nivel a la entrada en vez de recalcularlo del indicador vivo. 7 de 7 casos, siempre alejándose.
+5. **Tamaño por confianza** (la parte salvable de la asignación de capital): peso 0,12 para paramsets sin validar, 0,20 al cumplir 5-8 cierres. **Respetar el piso duro de 0,113** o el escalonamiento de TP se rompe.
+6. **La paradoja del edge**: la señal da +0,198% neto por señal a 8 h y el sistema pierde. Ver "¿hay edge?". La medición del 11/09 aporta la mitad de la respuesta —el 59% de las posiciones nunca alcanza su TP1— pero no la cierra.
+7. **Ventana `legacy → partial`**: entre el cierre de una posición y el registro de la siguiente la fila vive con defaults. Es lo que arruinó a BCH el 06/09.
+8. **Rehacer bruto/costos** con el parity corregido: las cifras de "¿hay edge?" son del 18/08 y ahora hay serie continua de 130 días para hacerlo bien.
 
-**Sobre el proceso, y esto vale más que cualquier fix**: el usuario detectó, mirando el comportamiento real, cosas que las métricas escondían — que sí hubo posiciones llegando a TP3, que DYDX perdía, que hacía tiempo no corría la simulación, que el ratchet no disparaba en BNB, y que BCH sí había llenado TP1 cuando el estado del bot decía que no. **Todas resultaron ciertas**, varias corrigieron una conclusión mía, y una destapó un job muerto hacía 4,5 meses. **Contrastar siempre el número agregado contra lo que se ve operar — y verificar contra el exchange, no contra el estado del bot.**
+**Sobre el proceso, y esto vale más que cualquier fix**: el usuario detectó, mirando el comportamiento real, cosas que las métricas escondían — que sí hubo posiciones llegando a TP3, que DYDX perdía, que hacía tiempo no corría la simulación, que el ratchet no disparaba en BNB, que BCH sí había llenado TP1 cuando el estado del bot decía que no, y el **11/09 que prod tenía 6 meses de velas** cuando esta guía afirmaba lo contrario. **Todas resultaron ciertas**, varias corrigieron una conclusión mía, una destapó un job muerto hacía 4,5 meses y la última destapó una afirmación falsa de esta misma guía que estaba limitando los análisis a ventanas de 45 días. **Contrastar siempre el número agregado contra lo que se ve operar — verificar contra el exchange, no contra el estado del bot, y desconfiar de las afirmaciones de este archivo que nunca se re-verificaron.**
+
+**Y una lección propia del 11/09, de método**: en la misma sesión di vuelta **dos** conclusiones por errores de medición míos, las dos del mismo tipo — *dejar que la política bajo estudio decida la ventana de medición*. (1) El A/B del break-even cortaba cada posición en su hora de cierre **real**, producida por la política vigente; con horizonte fijo el signo se invierte. (2) El MFE medido "hasta el cierre" decía que a ETH le sobraba TP; medido a 24 h fijas dice que le falta stop, que es el diagnóstico opuesto y llevó a un cambio distinto. **La ventana de medición tiene que ser independiente de lo que se está midiendo.**
