@@ -2076,6 +2076,46 @@ def extract_tp_sl_from_latest(latest_values: pd.DataFrame, symbol: str, side: st
     return tps, sl
 
 
+def _tp_submit_reference_note(latest_values, symbol: str, raw_level) -> str:
+    """Telemetría: de qué fila de indicadores salió el nivel de TP que se acaba de someter.
+
+    Medido el 14/09/2026 sobre 75 posiciones: el TP1 sometido está a **0,70× la distancia
+    que dice el paramset**. Despejando el factor de la escalera da 0,40-0,42 contra el
+    0,60 de `TP_FACTORS[0]`, sin correlación con `tp` (r=+0,13), o sea constante entre
+    pares. La columna `TP1_L` del CSV **sí** es correcta y el sanitizador no explica la
+    diferencia, así que la desviación nace entre leer la fila y someter la orden.
+
+    El sospechoso es que `latest_values` es la última fila = la vela EN FORMACIÓN (deuda
+    P5.1a). No se puede confirmar con datos históricos: al cerrar la vela su `close` se
+    sobrescribe, así que **el valor que el bot leyó se pierde**. De ahí esta anotación.
+
+    Con `ref_close`, `ref_bar` y `ref_lvl` la próxima posición decide entre las hipótesis:
+      - `ref_close` != el close final de esa barra  -> era la vela en formación
+      - `ref_lvl` != `ref_close`*(1 ± 0,6·tp)       -> la columna llegó mal
+      - `submitted_price` != `ref_lvl`              -> algo la movió aguas abajo
+
+    Traga cualquier excepción: **observar no puede costar una orden.**
+    """
+    try:
+        row = latest_values[latest_values['symbol'] == str(symbol).upper()]
+        if row.empty:
+            return ""
+        r = row.iloc[0]
+        partes = []
+        c = _safe_float_or_none(r.get('close'))
+        if c is not None:
+            partes.append(f"ref_close={c:.10g}")
+        bar = str(r.get('date', '') or '').strip()
+        if bar:
+            partes.append(f"ref_bar={bar}")
+        lvl = _safe_float_or_none(raw_level)
+        if lvl is not None:
+            partes.append(f"ref_lvl={lvl:.10g}")
+        return " ".join(partes)
+    except Exception:
+        return ""
+
+
 def _build_fill_alert(
     symbol: str,
     position_side: str,
@@ -3591,6 +3631,8 @@ def colocando_TK_SL():
                                 if ok:
                                     time.sleep(0.3)
                                     existing_tp_prices.add(stage_price_ref)
+                                    _tp_ref_note = _tp_submit_reference_note(
+                                        latest_values, symbol, desired_tps[price_src_idx])
                                     set_tp_submitted(
                                         symbol,
                                         "LONG",
@@ -3611,6 +3653,7 @@ def colocando_TK_SL():
                                         tp_price=stage_price_ref,
                                         order_id=tp_details.get("order_id", ""),
                                         source="colocando_TK_SL",
+                                        tp_ref=_tp_ref_note,
                                     )
                                     append_execution_ledger_event(
                                         f"tp{stage_idx_target}_submitted",
@@ -3627,6 +3670,7 @@ def colocando_TK_SL():
                                         submit_qty=stage_qty,
                                         submit_time_utc=tp_details.get("submit_time_utc", ""),
                                         partial_fill_status="unknown",
+                                        notes=_tp_ref_note,
                                     )
                                 else:
                                     _emit_tp_failed(
@@ -3952,6 +3996,8 @@ def colocando_TK_SL():
                                 if ok:
                                     time.sleep(0.3)
                                     existing_tp_prices.add(stage_price_ref)
+                                    _tp_ref_note = _tp_submit_reference_note(
+                                        latest_values, symbol, desired_tps[price_src_idx])
                                     set_tp_submitted(
                                         symbol,
                                         "SHORT",
@@ -3972,6 +4018,7 @@ def colocando_TK_SL():
                                         tp_price=stage_price_ref,
                                         order_id=tp_details.get("order_id", ""),
                                         source="colocando_TK_SL",
+                                        tp_ref=_tp_ref_note,
                                     )
                                     append_execution_ledger_event(
                                         f"tp{stage_idx_target}_submitted",
@@ -3988,6 +4035,7 @@ def colocando_TK_SL():
                                         submit_qty=stage_qty,
                                         submit_time_utc=tp_details.get("submit_time_utc", ""),
                                         partial_fill_status="unknown",
+                                        notes=_tp_ref_note,
                                     )
                                 else:
                                     _emit_tp_failed(
