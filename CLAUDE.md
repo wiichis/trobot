@@ -707,6 +707,29 @@ BNB y DYDX **cambian de signo** entre dos ventanas adyacentes del mismo simulado
 
 Desde el cambio del 25/08, en 17 días: **una sola orden**, expirada sin llenar. Cero fills. La re-optimización endureció **seis filtros a la vez** (`adx_min` 18→22, `adx_slope_min` 0,2→0,6, `fresh_cross_max_bars` 7→3, `max_dist_emaslow` 0,015→0,012, `min_vol_ratio` 1,0→1,05, y `require_rsi_cross` False→**True**). A este ritmo los 5-8 cierres del criterio tardarían 4-8 meses: **el paramset es inmedible en producción.** Endurecer seis knobs de una vez es la firma de un sweep sobreajustado — al re-optimizar, mover pocos.
 
+### 🔬 ABIERTO 14/09 — el TP1 se somete al 70% de lo configurado
+
+**Medido sobre 75 posiciones reales desde el 01/08**, por dos caminos independientes:
+
+| | configurado | **efectivo** | ratio |
+|---|---|---|---|
+| TP1 (desde la entrada) | 1,74% | **1,24%** | **0,71** |
+| SL (desde la entrada) | 1,57% | 1,59% | 1,01 |
+| **TP1/SL** | **1,25** | **0,89** | **0,71** |
+
+Despejando el factor de la escalera, `f = (TP1_sometido/close − 1)/tp` da **0,403 de media, 0,417 de mediana** (σ 0,071) contra el **0,600** de `TP_FACTORS[0]`, **sin correlación con `tp`** (r=+0,13): es constante entre pares, no proporcional. 72 de 75 posiciones, cero coincidencias exactas, los 10 pares, ambos lados.
+
+**Consecuencia: cada tramo ganador se cobra ~29% más chico mientras la pérdida se paga entera.** Es una explicación cuantificada del **payoff 0,28-0,62** abierto desde el 03/07. Y los ratios de la tabla "La geometría TP1/SL" son **teóricos y no se ejecutan**: ETH 2,64→**2,01** · BCH 1,20→**0,86** · BNB 1,00→**0,70** · LINK 0,48→**0,39**.
+
+**Ya descartado**: la columna `TP1_L` del CSV es correcta (BCH 253,20 contra close 258,79 = 2,16% = 0,6×0,036 exacto; verificado también en reposo sobre 4 pares, factor 0,600 clavado) · `_sanitize_tp_limit_price` sólo recorta si el TP queda del lado equivocado del mercado · `tp_limit_offset_bps` está en 0 · `pkg/best_cfg.json` no existe. **La desviación nace entre leer la fila y someter la orden.**
+
+⚠️ **Corrección de un diagnóstico propio, el mismo día**: primero se atribuyó a un deslizamiento de entrada de +0,50%. **Era falso** — se había inferido el close de referencia *desde el propio precio de TP* (`c = TP1/(1+0,6·tp)`), que es circular. La alarma fue que el "deslizamiento" correlacionaba casi perfecto con `tp` sin mecanismo físico. Verificado: la entrada llena a ~0,05% del close. **Por eso NO se tocó `calc_slippage_rate`** — además se usa en las SALIDAS (`backtesting.py:1329`) y en el sweep (`:2263`), donde un 0,50% habría sido un error grande.
+
+**🔬 Telemetría desplegada** (`842eb76`, 14/09): `tpN_submitted` ahora anota `ref_close`, `ref_bar` y `ref_lvl` (el nivel crudo, antes del sanitizador), en el evento y en el ledger. **No cambia comportamiento.** Hacía falta porque `latest_values` es la última fila = la vela EN FORMACIÓN (deuda P5.1a) y **eso no se puede confirmar con datos históricos**: al cerrar la vela su `close` se sobrescribe. Con 3-4 posiciones alcanza para decidir:
+- `ref_close` ≠ el close final de esa barra → **era la vela en formación**
+- `ref_lvl` ≠ `ref_close`×(1 ± 0,6·tp) → **la columna llegó mal**
+- `submitted_price` ≠ `ref_lvl` → **algo la movió aguas abajo**
+
 #### 🐛 Bug abierto: el precio del TP1 se re-coloca MÁS LEJOS
 
 Cuando el TP1 se vuelve a someter, su precio cambia — **7 de 7 veces, y siempre alejándose de la entrada** (drift medio 129 bps, máximo 302). Caso AVAX del 09/09: el precio atravesó el TP1 a las 09:45 y a las **09:53 el bot movió la orden de 7,922 a 7,890**, debajo del mercado; la posición cerró minutos después sin registrar el fill. El nivel se recalcula desde el indicador vivo en vez de anclarse a la entrada — es el residuo de **P5.1a** anotado en `get_last_take_profit_stop_loss`. Sólo afecta a 7 de 71 posiciones, así que no es la causa dominante del gap de realización, pero es un defecto real y de dirección sistemática.
@@ -801,6 +824,7 @@ Cobertura de costos mejoró de **3/10 a 6/10** pares (cubren: BCH, BNB, CFX, AVA
 **Lo que se aprendió, y ya van seis veces**: cada bug se leía como una *conclusión sobre la estrategia* — "CFX no tiene edge", "ONDO y APT son mudos", "TP×2 gana 5/5", "el ratchet no funciona en BCH" — cuando era ejecución, datos o el instrumento de medición. **Y esta semana se agregó una variante peor: un bug que TAPABA una falla de diseño.** El BE roto dejaba correr las posiciones hasta TP1 por accidente; arreglarlo expuso la zona muerta que estaba ahí desde siempre.
 
 **Al retomar, en este orden**:
+0. 🔬 **Leer la telemetría `ref_close`/`ref_bar`/`ref_lvl`** de los `tpN_submitted` nuevos (desde el 15/09 02:45 UTC) y cerrar el diagnóstico del **TP1 al 70%**. Es lo de mayor valor abierto: vale ~29% de cada tramo ganador. Ver "ABIERTO 14/09".
 1. **Evaluar ETH y ONDO** por sus primeros **5-8 cierres**, no por calendario. ETH es el que más hay que mirar: su riesgo por trade subió de 0,38 a 0,68 USDT. Rollback md5 `50a05c0a`.
 2. **Revisar el resto de la geometría con la medición de MFE a horizonte fijo.** ETH/ONDO salieron de ahí y son los dos casos extremos, pero la tabla completa está en "Revisión 11/09": **BNB** (TP1 1,80% contra MFE 1,10%, lo alcanza el 30%) y **LINK** (el error opuesto: TP1 0,72% alcanzado por el 80% con MFE mediano 3,53%) son los siguientes candidatos. Uno por vez.
 3. **DYDX**: decidir. El paramset no puede generar evidencia (1 orden en 17 días). Revertir al viejo no sirve —perdía— así que las opciones reales son aflojar **un** filtro o aceptar que es un portfolio de 9.
