@@ -778,9 +778,11 @@ Ningún par define `tp1_factor` ni `tp1_pct_override`, así que los 10 caen siem
 - `ref_lvl` ≠ `ref_close`×(1 ± 0,6·tp) → **la columna llegó mal**
 - `submitted_price` ≠ `ref_lvl` → **algo la movió aguas abajo**
 
-#### 🐛 Bug abierto: el precio del TP1 se re-coloca MÁS LEJOS
+#### ✅ Bug CORREGIDO 19/09 (`591cafe`): el precio del TP1 se re-colocaba MÁS LEJOS
 
 Cuando el TP1 se vuelve a someter, su precio cambia — **7 de 7 veces, y siempre alejándose de la entrada** (drift medio 129 bps, máximo 302). Caso AVAX del 09/09: el precio atravesó el TP1 a las 09:45 y a las **09:53 el bot movió la orden de 7,922 a 7,890**, debajo del mercado; la posición cerró minutos después sin registrar el fill. El nivel se recalcula desde el indicador vivo en vez de anclarse a la entrada — es el residuo de **P5.1a** anotado en `get_last_take_profit_stop_loss`. Sólo afecta a 7 de 71 posiciones, así que no es la causa dominante del gap de realización, pero es un defecto real y de dirección sistemática.
+
+**Fix**: el ladder pasa a calcularse como `entry * (1 ± f_i · tp)` con la entrada tomada del `avgPrice` de la posición, que **no cambia en toda su vida** → el nivel es idempotente entre ciclos. Con la entrada de AVAX en 7,8265 el nivel anclado es **7,8758 constante**; el viejo derivaba **+30 a +111 bps** según dónde estuviera el close. El **SL sigue viniendo del indicador**: ese sí debe moverse. Si el precio ya pasó el TP anclado, `_sanitize_tp_limit_price` lo lleva a `ref+tick` y la orden **llena** — lo opuesto al bug. 35 tests nuevos, 314 en total.
 
 ### ❌ Barrido de `tp1_factor` — 19/09: el 0,70 ya estaba en el pico
 
@@ -818,6 +820,28 @@ Primer uso del knob desde que se identificó el `* 0.70`. Es per-símbolo y est�
 | BCH | 1,51% | 3,60% | 5,76% |
 
 ⚠️ **Lección de método, y es nueva**: la meseta NO alcanza como prueba de robustez. BNB tenía meseta, monotonía y 5/5, y se cayó igual. El error fue usar el holdout **también para elegir**. Al barrer un knob: elegir en las 4 ventanas recientes y **reservar el holdout entero para falsar**.
+
+### ❌ Barrido del ladder de TP (`tp_factors`) — 19/09: el remedio obvio es el peor
+
+Habilitado por el fix `591cafe`: `TP_FACTORS` estaba hardcodeado en `indicadores.py` y sólo el camino del **sweep** leía `tp_factors`; ahora live y parity lo respetan, así que el ladder es barrible por par **sin tocar código**. Verificado que no es un no-op silencioso: `[0.6,1.0,1.6]` reproduce el baseline exacto, `[0.4,0.8,1.2]` da −13,86 a 90d y un ladder desordenado cae al default.
+
+Protocolo corregido respecto del barrido de `tp1_factor`: **se eligió sólo con las 4 ventanas recientes**, dejando el holdout entero para falsar.
+
+| ladder | 30d | 60d | 90d | 120d | gana |
+|---|---|---|---|---|---|
+| **(0,6 1,0 1,6) actual** | −17,09 | −16,79 | −4,14 | +8,78 | — |
+| (0,4 0,8 1,2) *más cerca* | −16,28 | −18,50 | −13,86 | +4,54 | 1/4 |
+| (0,5 0,9 1,4) *más cerca* | −17,30 | −19,27 | −12,41 | +1,09 | 0/4 |
+| (0,6 1,0 1,2) *sólo TP3* | −15,78 | −20,22 | −7,57 | +9,45 | 2/4 |
+| (0,6 0,9 1,2) comprimido | −15,66 | −15,46 | −6,74 | +10,89 | 3/4 |
+| (0,6 1,2 1,8) *más lejos* | −15,76 | −13,27 | −7,00 | +10,66 | 3/4 |
+| (0,7 1,3 2,0) *más lejos* | −14,79 | −16,43 | −6,92 | +12,14 | 3/4 |
+
+**Ninguno gana 4/4 → no hay candidato y no se aplicó nada.** Los tres de 3/4 fallan **todos a 90d**; entender esa ventana es requisito antes de volver a intentarlo.
+
+🎯 **Lo importante: acercar los tramos —la corrección que sugería el diagnóstico— es de lo peor que se puede hacer.** Post-hoc sobre el holdout (informativo, ninguno había pasado la selección): comprimido +4,03 · (0,6 1,2 1,8) +4,60 · (0,7 1,3 2,0) +6,39 · **(0,4 0,8 1,2) −2,25**. La dirección que paga es **alejar**, igual que en el barrido de `tp1_factor`, y por el mismo mecanismo: **el runner que cobra el trailing vale más que el tramo cobrado temprano**.
+
+**Conclusión operativa**: el ladder de hecho funciona como *"un TP + trailing"*. Que TP3 esté a 1,92%-5,76% contra un MFE mediano de 1,23% es raro de leer, pero **no es un defecto a parchear** — es la forma que tomó un sistema donde el trailing es quien captura. Séptimo A/B global rechazado, con la misma lección.
 
 ### 🔴 La pregunta que queda abierta: ¿hay edge?
 
@@ -970,10 +994,10 @@ Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue 
 3. ~~**Decidir el 0,70 de TP1**~~ → ❌ **CERRADO 19/09: barrido hecho, NO cambiar nada.** Ver "Barrido de `tp1_factor`" abajo. El 0,70 resultó ser el **óptimo global** y el único ganador por par (BNB) **se falsó** en la ventana no usada para elegir.
 4. **Revisar el resto de la geometría con MFE a horizonte fijo**, ahora con los ratios REALES (tabla corregida en "La geometría TP1/SL"): **LINK** (0,34, el peor) y **BNB** (0,70 con TP1 a 1,26% contra MFE 1,10%) son los siguientes. Uno por vez.
 5. **DYDX**: decidir. Tras el 19/09 se sabe que **ni el sweep ni aflojar un filtro sirven** (la opción quirúrgica da 1/4 y pierde más). Las opciones reales son bajarle el peso al piso de confianza o aceptar que es un portfolio de 9.
-6. **Bug del TP1 que se re-coloca más lejos** (P5.1a): anclar el nivel a la entrada en vez de recalcularlo del indicador vivo. 7 de 7 casos, siempre alejándose. **Ahora se sabe que `ref_bar` es la vela en formación**, así que está confirmado de dónde viene.
+6. ~~**Bug del TP1 que se re-coloca más lejos**~~ → ✅ **CORREGIDO 19/09** (`591cafe`): el ladder se ancla al `avgPrice` de la posición. Cierra además el hueco de paridad y deja `tp_factors` como knob real.
 7. **Tamaño por confianza** (la parte salvable de la asignación de capital): peso 0,12 para paramsets sin validar, 0,20 al cumplir 5-8 cierres. **Respetar el piso duro de 0,113** o el escalonamiento de TP se rompe. Con 4 pares en prueba a la vez (AVAX, XMR, ETH, ONDO) es más relevante que nunca.
 8. **La paradoja del edge**: la señal da +0,198% neto por señal a 8 h y el sistema pierde. La medición del 11/09 aporta la mitad —el 59% no alcanza su TP1— y el 19/09 la otra mitad: **ese TP1 está un 43% más lejos de lo que decía la tabla**.
-9. **TP2 no llenó en 14 días y TP3 nunca llenó en todo el histórico** — y con el ladder real (`TP_FACTORS = (0.6, 1.0, 1.6)`, 0,70 sólo en el tramo 1) se ve por qué: TP3 queda a **1,92%-5,76%** según el par contra un **MFE mediano de 1,23%**. **El tercer tramo (34% de cada posición) es inalcanzable por diseño**, y el segundo (1,20%-3,60%) casi. Quien los cobra es el trailing. La pregunta a decidir: ¿achicar `TP_FACTORS` o aceptar que el ladder es en realidad "un TP + trailing"? ⚠️ Ojo con el precedente del 25/08: se canceló P-TP3 porque **someter** TP3 prueba que TP1 y TP2 llenaron, y esas posiciones fueron las mejores de la semana.
+9. ~~**El ladder inalcanzable**~~ → ❌ **CERRADO 19/09: el diagnóstico era correcto, el remedio obvio NO.** Barrido de 9 ladders: **ninguno gana las 4 ventanas de selección**, y *acercar* los tramos —la corrección "evidente"— es de lo peor (1/4, y −2,25 en el holdout). Lo que ayuda es **alejarlos** (3/4 y +4,0 a +6,4 en holdout), pero falla siempre a 90d, así que no clasifica. **Conclusión práctica: el ladder funciona como "un TP + trailing", y eso no es un defecto a parchear — es lo que cobra** (`trail_stop` +0,415 contra `be_stop` +0,024). Infra lista para revisitarlo barato: `tp_factors` es knob por par en live y parity.
 10. **Ventana `legacy → partial`**: entre el cierre de una posición y el registro de la siguiente la fila vive con defaults. Es lo que arruinó a BCH el 06/09. Además hubo un pico de **100 `tp_state_row_recreated` el 09/09** en un solo día (BCH 58, ETH 29) que nadie miró.
 11. **Rehacer bruto/costos** con el parity corregido: las cifras de "¿hay edge?" son del 18/08 y ahora hay serie continua sin huecos de 150+ días para los 10 pares.
 
