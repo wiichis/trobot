@@ -137,13 +137,54 @@ Cada par tiene su propio paramset en `pkg/best_prod.json`, optimizado individual
 
 ~~Parchear `_post_run_normalize_best` en `pkg/backtesting.py`~~ → **Hecho en commit `27cc863`**. El handler ahora solo escribe a `pkg/best_prod.json` si el usuario lo pidió explícitamente vía `--export_best pkg/best_prod.json`. Verificado en el sweep semanal: archivo intacto antes/después.
 
-### ~~P2.1 Filtro de régimen~~ — ❌ CERRADO 11/06: A y B probadas y RECHAZADAS
+### 🔄 P2.1 Filtro de régimen — REABIERTO el 19/09: la Opción A se dio vuelta
 
 **Ambas direcciones falsificadas el mismo día** (A/B parity, 10 pares, 30/60/90d, logs en `archivos/backtesting/regime_validation_20260611/`):
 
 - **Opción A (bloquear si ADX_1h<umbral)**: −51/−54/−53% del PnL. Los trades en lateral eran netos POSITIVOS (+21 USD/90d). Sensibilidad monótona: a más umbral, peor (ADX≥22 → portfolio negativo).
 - **Opción B (relajar `adx_min`/`min_vol_ratio` ×0.8/×0.9 en lateral)**: Δ −5/−12/−23 USD en 30/60/90d. Monótono también (aggr ×0.7/×0.85 → −77). Los trades marginales desbloqueados pierden (XMR +0.7→−15.4). **Y los pares silenciosos NO despiertan** (CFX 7→7 trades, ETH 7→7 en 30d): su blocker no es ADX/volumen.
 - Conclusión: los paramsets actuales están en un óptimo local respecto a estos knobs condicionados a régimen. No insistir con variantes (ver memoria `regime_filter_experiments`).
+
+#### 🔄 Re-medición del 19/09 — el rechazo de junio se apoyaba en un instrumento roto
+
+⚠️ **Las configs de junio (`regime_A_*`, `regime_B_*`) NO se pueden reutilizar**: traen `session.entry_hours_utc` con el gate horario (quitado del live el 18/08), `tp_mode: legacy_market_tp` (el live usa `partial_limit_tp` desde el 03/07), `break_even_after_tp1: true` (revertido el 11/09) y `tp_reduce_only: true` (corregido el 07/07). Correrlas mide el régimen **y todo eso junto**. Las nuevas se construyeron **copiando `live_benchmark_runtime.json` y tocando sólo los knobs de régimen**.
+
+Y entre junio y hoy se corrigieron el tick size (`d895c7b`), el modelo de fill (`cc36b90`), el reparto de tramos (`cf61157`) y el anclaje del ladder (`591cafe`). El rechazo de junio se midió con todos esos defectos activos.
+
+**Opción B (relajar en lateral): CONFIRMADA MUERTA.** 0/5 en todas las variantes y monótona: mild −36, medium −39, aggr −75. Además falla la falsación (−13,78). No volver.
+
+**Opción A (bloquear si ADX 1h < umbral): se dio vuelta.**
+
+| config | 30d | 60d | 90d | 120d | hold-1 | **falsación** | gana |
+|---|---|---|---|---|---|---|---|
+| control (hoy) | −17,09 | −16,79 | −4,14 | +8,78 | −34,83 | −24,07 | — |
+| A_adx15 (1h) | −15,49 | −14,42 | −7,53 | −1,80 | −34,46 | **−31,67** | 3/6 |
+| **A_adx18 (1h)** | **−5,13** | **+2,64** | **−3,35** | +6,07 | **−31,51** | **−15,79** | **5/6** |
+| A_adx22 (1h) | −5,81 | −0,95 | −2,16 | −6,18 | −35,08 | +3,44 | 4/6 |
+| A30_adx18 (30m) | −3,15 | −1,99 | −13,80 | −9,75 | −36,52 | −10,45 | 3/6 |
+
+**`A_adx18` sobre 1h gana 5 de 6 ventanas, incluidas LAS DOS de falsación** — y la de 50d terminando el 22/02 **nunca se usó para elegir** (+8,28). Es el primer A/B global en pasar ese filtro; los otros siete no llegaron.
+
+**Dónde ayuda y dónde no** (Δ por mes, portfolio):
+
+| mes | Δ |
+|---|---|
+| mar24 → abr23 | +0,49 |
+| abr23 → may23 | +2,09 |
+| may23 → jun22 | −5,63 |
+| **jun22 → jul22** | **−19,45** |
+| jul22 → ago21 | +3,83 |
+| **ago21 → sep20** | **+11,96** |
+
+**Ayuda justo donde el sistema hoy pierde** (el último mes pasa de −17,09 a −5,13) y estorba en el mes fuertemente tendencial de jun-jul, que es **el mismo mes de AVAX** que confundió el barrido de ladders. El fallo a 120d es ese mes: AVAX −10,12 y BNB −13,89.
+
+Concentración a 60d: **7 de 10 pares mejoran** (BCH +9,62, ONDO +5,33, ETH +4,43, BNB +3,22), el mayor explica el 49%. Pasa la alarma.
+
+**Costo**: recorta el caudal de **484 a 337 trades** en 120d (−30%). Con 5 pares en prueba, es menos muestra.
+
+🔌 **Es flip de config, sin deploy**: `indicadores.py:263` hace `p.update(get_timeframe_overrides())`, así que el bloque `timeframe` del runtime config pisa los params de todos los símbolos. El HTF se **resamplea de las propias velas 5m** (`merge_asof` backward, sin lookahead), así que no hace falta otro feed.
+
+⚠️ **Antes de encenderlo, cerrar un hueco**: si el cálculo del HTF falla, `indicadores.py` hace **fail-closed** (bloquea TODAS las señales) y **no emite telemetría**. Un fallo silencioso ahí deja el portfolio mudo sin alarma — exactamente la clase de bug que costó meses. Hace falta un evento antes de activarlo.
 
 **Infra que queda (commiteada, inerte por default, reutilizable)**:
 - `htf_mode: 'adx_only'` + knobs `regime_relax_*` en `pkg/indicadores.py` (features HTF hoisted, se computan una vez).
