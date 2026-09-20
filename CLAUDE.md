@@ -837,7 +837,50 @@ Protocolo corregido respecto del barrido de `tp1_factor`: **se eligió sólo con
 | (0,6 1,2 1,8) *más lejos* | −15,76 | −13,27 | −7,00 | +10,66 | 3/4 |
 | (0,7 1,3 2,0) *más lejos* | −14,79 | −16,43 | −6,92 | +12,14 | 3/4 |
 
-**Ninguno gana 4/4 → no hay candidato y no se aplicó nada.** Los tres de 3/4 fallan **todos a 90d**; entender esa ventana es requisito antes de volver a intentarlo.
+**Ninguno gana 4/4 → no hay candidato y no se aplicó nada.** Los tres de 3/4 fallan **todos a 90d**.
+
+#### 🔎 Por qué fallan a 90d — respondido el 19/09: es UN mes de UN par
+
+El 90d (22/06→20/09) es la ventana **más corta que incluye el mes 22/06-22/07**. Aislando ese mes y el anterior:
+
+| mes aislado | base | comprimido | (0,6 1,2 1,8) | (0,7 1,3 2,0) |
+|---|---|---|---|---|
+| 23/05 → 22/06 | +13,95 | **+3,58** | **+3,72** | **+4,85** |
+| **22/06 → 22/07** | +12,67 | **−4,02** | **−6,52** | **−3,38** |
+
+En el mes 22/06-22/07 **el ladder actual es localmente óptimo y toda alternativa pierde**, con **AVAX explicando −1,82 / −3,98 / −2,68** de esos totales. A 60d el mes queda afuera y los candidatos ganan; a 120d entra pero lo diluye el mes previo, donde los tres ganan.
+
+**El test limpio lo confirma** — la misma comparación quitando AVAX:
+
+| ladder | 30d | 60d | 90d | 120d | gana |
+|---|---|---|---|---|---|
+| comprimido | +2,76 | +1,45 | −1,15 | +4,52 | 3/4 |
+| (0,6 1,2 1,8) | +0,96 | +2,85 | **−0,27** | +1,67 | 3/4 |
+| **(0,7 1,3 2,0)** | +1,31 | +3,22 | **+2,51** | +3,99 | **4/4** |
+
+O sea: **la comparación de ladders estaba midiendo el mes de AVAX más que el ladder.**
+
+⚠️ **Aun así NO se aplica el ladder ancho.** Quitar el par que disiente para que el resultado dé es exactamente la trampa de selección in-sample que ya está advertida en "¿hay edge?" (el subconjunto BCH/BNB/CFX). Y la decisión se tomaría sobre ventanas ya usadas para elegir. Queda como **hipótesis con evidencia parcial**, no como cambio: `tp_factors` es per-par, así que se puede probar barato cuando AVAX tenga historia real.
+
+#### 🔴 Lo que esto destapó: el edge simulado de AVAX es UN MES
+
+PnL por mes aislado de AVAX, params nuevos (desplegados el 19/09) contra los viejos:
+
+| mes | NUEVO | VIEJO |
+|---|---|---|
+| 23/04 → 23/05 | −10,36 (24tr) | +9,75 (23tr) |
+| 23/05 → 22/06 | +3,98 (32tr) | +33,97 (35tr) |
+| **22/06 → 22/07** | **+30,29** (30tr) | −23,76 (21tr) |
+| 22/07 → 21/08 | +8,57 (38tr) | −13,93 (33tr) |
+| 21/08 → 20/09 | −0,44 (37tr) | −19,76 (12tr) |
+
+**Casi todo el edge simulado de AVAX está en un solo mes**, y ese mes cae **dentro del entrenamiento** del sweep (train 23/04→31/07). Sin él, los otros cuatro meses suman ~+1,75.
+
+**Esto NO invalida el cambio, pero sí la magnitud esperada.** En los meses **fuera de muestra** (22/07→20/09) el paramset nuevo da **+8,13 contra −33,69** del viejo — una mejora real de ~+42 que además coincide con el holdout independiente (3 de 3 semillas). Lo que hay que bajar es la expectativa: **el +17,49 a 120d no es una expectativa razonable**, es el arrastre de un mes.
+
+✅ **XMR es el caso opuesto y más sano**: sus ganancias están en los meses de **test** (+4,39 y +5,68) y sus pérdidas en los de entrenamiento (−5,42 / −0,75 / −5,87). Contra el viejo mejora +32,9 y +22,6 en los dos meses fuera de muestra. Es la firma contraria al sobreajuste.
+
+⚠️ **Regla que sale de acá**: al re-optimizar un par, **mirar el PnL mes a mes, no sólo las 4 ventanas acumuladas**. Las ventanas acumuladas esconden que un solo mes explique todo — AVAX pasaba 4/4 y su edge es un mes.
 
 🎯 **Lo importante: acercar los tramos —la corrección que sugería el diagnóstico— es de lo peor que se puede hacer.** Post-hoc sobre el holdout (informativo, ninguno había pasado la selección): comprimido +4,03 · (0,6 1,2 1,8) +4,60 · (0,7 1,3 2,0) +6,39 · **(0,4 0,8 1,2) −2,25**. La dirección que paga es **alejar**, igual que en el barrido de `tp1_factor`, y por el mismo mecanismo: **el runner que cobra el trailing vale más que el tramo cobrado temprano**.
 
@@ -989,7 +1032,9 @@ Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue 
 **Lo que se aprendió, y ya van seis veces**: cada bug se leía como una *conclusión sobre la estrategia* — "CFX no tiene edge", "ONDO y APT son mudos", "TP×2 gana 5/5", "el ratchet no funciona en BCH" — cuando era ejecución, datos o el instrumento de medición. **Y esta semana se agregó una variante peor: un bug que TAPABA una falla de diseño.** El BE roto dejaba correr las posiciones hasta TP1 por accidente; arreglarlo expuso la zona muerta que estaba ahí desde siempre.
 
 **Al retomar, en este orden**:
-1. **Evaluar AVAX y XMR** por sus primeros **5-8 cierres**, no por calendario. Rollback md5 `d868c273`. Señal de alarma temprana: si AVAX **no sube su caudal** (el sim pasa de 102 a 136 trades en 120d) es que el paramset no se está realizando en vivo, como ya pasó con DYDX.
+1. **Evaluar AVAX y XMR** por sus primeros **5-8 cierres**, no por calendario. Rollback md5 `d868c273`. Dos alarmas tempranas distintas:
+   - **AVAX**: si no sube su caudal (el sim pasa de 102 a 136 trades en 120d) el paramset no se está realizando, como pasó con DYDX. **Y bajar la expectativa**: su edge simulado es un mes (ver "el edge simulado de AVAX es UN MES"); fuera de muestra da ~+8, no ~+17.
+   - **XMR**: perfil mucho más sano (gana en los meses de test, pierde en los de train). Es el que más chance tiene de realizarse.
 2. **Evaluar ETH y ONDO** — siguen en **0 cierres** desde el 11/09. Si en dos semanas más no producen, el problema no es el paramset sino que no generan señal. Rollback md5 `50a05c0a`.
 3. ~~**Decidir el 0,70 de TP1**~~ → ❌ **CERRADO 19/09: barrido hecho, NO cambiar nada.** Ver "Barrido de `tp1_factor`" abajo. El 0,70 resultó ser el **óptimo global** y el único ganador por par (BNB) **se falsó** en la ventana no usada para elegir.
 4. **Revisar el resto de la geometría con MFE a horizonte fijo**, ahora con los ratios REALES (tabla corregida en "La geometría TP1/SL"): **LINK** (0,34, el peor) y **BNB** (0,70 con TP1 a 1,26% contra MFE 1,10%) son los siguientes. Uno por vez.
@@ -997,7 +1042,7 @@ Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue 
 6. ~~**Bug del TP1 que se re-coloca más lejos**~~ → ✅ **CORREGIDO 19/09** (`591cafe`): el ladder se ancla al `avgPrice` de la posición. Cierra además el hueco de paridad y deja `tp_factors` como knob real.
 7. **Tamaño por confianza** (la parte salvable de la asignación de capital): peso 0,12 para paramsets sin validar, 0,20 al cumplir 5-8 cierres. **Respetar el piso duro de 0,113** o el escalonamiento de TP se rompe. Con 4 pares en prueba a la vez (AVAX, XMR, ETH, ONDO) es más relevante que nunca.
 8. **La paradoja del edge**: la señal da +0,198% neto por señal a 8 h y el sistema pierde. La medición del 11/09 aporta la mitad —el 59% no alcanza su TP1— y el 19/09 la otra mitad: **ese TP1 está un 43% más lejos de lo que decía la tabla**.
-9. ~~**El ladder inalcanzable**~~ → ❌ **CERRADO 19/09: el diagnóstico era correcto, el remedio obvio NO.** Barrido de 9 ladders: **ninguno gana las 4 ventanas de selección**, y *acercar* los tramos —la corrección "evidente"— es de lo peor (1/4, y −2,25 en el holdout). Lo que ayuda es **alejarlos** (3/4 y +4,0 a +6,4 en holdout), pero falla siempre a 90d, así que no clasifica. **Conclusión práctica: el ladder funciona como "un TP + trailing", y eso no es un defecto a parchear — es lo que cobra** (`trail_stop` +0,415 contra `be_stop` +0,024). Infra lista para revisitarlo barato: `tp_factors` es knob por par en live y parity.
+9. ~~**El ladder inalcanzable**~~ → ❌ **CERRADO 19/09** (y el "falla a 90d" quedó explicado: es el mes de AVAX, ver abajo). **El diagnóstico era correcto, el remedio obvio NO.** Barrido de 9 ladders: **ninguno gana las 4 ventanas de selección**, y *acercar* los tramos —la corrección "evidente"— es de lo peor (1/4, y −2,25 en el holdout). Lo que ayuda es **alejarlos** (3/4 y +4,0 a +6,4 en holdout), pero falla siempre a 90d, así que no clasifica. **Conclusión práctica: el ladder funciona como "un TP + trailing", y eso no es un defecto a parchear — es lo que cobra** (`trail_stop` +0,415 contra `be_stop` +0,024). Infra lista para revisitarlo barato: `tp_factors` es knob por par en live y parity.
 10. **Ventana `legacy → partial`**: entre el cierre de una posición y el registro de la siguiente la fila vive con defaults. Es lo que arruinó a BCH el 06/09. Además hubo un pico de **100 `tp_state_row_recreated` el 09/09** en un solo día (BCH 58, ETH 29) que nadie miró.
 11. **Rehacer bruto/costos** con el parity corregido: las cifras de "¿hay edge?" son del 18/08 y ahora hay serie continua sin huecos de 150+ días para los 10 pares.
 
