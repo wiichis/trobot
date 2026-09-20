@@ -886,6 +886,56 @@ PnL por mes aislado de AVAX, params nuevos (desplegados el 19/09) contra los vie
 
 **Conclusión operativa**: el ladder de hecho funciona como *"un TP + trailing"*. Que TP3 esté a 1,92%-5,76% contra un MFE mediano de 1,23% es raro de leer, pero **no es un defecto a parchear** — es la forma que tomó un sistema donde el trailing es quien captura. Séptimo A/B global rechazado, con la misma lección.
 
+### 📅 PnL simulado mes a mes — 19/09: el edge está en mar-jul y se apagó en ago-sep
+
+Vista nueva, a partir de la lección de AVAX. **Portfolio completo**, params actuales, meses aislados (truncando `long.csv` y corriendo `--parity_days 30`):
+
+| mes | trades | PnL | winrate |
+|---|---|---|---|
+| feb22 → mar24 | 112 | **−38,14** | 48,2% |
+| mar24 → abr23 | 93 | +10,08 | 61,3% |
+| abr23 → may23 | 117 | +14,94 | 65,0% |
+| may23 → jun22 | 128 | +13,95 | 64,8% |
+| jun22 → jul22 | 98 | +12,67 | 65,3% |
+| jul22 → ago21 | 113 | +0,30 | 57,5% |
+| **ago21 → sep20** | 145 | **−17,09** | **51,7%** |
+
+**Cinco meses positivos seguidos (mar-jul, +51,6) y después se apaga.** La winrate cuenta la misma historia: 61-65% en los buenos, 57,5% y **51,7%** en los dos últimos. El sim ve el mismo deterioro que el PnL real, aunque más suave (−17,09 sobre capital 1000 = −1,7%, contra **−3,7%** real en el mismo mes: el sesgo optimista conocido, ver P5.2c).
+
+**Por par** (corridas aisladas, así que los totales no suman al portfolio; sirven para comparar meses DEL MISMO par):
+
+| par | meses+ | concentr. | últimos 3m | lectura |
+|---|---|---|---|---|
+| **ONDO** | 2/7 | 28% | **−43,06** | el peor, y **no es el paramset** (ver abajo) |
+| **CFX** | 2/7 | 39% | −12,29 | su total (+1,16) sale de un único mes de +20,85 |
+| **APT** | **1/7** | 38% | −7,59 | malo de forma consistente, y casi no opera |
+| ETH | 4/7 | 41% | −4,38 | ver abajo: el cambio del 11/09 **sí** sirvió |
+| BCH | 4/7 | 30% | −0,20 | −21,18 el último mes |
+| DYDX | 3/7 | 42% | +3,75 | |
+| XMR | 3/7 | 24% | +4,23 | la menos concentrada del portfolio |
+| BNB | 4/7 | 23% | +4,71 | +61,2 total, pero todo en abr-jul |
+| LINK | 4/7 | 50% | +4,92 | recuperándose de un −27,60 en may23 |
+| **AVAX** | 3/7 | 38% | **+38,74** | ⚠️ +30,57 es el mes de entrenamiento |
+
+#### ✅ ETH: el cambio del 11/09 queda validado por esta vista
+
+| | NUEVO (11/09) | VIEJO |
+|---|---|---|
+| total 6m | **+51,95** | −2,40 |
+| últimos 3m | **−4,34** | −35,03 |
+| último mes | **+4,94** | −24,18 |
+
+Es la mejor evidencia hasta ahora de ese cambio — **sigue sin cierres reales**, pero el sim es inequívoco.
+
+#### 🔴 ONDO: el problema es el par, no los parámetros
+
+| | NUEVO (11/09) | VIEJO |
+|---|---|---|
+| total 6m | −35,66 | −31,88 |
+| últimos 3m | −43,07 | −45,62 |
+
+Pierde **−16,79 / −9,33 / −16,95** en los últimos tres meses **con cualquiera de los dos paramsets**; bajarle el `tp` de 0,044 a 0,025 movió +2,55 en tres meses. **Re-optimizarlo otra vez no es el camino** — es candidato a recorte de peso o a rotación. Ojo con el precedente: rotar el peor par movió el problema en vez de resolverlo (DOT → DYDX).
+
 ### 🔴 La pregunta que queda abierta: ¿hay edge?
 
 Con la ejecución ya correcta, el diagnóstico se desplaza de "el bot no hace lo que debería" a "lo que debería hacer, ¿gana?".
