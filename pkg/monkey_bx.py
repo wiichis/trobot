@@ -2039,6 +2039,76 @@ def get_last_take_profit_stop_loss(symbol):
     return None, None
 
 
+def _peso_minimo_por_escalonado(balance: float) -> float:
+    """Peso por debajo del cual el escalonado de TP deja de poder ejecutarse.
+
+    El tramo más chico del ladder debe superar el notional mínimo de cierre de BingX
+    (~7 USDT; por debajo rechaza con 110422/101485). Con el reparto 33/33/34 y un
+    balance de 188 el piso queda en ~0,113. **Depende del balance**, así que se calcula
+    en vivo en vez de quedar hardcodeado: si la cuenta baja, el piso sube.
+    """
+    try:
+        bal = float(balance)
+    except Exception:
+        return 0.0
+    if not math.isfinite(bal) or bal <= 0:
+        return 0.0
+    try:
+        splits = [x for x in _runtime_tp_splits() if x and x > 0]
+    except Exception:
+        splits = []
+    tramo_min = min(splits) if splits else 1.0
+    try:
+        min_notional = float(get_tp_min_close_notional_usdt())
+    except Exception:
+        min_notional = 7.0
+    if tramo_min <= 0 or min_notional <= 0:
+        return 0.0
+    return (min_notional / tramo_min) / bal
+
+
+def _peso_para_simbolo(symbol: str, peso_equal: float, params_by_symbol, balance: float,
+                       max_per_trade: float = 0.50) -> float:
+    """Peso del par, con override opcional `peso` desde best_prod.json.
+
+    Sin override devuelve el equal-weight de siempre. El override se **acota** al piso
+    que impone el escalonado de TP: un peso demasiado chico no rompe nada de forma
+    visible, simplemente deja de escalonar, que es justo la clase de fallo silencioso
+    que este proyecto viene pagando. Si hay que recortar, se avisa por telemetría.
+    """
+    try:
+        p = (params_by_symbol or {}).get(str(symbol).upper(), {}) or {}
+        raw = p.get('peso', p.get('weight', None))
+    except Exception:
+        raw = None
+    if raw is None:
+        return float(peso_equal)
+    try:
+        peso = float(raw)
+    except Exception:
+        return float(peso_equal)
+    if not math.isfinite(peso) or peso <= 0:
+        return float(peso_equal)
+    peso = min(peso, float(max_per_trade))
+    piso = _peso_minimo_por_escalonado(balance)
+    if piso > 0 and peso < piso:
+        try:
+            emit_lifecycle_event(
+                "peso_override_acotado",
+                "WARN",
+                symbol=str(symbol).upper(),
+                peso_pedido=round(peso, 4),
+                peso_aplicado=round(piso, 4),
+                balance=round(float(balance), 2),
+                detalle=("el peso pedido dejaba el tramo de TP por debajo del minimo de "
+                         "cierre de BingX; se sube al piso para no romper el escalonado"),
+            )
+        except Exception:
+            pass
+        return float(piso)
+    return peso
+
+
 # Factores del escalonado de TP. Espeja TP_FACTORS de pkg/indicadores.py, que es
 # quien construye las columnas TP1_L/TP2_L/TP3_L.
 TP_LADDER_FACTORS_DEFAULT = (0.6, 1.0, 1.6)
@@ -2927,6 +2997,12 @@ def colocando_ordenes():
     total_money = float(pkg.monkey_bx.total_monkey())
     capital_disponible = total_money
 
+    # Override de peso por par (`peso` en best_prod.json). Sirve para recortarle
+    # exposición a un par sin sacarlo del portfolio, y para el "tamaño por confianza"
+    # de los paramsets todavía sin validar. Se acota al piso del escalonado de TP.
+    def _peso_de(sym):
+        return _peso_para_simbolo(sym, peso_equal, params_by_symbol, total_money, MAX_PER_TRADE)
+
     # Lista para almacenar las monedas con señales activas
     active_currencies = []
 
@@ -2966,7 +3042,7 @@ def colocando_ordenes():
                 'symbol': currency,
                 'tipo': tipo,
                 'price_last': price_last,
-                'peso': peso_equal,
+                'peso': _peso_de(currency),
             })
 
         except Exception as e:

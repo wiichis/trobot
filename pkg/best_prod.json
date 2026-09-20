@@ -446,7 +446,8 @@
       "be_offset": 0.0002,
       "lock_initial_atr_sl": false,
       "cooldown_on_trade_close": false,
-      "entry_hours_utc": ""
+      "entry_hours_utc": "",
+      "peso": 0.13
     }
   },
   {
