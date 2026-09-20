@@ -28,15 +28,17 @@ Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USD
 
 ## Composición actual del portfolio
 
-10 pares (al 2026-07-20, MD5 `57daca5b`):
-APT, AVAX, BCH, BNB, CFX, **DYDX**, ETH, LINK, ONDO, XMR.
+10 pares (al 2026-09-19, MD5 `8ce9f80d`):
+APT, **AVAX**, BCH, BNB, CFX, DYDX, ETH, LINK, ONDO, **XMR**.
+
+🔧 **AVAX y XMR RE-OPTIMIZADOS** (19/09, `3daa85c`) — validados con cross-val 4/4 **y holdout fuera de muestra**. Ver "Revisión 19/09". ⚠️ **AVAX sale del congelamiento**: la nota de abajo ("NO re-optimizar sus params") queda **derogada**.
 
 🔧 **DYDX RE-OPTIMIZADO** (25/08, `f54bfc2`) — **primer cambio de params desde el 03/07**. Era el peor par: −3,32 USDT/30d reales, payoff 0,19. `tp` 0.012→**0.015**, `sl_pct` 0.015→**0.010**, `sl_mode` percent→atr_then_trailing (19 params en total). **TP1/SL de 0,48 a 0,90.** Portfolio mejor en 4/4 (+17,8/+13,3/+18,6/+14,3); cobertura de costos 0/4 → **4/4** (bruto/trade 0,097→0,292, trades 110→47 en 120d). ⚠️ **REGLA DE VIGILANCIA: si pierde su 1ª semana (check 01/09), revertir sin discusión** — rollback md5 `57daca5b`. Reglas de contrato: qty_step 0.1, price_tick 0.00001.
 🎯 **TP×2 aplicado** (03/07) a 8 pares (todos menos AVAX congelado y LINK NEW): el A/B de estructura de salidas mostró TPs demasiado cercanos (payoff real 0.42, perdedores 11h vs ganadores 3h). Cross-val 5/5 ventanas. Esperar: winrate más bajo, ganancias más grandes, ~20% menos trades/fees. Ver memoria `exit-structure-experiments`.
 ✅ **BCH NEW validó** (22/06): +2.02 real, 10/12 wins. El acierto del mes.
 🔄 **LINK paramset NEW** (30/06, cross-val 5/5): validar que se realice. ⚠️ 0 trades desde 03/07 — mudo.
 ⏪ **CFX revertido** a `min_vol_ratio` 1.15 (30/06): volvió a plano/positivo (+0.11 la semana 13/07).
-🧊 **AVAX congelado**: NO re-optimizar sus params. Revivió: +1.25 la semana 06/07. Sale de la fila de rotación.
+~~🧊 **AVAX congelado**~~ → **DEROGADO el 19/09**: era el peor par del portfolio en sim (negativo 4/4, −36 en el holdout) y su re-optimización es el mayor aporte del cambio del 19/09 (+26 a 120d). El congelamiento venía de una buena semana en julio y sobrevivió sin re-examen dos meses.
 ⚠️ **Mudez de portfolio**: APT/BCH/ETH/LINK/ONDO 0 trades desde 03/07 (5/10 pares). TP×2 bajó frecuencia + fresh-cross muy selectivo. Tema #1 para revisión estructural 03/08 (re-optimizar params está congelado hasta entonces).
 
 Pares removidos (no reincorporar a ciegas):
@@ -570,6 +572,23 @@ Es un modelo de **peor caso** (en la práctica el trailing captura más que el B
 
 **Por qué los sweeps eligieron geometrías malas**: corrían con el modelo de fill optimista (ver "Bug 25/08"). Un TP1 cercano "llena" fácil cuando basta con tocarlo, así que la función objetivo **premiaba sistemáticamente TP cercanos** que en la realidad bancan un tercio y dejan el resto salir en BE. **Los paramsets de TP1/SL bajo son víctimas directas de ese bug.**
 
+⚠️ **CORRECCIÓN 19/09 — los TP1 de esta tabla son TEÓRICOS y no se ejecutan.** El bot somete TP1 a **0,42·tp**, no a 0,6·tp (ver "RESUELTO 19/09"). Los ratios reales y la winrate de equilibrio de peor caso:
+
+| Par | TP1 real (0,42·tp) | SL | TP1/SL real | WR necesaria |
+|---|---|---|---|---|
+| LINK | 0,50% | 1,50% | **0,34** | 90% |
+| AVAX* | 0,76% | 1,80% | 0,42 | 88% |
+| XMR* | 0,92% | 1,00% | 0,92 | 77% |
+| ETH | 1,05% | 1,80% | 0,58 | 84% |
+| DYDX | 0,63% | 1,00% | 0,63 | 83% |
+| APT | 1,01% | 1,50% | 0,67 | 82% |
+| BNB | 1,26% | 1,80% | 0,70 | 81% |
+| BCH | 1,51% | 1,80% | 0,84 | 78% |
+| CFX | 1,01% | 1,20% | 0,84 | 78% |
+| ONDO | 1,05% | 1,00% | 1,05 | 74% |
+
+(*) AVAX y XMR con los params del 19/09. La winrate de equilibrio real es **74-90%**, no 53-86%. Cruzar siempre contra el MFE mediano de 1,23% de "Revisión 11/09".
+
 ⚠️ **CORRECCIÓN 31/08 — el modelo NO generaliza como ranking.** Se propuso a LINK (0,48) y AVAX (0,50) como los siguientes por tener el peor ratio. Con los datos al 31/08, **ambos SÍ cubren su costo**, y los cuatro que no lo cubren (APT, ETH, ONDO, XMR) tienen geometría buena (0,80 a 2,64). El modelo sirvió para **diagnosticar DYDX**, no para ordenar el portfolio — el trailing captura bastante más que el peor caso que asume. **Retirada la recomendación de "LINK y AVAX son los siguientes".**
 
 ### ✅ Revisión semanal 31/08 — mala semana, pero la SEÑAL tiene edge
@@ -707,7 +726,7 @@ BNB y DYDX **cambian de signo** entre dos ventanas adyacentes del mismo simulado
 
 Desde el cambio del 25/08, en 17 días: **una sola orden**, expirada sin llenar. Cero fills. La re-optimización endureció **seis filtros a la vez** (`adx_min` 18→22, `adx_slope_min` 0,2→0,6, `fresh_cross_max_bars` 7→3, `max_dist_emaslow` 0,015→0,012, `min_vol_ratio` 1,0→1,05, y `require_rsi_cross` False→**True**). A este ritmo los 5-8 cierres del criterio tardarían 4-8 meses: **el paramset es inmedible en producción.** Endurecer seis knobs de una vez es la firma de un sweep sobreajustado — al re-optimizar, mover pocos.
 
-### 🔬 ABIERTO 14/09 — el TP1 se somete al 70% de lo configurado
+### ✅ RESUELTO 19/09 — el TP1 se somete al 70%: un `* 0.70` hardcodeado
 
 **Medido sobre 75 posiciones reales desde el 01/08**, por dos caminos independientes:
 
@@ -724,6 +743,35 @@ Despejando el factor de la escalera, `f = (TP1_sometido/close − 1)/tp` da **0,
 **Ya descartado**: la columna `TP1_L` del CSV es correcta (BCH 253,20 contra close 258,79 = 2,16% = 0,6×0,036 exacto; verificado también en reposo sobre 4 pares, factor 0,600 clavado) · `_sanitize_tp_limit_price` sólo recorta si el TP queda del lado equivocado del mercado · `tp_limit_offset_bps` está en 0 · `pkg/best_cfg.json` no existe. **La desviación nace entre leer la fila y someter la orden.**
 
 ⚠️ **Corrección de un diagnóstico propio, el mismo día**: primero se atribuyó a un deslizamiento de entrada de +0,50%. **Era falso** — se había inferido el close de referencia *desde el propio precio de TP* (`c = TP1/(1+0,6·tp)`), que es circular. La alarma fue que el "deslizamiento" correlacionaba casi perfecto con `tp` sin mecanismo físico. Verificado: la entrada llena a ~0,05% del close. **Por eso NO se tocó `calc_slippage_rate`** — además se usa en las SALIDAS (`backtesting.py:1329`) y en el sweep (`:2263`), donde un 0,50% habría sido un error grande.
+
+#### ✅ La causa, con la telemetría en mano (19/09)
+
+20 eventos `tpN_submitted` entre el 15 y el 19/09 cerraron el diagnóstico:
+
+| | factor implícito `(ref_lvl/ref_close−1)/tp` | esperado |
+|---|---|---|
+| **TP1** (n=15) | **0,3984** media · 0,41 mediana · σ 0,037 | 0,600 |
+| **TP2** (n=5) | **1,0000** exacto · σ = 0 | 0,800 |
+
+Las tres hipótesis quedan resueltas de una vez:
+- `submitted_price` vs `ref_lvl`: **−0,57 bps de media** (máx 2,14) → sólo redondeo al tick. **Nada lo mueve aguas abajo.**
+- `ref_lvl` vs `ref_close`: **ahí nace la desviación, y sólo en TP1.**
+- `ref_bar` **sí es la vela en formación** (barra 06:55 sometida 06:59) — la deuda P5.1a es real, pero **no es la causa**: sólo aporta el ruido residual (σ 0,037), porque el ancla es el precio vivo y no el close de la barra.
+
+**La causa es una constante literal** en `pkg/monkey_bx.py` (LONG ~3523, SHORT ~3887):
+
+```python
+else:   # Fallback: TP1 más alcanzable por defecto (70% del camino)
+    desired_tps[0] = float(price) + (base - float(price)) * 0.70
+```
+
+Ningún par define `tp1_factor` ni `tp1_pct_override`, así que los 10 caen siempre al fallback: `0,60 × 0,70 = 0,42`, exactamente el factor medido.
+
+⚠️ **NO es un hueco de paridad.** `backtesting.py:116` define `TP1_DEFAULT_FACTOR = 0.70` y `_adjust_tp1` (`:1357`) lo aplica desde el camino de parity (`:1445`). Live y sim coinciden; la única diferencia de segundo orden es que el live ancla en el **precio vivo** y el sim en el **precio de entrada**. Por eso TP2 sale a factor 1,0 y no 0,8: **el ladder efectivo real es 0,42·tp / 1,00·tp / 1,00·tp.**
+
+**Lo que sí queda**: la tabla "La geometría TP1/SL" está **inflada un 43%** (ver la corrección ahí). Y el 0,70 es un knob per-símbolo ya cableado en ambos motores (`tp1_factor`), así que se puede barrer por par **sin tocar código**.
+
+**Lección de método**: la sesión del 14/09 buscó el mecanismo en el dato (columnas, sanitizador, slippage) y no en el código que lo consume. Cuando un valor observado es un múltiplo limpio del esperado (0,70 exacto), buscar primero una **constante literal** en el camino de escritura — `grep` del factor antes que más medición.
 
 **🔬 Telemetría desplegada** (`842eb76`, 14/09): `tpN_submitted` ahora anota `ref_close`, `ref_bar` y `ref_lvl` (el nivel crudo, antes del sanitizador), en el evento y en el ledger. **No cambia comportamiento.** Hacía falta porque `latest_values` es la última fila = la vela EN FORMACIÓN (deuda P5.1a) y **eso no se puede confirmar con datos históricos**: al cerrar la vela su `close` se sobrescribe. Con 3-4 posiciones alcanza para decidir:
 - `ref_close` ≠ el close final de esa barra → **era la vela en formación**
@@ -784,23 +832,79 @@ Cobertura de costos mejoró de **3/10 a 6/10** pares (cubren: BCH, BNB, CFX, AVA
 
 ---
 
-## Estado al cierre del 11/09
+### ✅ Revisión 19/09 — el TP1 resuelto, el ratchet validado, AVAX y XMR re-optimizados
 
-**Prod**: activo, `NRestarts=0`, 0 errores. `pkg/best_prod.json` md5 **`d868c273`** coincidiendo local = HEAD = prod. Balance **188,51 USDT**.
+**PnL 7d −0,39 · 14d −2,80 · 30d −7,05 · 60d −11,33.** Balance **188,12**. Prod estable desde el deploy del 15/09, `NRestarts=0`, 0 errores.
 
-**Portfolio**: 10 pares. Cambios de params desde el 03/07: DYDX (25/08) y **ETH + ONDO (11/09)**.
-- **ETH**: `tp` 0,025 · `sl_pct` **0,018** — EN PRUEBA, juzgar por 5-8 cierres.
-- **ONDO**: `tp` 0,025 — EN PRUEBA, juzgar por 5-8 cierres.
-- **DYDX**: sin veredicto y sin forma de obtenerlo — 1 orden en 17 días, sin llenar. Ver "Revisión 11/09".
+La semana está **plana**, no en verde: `REALIZED_PNL` +0,03 contra comisiones −0,43. Mejor que las tres previas, pero el bruto es nulo.
 
-**PnL semanal**: 25-31/08 −4,79 · 01-09/09 −1,61 · 09-11/09 **−1,06** (6 cierres, los 6 por `stop_loss`).
+#### ✅ El ratchet quedó validado por el resultado
+
+Los tres mejores cierres de la semana salieron por trailing tras dispararlo: **CFX +0,57 · BCH +0,48 · DYDX +0,38**. Y el candado de monotonía de `0a812e3` se ve actuando: el 13/09 DYDX subió 0,11489 → 0,11531 → 0,11539 → 0,11578 → 0,11588 **sin un solo retroceso**, contra el diente de sierra del 06/09 (752 → 749 → 743 → 744) que es de *antes* del fix.
+
+| razón de cierre (7d) | n | PnL medio |
+|---|---|---|
+| `trail_stop` | 4 | **+0,415** |
+| `be_stop` | 5 | +0,024 |
+| `stop_loss` | 3 | −0,560 |
+
+**El trailing es el que cobra; el BE protege sin aportar; el stop completo sigue siendo el sumidero** (63% de los cierres a 30d). Realización de TP1: 44% en 7d, 33% en 30d — en línea con el 38-40% histórico. **TP2 no llenó ni una vez en 14 días** y TP3 sigue en 0.
+
+#### 🔧 AVAX y XMR re-optimizados (`3daa85c`) — con holdout fuera de muestra
+
+Sweep de **6 pares × 3 semillas × 500 trials** con `--conservative_limit_fills`, entrenando 150d con `train_ratio 0.66`. Cada candidato validado por **dos** caminos: cross-val en 4 ventanas recientes **y un holdout de 60d terminando el 23/04/2026 — datos que el sweep nunca vio** (construido truncando `long.csv` antes de la ventana de entrenamiento).
+
+| | 30d | 60d | 90d | 120d | **holdout no visto** |
+|---|---|---|---|---|---|
+| antes | −33,49 | −55,46 | −62,05 | −38,66 | −57,26 |
+| **después** | **−17,09** | **−16,79** | **−4,14** | **+8,78** | **−34,83** |
+| Δ | +16,4 | +38,7 | +57,9 | +47,4 | **+22,4** |
+
+Ningún otro par se mueve más de ±0,5: la mejora es íntegramente de los dos que cambian.
+- **AVAX** −8,71 → **+17,49** (120d) · 102 → 136 trades · `cost_ratio` **1,79 → 0,60**
+- **XMR** −20,39 → **+1,40** (120d) · 29 → 23 trades · `cost_ratio` 0,62 → 0,79
+
+Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue negativo en 3 de 4 ventanas: **esto achica la pérdida, no crea edge.**
+
+**Por qué sólo 2 de los 6 perdedores reales a 60d** (BNB −4,19 · DYDX −4,08 · AVAX −4,03 · XMR −1,02 · BCH −0,99 · ETH −0,10):
+
+| Par | 4/4 reciente | gana en holdout | veredicto |
+|---|---|---|---|
+| **AVAX** | 2 de 3 semillas | **3 de 3** | ✅ aplicado |
+| **XMR** | 2 de 3 | 1 de 3 (sólo la 202) | ✅ aplicado |
+| BCH | 1 de 3 | 3 de 3, pero el caudal colapsa 24 → 5 trades | ❌ y el sim no lo da roto (+0,21/+3,21 en 90/120d) |
+| BNB | 0 de 3 | 1 de 3, contradice la cross-val | ❌ sim positivo en 90/120d |
+| ETH | 0 de 3 | **0 de 3** | ❌ los params del 11/09 le ganan a todo |
+| DYDX | 1 de 3 | sin historia para testear | ❌ ver abajo |
+
+🎯 **XMR es la demostración de por qué 3 semillas**: las semillas 101 y 303 se veían óptimas en reciente (+17,7 y +14,2 a 30d) y en el holdout dan **−29,9 y −26,4**. Sólo la 202 sobrevive. **Con una sola semilla se habría aplicado un sobreajuste.**
+
+❌ **DYDX: ningún candidato sirve, y la opción quirúrgica tampoco.** Ninguno revierte `require_rsi_cross` (la semilla 303 hasta endurece `adx_min` 22→26): lo dejarían igual de mudo o peor. Se probó además revertir **un solo knob** (`require_rsi_cross` → False): **1/4, con −3,3/−4,3/−7,2 en 60/90/120d.** Opera más y pierde más — la misma lección de P2.1, P2.1b, P1 y post-SL, ahora por quinta vez.
+
+#### Notas de método que valen para el próximo sweep
+
+- **El holdout truncando `long.csv` es barato y decisivo.** `--data_template <csv_truncado>` + `--parity_days N` da una ventana que el sweep no pudo ver. Separó AVAX (3/3) de XMR (1/3) y mató a ETH (0/3), cosa que la cross-val reciente sola no hacía.
+- **Con `train_ratio 0.66` sobre 150d, las ventanas de 90 y 120d SOLAPAN el entrenamiento.** Sólo la de 30d es limpia. No leer los +57,9 de 90d como si fueran fuera de muestra.
+- El candidato aplicado de AVAX es el que **menos knobs mueve** (8) — coherente con la lección de DYDX del 25/08.
+
+## Estado al cierre del 19/09
+
+**Prod**: activo, `NRestarts=0`, 0 errores. `pkg/best_prod.json` md5 **`8ce9f80d`** coincidiendo local = HEAD = prod (desplegado 20/09 03:06 UTC). Balance **188,12 USDT**.
+
+**Portfolio**: 10 pares. Cambios de params desde el 03/07: DYDX (25/08), ETH + ONDO (11/09) y **AVAX + XMR (19/09)**.
+- **AVAX**: `tp` 0,018 · `sl_pct` 0,018 · `adx_min` 14 · `fresh_cross` 3 — EN PRUEBA, juzgar por 5-8 cierres. Rollback md5 `d868c273`.
+- **XMR**: `tp` 0,022 · `sl_pct` **0,010** (era 0,018, menos riesgo por trade) — EN PRUEBA, juzgar por 5-8 cierres.
+- **ETH** (`tp` 0,025 · `sl_pct` 0,018) y **ONDO** (`tp` 0,025): **sin un solo cierre desde el 11/09**. El veredicto de 5-8 cierres sigue pendiente. El sweep del 19/09 confirmó que no hay que tocarlos (0 de 3 semillas les gana).
+- **DYDX**: sin veredicto y sin forma de obtenerlo — 2 cierres en 25 días (+0,38 / −0,46). Ver "Revisión 19/09".
+
+**PnL semanal**: 25-31/08 −4,79 · 01-09/09 −1,61 · 09-11/09 −1,06 · **12-19/09 −0,39** (12 cierres: 5 `be_stop`, 4 `trail_stop`, 3 `stop_loss`).
 
 **Configuración viva** (todo por flip de config, sin deploy):
 | Knob | Valor | Desde |
 |---|---|---|
 | `session.entry_hours_utc` | `[]` (24/7) | 18/08, validado |
 | `tp_mode` | `partial_limit_tp` | 03/07 |
-| `ratchet.enabled` | `true` (30 min, buffer 0,25%) | 05/09 — inerte mientras TP1 no llene |
+| `ratchet.enabled` | `true` (30 min, buffer 0,25%) | 05/09 — **✅ validado 19/09**: 13 disparos en 30d, los 3 mejores cierres de la semana |
 | `break_even_after_tp1` | **`false`** | **11/09, revertido** |
 
 **Los 13 bugs corregidos**, todos de ejecución, datos o medición — **ninguno de parámetros**:
@@ -824,16 +928,20 @@ Cobertura de costos mejoró de **3/10 a 6/10** pares (cubren: BCH, BNB, CFX, AVA
 **Lo que se aprendió, y ya van seis veces**: cada bug se leía como una *conclusión sobre la estrategia* — "CFX no tiene edge", "ONDO y APT son mudos", "TP×2 gana 5/5", "el ratchet no funciona en BCH" — cuando era ejecución, datos o el instrumento de medición. **Y esta semana se agregó una variante peor: un bug que TAPABA una falla de diseño.** El BE roto dejaba correr las posiciones hasta TP1 por accidente; arreglarlo expuso la zona muerta que estaba ahí desde siempre.
 
 **Al retomar, en este orden**:
-0. 🔬 **Leer la telemetría `ref_close`/`ref_bar`/`ref_lvl`** de los `tpN_submitted` nuevos (desde el 15/09 02:45 UTC) y cerrar el diagnóstico del **TP1 al 70%**. Es lo de mayor valor abierto: vale ~29% de cada tramo ganador. Ver "ABIERTO 14/09".
-1. **Evaluar ETH y ONDO** por sus primeros **5-8 cierres**, no por calendario. ETH es el que más hay que mirar: su riesgo por trade subió de 0,38 a 0,68 USDT. Rollback md5 `50a05c0a`.
-2. **Revisar el resto de la geometría con la medición de MFE a horizonte fijo.** ETH/ONDO salieron de ahí y son los dos casos extremos, pero la tabla completa está en "Revisión 11/09": **BNB** (TP1 1,80% contra MFE 1,10%, lo alcanza el 30%) y **LINK** (el error opuesto: TP1 0,72% alcanzado por el 80% con MFE mediano 3,53%) son los siguientes candidatos. Uno por vez.
-3. **DYDX**: decidir. El paramset no puede generar evidencia (1 orden en 17 días). Revertir al viejo no sirve —perdía— así que las opciones reales son aflojar **un** filtro o aceptar que es un portfolio de 9.
-4. **Bug del TP1 que se re-coloca más lejos** (P5.1a): anclar el nivel a la entrada en vez de recalcularlo del indicador vivo. 7 de 7 casos, siempre alejándose.
-5. **Tamaño por confianza** (la parte salvable de la asignación de capital): peso 0,12 para paramsets sin validar, 0,20 al cumplir 5-8 cierres. **Respetar el piso duro de 0,113** o el escalonamiento de TP se rompe.
-6. **La paradoja del edge**: la señal da +0,198% neto por señal a 8 h y el sistema pierde. Ver "¿hay edge?". La medición del 11/09 aporta la mitad de la respuesta —el 59% de las posiciones nunca alcanza su TP1— pero no la cierra.
-7. **Ventana `legacy → partial`**: entre el cierre de una posición y el registro de la siguiente la fila vive con defaults. Es lo que arruinó a BCH el 06/09.
-8. **Rehacer bruto/costos** con el parity corregido: las cifras de "¿hay edge?" son del 18/08 y ahora hay serie continua de 130 días para hacerlo bien.
+1. **Evaluar AVAX y XMR** por sus primeros **5-8 cierres**, no por calendario. Rollback md5 `d868c273`. Señal de alarma temprana: si AVAX **no sube su caudal** (el sim pasa de 102 a 136 trades en 120d) es que el paramset no se está realizando en vivo, como ya pasó con DYDX.
+2. **Evaluar ETH y ONDO** — siguen en **0 cierres** desde el 11/09. Si en dos semanas más no producen, el problema no es el paramset sino que no generan señal. Rollback md5 `50a05c0a`.
+3. **Decidir el 0,70 de TP1** (ahora que el mecanismo se conoce): es un knob per-símbolo ya cableado en los dos motores (`tp1_factor`), así que se puede **barrer por par sin tocar código**. Cruzar contra el MFE mediano de 1,23%: con TP1 a 0,42·tp, LINK cobra a 0,50% (lo alcanza el ~77%) mientras BNB pide 1,26% (~48%). **Es el hilo más productivo abierto** y no requiere deploy.
+4. **Revisar el resto de la geometría con MFE a horizonte fijo**, ahora con los ratios REALES (tabla corregida en "La geometría TP1/SL"): **LINK** (0,34, el peor) y **BNB** (0,70 con TP1 a 1,26% contra MFE 1,10%) son los siguientes. Uno por vez.
+5. **DYDX**: decidir. Tras el 19/09 se sabe que **ni el sweep ni aflojar un filtro sirven** (la opción quirúrgica da 1/4 y pierde más). Las opciones reales son bajarle el peso al piso de confianza o aceptar que es un portfolio de 9.
+6. **Bug del TP1 que se re-coloca más lejos** (P5.1a): anclar el nivel a la entrada en vez de recalcularlo del indicador vivo. 7 de 7 casos, siempre alejándose. **Ahora se sabe que `ref_bar` es la vela en formación**, así que está confirmado de dónde viene.
+7. **Tamaño por confianza** (la parte salvable de la asignación de capital): peso 0,12 para paramsets sin validar, 0,20 al cumplir 5-8 cierres. **Respetar el piso duro de 0,113** o el escalonamiento de TP se rompe. Con 4 pares en prueba a la vez (AVAX, XMR, ETH, ONDO) es más relevante que nunca.
+8. **La paradoja del edge**: la señal da +0,198% neto por señal a 8 h y el sistema pierde. La medición del 11/09 aporta la mitad —el 59% no alcanza su TP1— y el 19/09 la otra mitad: **ese TP1 está un 43% más lejos de lo que decía la tabla**.
+9. **TP2 no llenó en 14 días** y TP3 sigue en 0 de todo el histórico. Con el ladder efectivo 0,42/1,00/1,00·tp, los tramos 2 y 3 están al **mismo** precio: medir si eso es intencional.
+10. **Ventana `legacy → partial`**: entre el cierre de una posición y el registro de la siguiente la fila vive con defaults. Es lo que arruinó a BCH el 06/09. Además hubo un pico de **100 `tp_state_row_recreated` el 09/09** en un solo día (BCH 58, ETH 29) que nadie miró.
+11. **Rehacer bruto/costos** con el parity corregido: las cifras de "¿hay edge?" son del 18/08 y ahora hay serie continua sin huecos de 150+ días para los 10 pares.
 
 **Sobre el proceso, y esto vale más que cualquier fix**: el usuario detectó, mirando el comportamiento real, cosas que las métricas escondían — que sí hubo posiciones llegando a TP3, que DYDX perdía, que hacía tiempo no corría la simulación, que el ratchet no disparaba en BNB, que BCH sí había llenado TP1 cuando el estado del bot decía que no, y el **11/09 que prod tenía 6 meses de velas** cuando esta guía afirmaba lo contrario. **Todas resultaron ciertas**, varias corrigieron una conclusión mía, una destapó un job muerto hacía 4,5 meses y la última destapó una afirmación falsa de esta misma guía que estaba limitando los análisis a ventanas de 45 días. **Contrastar siempre el número agregado contra lo que se ve operar — verificar contra el exchange, no contra el estado del bot, y desconfiar de las afirmaciones de este archivo que nunca se re-verificaron.**
+
+**Y la lección propia del 19/09**: el TP1 al 70% se buscó todo el 14/09 en los *datos* —columnas, sanitizador, slippage, velas en formación— y era **una constante literal en el código que consume esos datos**. Cuando un valor observado es un múltiplo limpio del esperado (0,70 exacto, σ chica), `grep` del factor antes que más medición. Y el corolario incómodo: **el backtest aplicaba el mismo 0,70 todo este tiempo**, así que no era un bug de paridad sino una decisión de diseño no documentada — que igual invalidó la tabla de geometría con la que se tomaron decisiones durante un mes.
 
 **Y una lección propia del 11/09, de método**: en la misma sesión di vuelta **dos** conclusiones por errores de medición míos, las dos del mismo tipo — *dejar que la política bajo estudio decida la ventana de medición*. (1) El A/B del break-even cortaba cada posición en su hora de cierre **real**, producida por la política vigente; con horizonte fijo el signo se invierte. (2) El MFE medido "hasta el cierre" decía que a ETH le sobraba TP; medido a 24 h fijas dice que le falta stop, que es el diagnóstico opuesto y llevó a un cambio distinto. **La ventana de medición tiene que ser independiente de lo que se está midiendo.**
