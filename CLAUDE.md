@@ -182,6 +182,25 @@ Concentración a 60d: **7 de 10 pares mejoran** (BCH +9,62, ONDO +5,33, ETH +4,4
 
 **Costo**: recorta el caudal de **484 a 337 trades** en 120d (−30%). Con 5 pares en prueba, es menos muestra.
 
+#### ⚠️ Contraste contra los TRADES REALES — el sim y la realidad no coinciden
+
+Aplicando el mismo criterio (ADX 1h < 18 en el momento de la entrada) a los cierres reales **desde el 01/08** (n=67, el tramo sin duplicados):
+
+| | n | PnL | medio | winrate |
+|---|---|---|---|---|
+| **bloqueadas** (adx1h<18) | 18 (27%) | −0,73 | **−0,041 ± 0,152** | 44% |
+| permitidas (≥18) | 49 | −7,73 | **−0,158 ± 0,071** | 39% |
+
+**El filtro habría ahorrado +0,73 USDT en siete semanas** — y las operaciones que bloquea fueron, por trade, **menos malas** que las que deja pasar. Los intervalos se pisan por completo, así que no hay diferencia demostrable en ninguna dirección; lo que no hay es **apoyo real** al +11,96 que promete el sim en el último mes.
+
+Es la divergencia de siempre: el sim abre 3-4× más trades que el bot. Regla vigente: **cuando divergen, manda el real** (ver memoria `parity_sim_realization_gap`). Con n=18 bloqueadas tampoco se puede concluir en contra — pero **el caso no está cerrado a favor**.
+
+#### 🐛 Dato podrido encontrado en el camino: `trade_closed_log.csv` de julio está DUPLICADO
+
+**91% de las 131 filas de julio** tienen `(symbol, close_reason, pnl)` repetido: el mismo cierre de AVAX `trail_stop +0,2080` aparece **5 veces** con duraciones 648/658/663/668/673 min. Los ganadores se re-loguearon en ciclos sucesivos y los perdedores no, así que **julio muestra 96% de winrate y +33,07** — ambos falsos.
+
+⚠️ **La advertencia que ya estaba en esta guía no alcanza**: decía "filtrar por `pnl_source`", pero estas filas tienen `pnl_source='api'`. **Agosto y septiembre están limpios (0% duplicados)**, así que el log sólo es usable **desde el 01/08**. Cualquier análisis de trades reales a 90d o más con este archivo está envenenado — de hecho la primera versión de la tabla de arriba daba "141 bloqueadas con 91% de winrate", que fue lo que delató el problema.
+
 🔌 **Es flip de config, sin deploy**: `indicadores.py:263` hace `p.update(get_timeframe_overrides())`, así que el bloque `timeframe` del runtime config pisa los params de todos los símbolos. El HTF se **resamplea de las propias velas 5m** (`merge_asof` backward, sin lookahead), así que no hace falta otro feed.
 
 ⚠️ **Antes de encenderlo, cerrar un hueco**: si el cálculo del HTF falla, `indicadores.py` hace **fail-closed** (bloquea TODAS las señales) y **no emite telemetría**. Un fallo silencioso ahí deja el portfolio mudo sin alarma — exactamente la clase de bug que costó meses. Hace falta un evento antes de activarlo.
