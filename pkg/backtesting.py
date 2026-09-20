@@ -1383,11 +1383,60 @@ def _runtime_tp_splits_parity() -> Tuple[float, ...]:
     return tuple(float(v / total) for v in vals)
 
 
+def _tp_ladder_factors_parity(params) -> Tuple[float, ...]:
+    """Espeja `_tp_ladder_factors` de monkey_bx: mismo default y mismas validaciones."""
+    raw = None
+    try:
+        raw = params.get('tp_factors') or params.get('tp_ladder_factors')
+    except Exception:
+        raw = None
+    if raw is None:
+        return TP_LADDER_FACTORS
+    if isinstance(raw, str):
+        raw = [x for x in raw.replace(';', ',').split(',') if str(x).strip()]
+    try:
+        vals = [float(x) for x in raw]
+    except Exception:
+        return TP_LADDER_FACTORS
+    if len(vals) != 3:
+        return TP_LADDER_FACTORS
+    if any((not math.isfinite(v)) or v <= 0.0 for v in vals):
+        return TP_LADDER_FACTORS
+    if not (vals[0] < vals[1] < vals[2]):
+        return TP_LADDER_FACTORS
+    return tuple(vals)
+
+
+def _tp_levels_from_entry_parity(entry_price: float, side: str, params: Dict[str, object]) -> List[float]:
+    """Espeja `_tp_levels_from_entry` de monkey_bx. [] si no aplica."""
+    try:
+        if str((params or {}).get('tp_mode', 'fixed')).strip().lower() != 'fixed':
+            return []
+        if _as_bool((params or {}).get('use_r_multiple_tps', False), False):
+            return []
+        tp_pct = float((params or {}).get('tp', 0.0) or 0.0)
+        entry = float(entry_price)
+    except Exception:
+        return []
+    if tp_pct <= 0.0 or not math.isfinite(entry) or entry <= 0.0:
+        return []
+    direction = 1.0 if str(side).lower() == 'long' else -1.0
+    return [entry * (1.0 + direction * f * tp_pct) for f in _tp_ladder_factors_parity(params)]
+
+
 def _prepare_live_tp_plan(row: pd.Series, side: str, entry_price: float, qty: float, symbol: str,
                           params: Dict[str, object]) -> List[Dict[str, float]]:
     side = str(side).lower()
-    tp_cols = ['TP1_L', 'TP2_L', 'TP3_L'] if side == 'long' else ['TP1_S', 'TP2_S', 'TP3_S']
-    tps = [float(row[c]) for c in tp_cols if c in row and pd.notna(row[c])]
+    # El ladder se ancla al precio de ENTRADA, igual que el live (ver
+    # `_tp_levels_from_entry` en monkey_bx). Antes se leían las columnas TPn_*, que el
+    # indicador calcula sobre el close de la barra: el sim las tomaba una sola vez y no
+    # derivaba, pero el live las recalculaba en cada recolocación y el nivel se movía.
+    # Anclar en los dos motores cierra ese hueco y además hace que `tp_factors` sea un
+    # knob real end-to-end (las columnas lo tienen hardcodeado en indicadores.py).
+    tps = _tp_levels_from_entry_parity(entry_price, side, params)
+    if not tps:
+        tp_cols = ['TP1_L', 'TP2_L', 'TP3_L'] if side == 'long' else ['TP1_S', 'TP2_S', 'TP3_S']
+        tps = [float(row[c]) for c in tp_cols if c in row and pd.notna(row[c])]
     if not tps:
         use_r = _as_bool(params.get('use_r_multiple_tps', False), False)
         if use_r and compute_tp_prices_from_r_multiples is not None:

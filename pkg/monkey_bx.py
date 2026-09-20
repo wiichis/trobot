@@ -2039,6 +2039,67 @@ def get_last_take_profit_stop_loss(symbol):
     return None, None
 
 
+# Factores del escalonado de TP. Espeja TP_FACTORS de pkg/indicadores.py, que es
+# quien construye las columnas TP1_L/TP2_L/TP3_L.
+TP_LADDER_FACTORS_DEFAULT = (0.6, 1.0, 1.6)
+
+
+def _tp_ladder_factors(params) -> tuple:
+    """Factores del ladder de TP, con override por símbolo desde best_prod.json.
+
+    Sin override devuelve `TP_LADDER_FACTORS_DEFAULT`. Se exige una secuencia de 3
+    factores positivos y **estrictamente crecientes**: un ladder desordenado colocaría
+    TP2 antes que TP1 y rompería el avance de etapas, así que ante cualquier duda se
+    vuelve al default en vez de someter precios inconsistentes.
+    """
+    raw = None
+    try:
+        raw = params.get('tp_factors') or params.get('tp_ladder_factors')
+    except Exception:
+        raw = None
+    if raw is None:
+        return TP_LADDER_FACTORS_DEFAULT
+    if isinstance(raw, str):
+        raw = [x for x in raw.replace(';', ',').split(',') if str(x).strip()]
+    try:
+        vals = [float(x) for x in raw]
+    except Exception:
+        return TP_LADDER_FACTORS_DEFAULT
+    if len(vals) != 3:
+        return TP_LADDER_FACTORS_DEFAULT
+    if any(not math.isfinite(v) or v <= 0.0 for v in vals):
+        return TP_LADDER_FACTORS_DEFAULT
+    if not (vals[0] < vals[1] < vals[2]):
+        return TP_LADDER_FACTORS_DEFAULT
+    return tuple(vals)
+
+
+def _tp_levels_from_entry(entry_price, side: str, params) -> list:
+    """Niveles de TP anclados al precio de ENTRADA de la posición.
+
+    Las columnas `TPn_L`/`TPn_S` de indicadores se calculan sobre el close de la vela
+    **viva**, así que al recolocar un tramo el nivel se movía con el mercado: medido el
+    14/09, 7 de 7 recolocaciones alejaron el TP1 de la entrada (drift medio 129 bps). El
+    caso AVAX del 09/09 llegó a mover la orden por debajo del precio justo después de que
+    el mercado atravesara el TP. Anclando a la entrada —que no cambia en toda la vida de
+    la posición— el nivel es idempotente entre ciclos.
+
+    Devuelve [] cuando el modo no es 'fixed' o faltan datos: ahí sigue mandando el
+    indicador (ningún par usa 'atrx' hoy, pero el camino se conserva).
+    """
+    try:
+        if str((params or {}).get('tp_mode', 'fixed')).strip().lower() != 'fixed':
+            return []
+        tp_pct = float((params or {}).get('tp', 0.0) or 0.0)
+        entry = float(entry_price)
+    except Exception:
+        return []
+    if tp_pct <= 0.0 or not math.isfinite(entry) or entry <= 0.0:
+        return []
+    direction = 1.0 if str(side).upper() == 'LONG' else -1.0
+    return [entry * (1.0 + direction * f * tp_pct) for f in _tp_ladder_factors(params)]
+
+
 # Extraer TP ladder y SL de indicadores para un símbolo y lado
 def extract_tp_sl_from_latest(latest_values: pd.DataFrame, symbol: str, side: str):
     """
@@ -3494,6 +3555,14 @@ def colocando_TK_SL():
             if positionSide == 'LONG':
                 # Niveles TP (escalonados si existen) y SL desde indicadores
                 desired_tps, sl_level = extract_tp_sl_from_latest(latest_values, symbol, 'LONG')
+                _p_sym = params_by_symbol.get(str(symbol).upper(), {})
+                # El ladder se ancla al precio de ENTRADA, no al close de la vela viva:
+                # recalcularlo cada ciclo movía el nivel con el mercado y alejaba el TP1
+                # en cada recolocación (7 de 7 casos medidos el 14/09). El SL sigue
+                # viniendo del indicador, que es justamente lo que debe moverse.
+                _anchored_tps = _tp_levels_from_entry(price, 'LONG', _p_sym)
+                if _anchored_tps:
+                    desired_tps = _anchored_tps
                 # Fallbacks de emergencia si no hay datos
                 if not desired_tps:
                     desired_tps = [price * 1.01]
@@ -3502,7 +3571,7 @@ def colocando_TK_SL():
 
                 # Ajuste opcional de TP1 desde best_prod.json (más cerca del precio de entrada)
                 try:
-                    p = params_by_symbol.get(str(symbol).upper(), {})
+                    p = _p_sym
                     tp1_factor = p.get('tp1_factor', None)
                     tp1_pct_override = p.get('tp1_pct_override', None)
                     tp1_factor = float(tp1_factor) if tp1_factor is not None else None
@@ -3859,6 +3928,14 @@ def colocando_TK_SL():
             elif positionSide == 'SHORT':
                 # Niveles TP (escalonados si existen) y SL desde indicadores
                 desired_tps, sl_level = extract_tp_sl_from_latest(latest_values, symbol, 'SHORT')
+                _p_sym = params_by_symbol.get(str(symbol).upper(), {})
+                # El ladder se ancla al precio de ENTRADA, no al close de la vela viva:
+                # recalcularlo cada ciclo movía el nivel con el mercado y alejaba el TP1
+                # en cada recolocación (7 de 7 casos medidos el 14/09). El SL sigue
+                # viniendo del indicador, que es justamente lo que debe moverse.
+                _anchored_tps = _tp_levels_from_entry(price, 'SHORT', _p_sym)
+                if _anchored_tps:
+                    desired_tps = _anchored_tps
                 if not desired_tps:
                     desired_tps = [price * 0.99]
                 if sl_level is None:
@@ -3866,7 +3943,7 @@ def colocando_TK_SL():
 
                 # Ajuste opcional de TP1 desde best_prod.json para SHORT
                 try:
-                    p = params_by_symbol.get(str(symbol).upper(), {})
+                    p = _p_sym
                     tp1_factor = p.get('tp1_factor', None)
                     tp1_pct_override = p.get('tp1_pct_override', None)
                     tp1_factor = float(tp1_factor) if tp1_factor is not None else None
