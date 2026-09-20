@@ -767,7 +767,7 @@ else:   # Fallback: TP1 más alcanzable por defecto (70% del camino)
 
 Ningún par define `tp1_factor` ni `tp1_pct_override`, así que los 10 caen siempre al fallback: `0,60 × 0,70 = 0,42`, exactamente el factor medido.
 
-⚠️ **NO es un hueco de paridad.** `backtesting.py:116` define `TP1_DEFAULT_FACTOR = 0.70` y `_adjust_tp1` (`:1357`) lo aplica desde el camino de parity (`:1445`). Live y sim coinciden; la única diferencia de segundo orden es que el live ancla en el **precio vivo** y el sim en el **precio de entrada**. Por eso TP2 sale a factor 1,0 y no 0,8: **el ladder efectivo real es 0,42·tp / 1,00·tp / 1,00·tp.**
+⚠️ **NO es un hueco de paridad.** `backtesting.py:116` define `TP1_DEFAULT_FACTOR = 0.70` y `_adjust_tp1` (`:1357`) lo aplica desde el camino de parity (`:1445`). Live y sim coinciden; la única diferencia de segundo orden es que el live ancla en el **precio vivo** y el sim en el **precio de entrada**. Por eso TP2 sale a factor 1,0 y no 0,8: `pkg/indicadores.py:25` define **`TP_FACTORS = (0.6, 1.0, 1.6)`** y el 0,70 se aplica **sólo al tramo 1**. El ladder efectivo real es **0,42·tp / 1,00·tp / 1,60·tp**.
 
 **Lo que sí queda**: la tabla "La geometría TP1/SL" está **inflada un 43%** (ver la corrección ahí). Y el 0,70 es un knob per-símbolo ya cableado en ambos motores (`tp1_factor`), así que se puede barrer por par **sin tocar código**.
 
@@ -803,6 +803,19 @@ Primer uso del knob desde que se identificó el `* 0.70`. Es per-símbolo y est�
 Único superviviente de las 6 ventanas: **APT 0,80**, Σ +3,4 con falsación +0,7 → sobre un sim inflado ~5× son **~+0,8 USDT reales en 120 d**. No se aplicó. LINK (0,80/0,90/0,99, meseta, 5/5) y DYDX (0,90, 4/4) **no tienen ventana de falsación** — su historia empieza después del corte, así que quedan como *sin falsar*, no como validados. Los otros 6 pares: ningún factor gana todas.
 
 **3) El mecanismo sí es real y vale anotarlo.** Alejar TP1 **baja la winrate y sube el PnL**: BNB 120d pasa de 62,7% / +27,96 a 60,3% / +36,94; LINK de 62,8% / +5,41 a 60,4% / +7,75. **El runner que cobra el trailing vale más que el tercio cobrado temprano**, que es exactamente lo que dice la validación del ratchet de esta misma semana. **ONDO es el espejo**: acercar TP1 sube su winrate de 39,5% a 56,7% y gana las 4 ventanas recientes… y pierde el holdout. **La dirección óptima no es la misma para todos los pares**, así que no hay cambio global en ninguna dirección.
+
+**El ladder completo, por par** (`0,42 / 1,00 / 1,60 × tp`), contra el MFE mediano del portfolio de **1,23%**:
+
+| par | TP1 | TP2 | TP3 |
+|---|---|---|---|
+| LINK | 0,50% | 1,20% | 1,92% |
+| DYDX | 0,63% | 1,50% | 2,40% |
+| AVAX | 0,76% | 1,80% | 2,88% |
+| XMR | 0,92% | 2,20% | 3,52% |
+| APT / CFX | 1,01% | 2,40% | 3,84% |
+| ETH / ONDO | 1,05% | 2,50% | 4,00% |
+| BNB | 1,26% | 3,00% | 4,80% |
+| BCH | 1,51% | 3,60% | 5,76% |
 
 ⚠️ **Lección de método, y es nueva**: la meseta NO alcanza como prueba de robustez. BNB tenía meseta, monotonía y 5/5, y se cayó igual. El error fue usar el holdout **también para elegir**. Al barrer un knob: elegir en las 4 ventanas recientes y **reservar el holdout entero para falsar**.
 
@@ -960,7 +973,7 @@ Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue 
 6. **Bug del TP1 que se re-coloca más lejos** (P5.1a): anclar el nivel a la entrada en vez de recalcularlo del indicador vivo. 7 de 7 casos, siempre alejándose. **Ahora se sabe que `ref_bar` es la vela en formación**, así que está confirmado de dónde viene.
 7. **Tamaño por confianza** (la parte salvable de la asignación de capital): peso 0,12 para paramsets sin validar, 0,20 al cumplir 5-8 cierres. **Respetar el piso duro de 0,113** o el escalonamiento de TP se rompe. Con 4 pares en prueba a la vez (AVAX, XMR, ETH, ONDO) es más relevante que nunca.
 8. **La paradoja del edge**: la señal da +0,198% neto por señal a 8 h y el sistema pierde. La medición del 11/09 aporta la mitad —el 59% no alcanza su TP1— y el 19/09 la otra mitad: **ese TP1 está un 43% más lejos de lo que decía la tabla**.
-9. **TP2 no llenó en 14 días** y TP3 sigue en 0 de todo el histórico. Con el ladder efectivo 0,42/1,00/1,00·tp, los tramos 2 y 3 están al **mismo** precio: medir si eso es intencional.
+9. **TP2 no llenó en 14 días y TP3 nunca llenó en todo el histórico** — y con el ladder real (`TP_FACTORS = (0.6, 1.0, 1.6)`, 0,70 sólo en el tramo 1) se ve por qué: TP3 queda a **1,92%-5,76%** según el par contra un **MFE mediano de 1,23%**. **El tercer tramo (34% de cada posición) es inalcanzable por diseño**, y el segundo (1,20%-3,60%) casi. Quien los cobra es el trailing. La pregunta a decidir: ¿achicar `TP_FACTORS` o aceptar que el ladder es en realidad "un TP + trailing"? ⚠️ Ojo con el precedente del 25/08: se canceló P-TP3 porque **someter** TP3 prueba que TP1 y TP2 llenaron, y esas posiciones fueron las mejores de la semana.
 10. **Ventana `legacy → partial`**: entre el cierre de una posición y el registro de la siguiente la fila vive con defaults. Es lo que arruinó a BCH el 06/09. Además hubo un pico de **100 `tp_state_row_recreated` el 09/09** en un solo día (BCH 58, ETH 29) que nadie miró.
 11. **Rehacer bruto/costos** con el parity corregido: las cifras de "¿hay edge?" son del 18/08 y ahora hay serie continua sin huecos de 150+ días para los 10 pares.
 
