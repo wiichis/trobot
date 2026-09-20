@@ -17,6 +17,44 @@ from .live_runtime_config import (
     get_side_mode_flags,
     get_timeframe_overrides,
 )
+from .lifecycle_events import emit_lifecycle_event
+
+# --- Telemetría del filtro de régimen HTF -----------------------------------
+# Cuando el filtro está pedido y sus features no se pueden calcular, el código hace
+# FAIL-CLOSED: bloquea TODAS las señales. Es la decisión correcta (no operar a ciegas)
+# pero sin aviso deja el portfolio mudo sin alarma, que es la clase de fallo que ya
+# costó meses acá. Se emite en la TRANSICIÓN, no en cada ciclo: el job corre cada 5 min
+# y un evento por ciclo serían ~288/día por par.
+_HTF_ESTADO_PREVIO: dict = {}
+
+
+def _htf_telemetria(symbol: str, estado: str, **campos) -> None:
+    """Emite sólo cuando el estado del filtro CAMBIA para ese símbolo.
+
+    Observar no puede costar el cálculo de indicadores: cualquier excepción se traga.
+    """
+    try:
+        sym = str(symbol).upper()
+        if _HTF_ESTADO_PREVIO.get(sym) == estado:
+            return
+        anterior = _HTF_ESTADO_PREVIO.get(sym)
+        _HTF_ESTADO_PREVIO[sym] = estado
+        if estado == "ok" and anterior is None:
+            return  # arranque normal con el filtro sano: no hace ruido
+        if estado == "ok":
+            emit_lifecycle_event(
+                "htf_regime_recuperado", "INFO", symbol=sym,
+                detalle="las features HTF volvieron; el filtro deja de bloquear todo",
+                **campos)
+        else:
+            emit_lifecycle_event(
+                "htf_regime_fail_closed", "CRITICAL", symbol=sym, motivo=estado,
+                detalle=("el filtro de regimen esta activo pero sus features no estan "
+                         "disponibles: se bloquean TODAS las senales de este simbolo"),
+                **campos)
+    except Exception:
+        pass
+
 
 # === Parámetros base (alineados al backtest) ===
 # === Parámetros base (alineados al backtest) ===
@@ -321,6 +359,7 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
 
     # --- Features HTF (una sola vez; las usa el filtro HTF y/o el relax de régimen) ---
     htf_feats_ok = False
+    htf_fail_motivo = "features_no_calculadas"
     if htf_filter_enabled or regime_relax_enabled:
         try:
             htf_src = df[["date", "open", "high", "low", "close"]].copy()
@@ -353,8 +392,11 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
                 df["HTF_EMA_S"] = merged["HTF_EMA_S"]
                 df["HTF_ADX"] = merged["HTF_ADX"]
                 htf_feats_ok = True
-        except Exception:
+            else:
+                htf_fail_motivo = "resample_vacio"
+        except Exception as _htf_exc:
             htf_feats_ok = False
+            htf_fail_motivo = f"excepcion:{type(_htf_exc).__name__}"
 
     # Máscara de régimen lateral para Opción B (warmup NaN → no relajar)
     if regime_relax_enabled and htf_feats_ok:
@@ -486,6 +528,17 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
     htf_short_ok = pd.Series(True, index=df.index)
     if htf_filter_enabled:
         if htf_feats_ok:
+            # Segundo camino silencioso: las features existen pero la barra que se va a
+            # evaluar tiene ADX NaN (warmup o hueco de velas). `.fillna(False)` la
+            # bloquea igual, así que se trata como fallo y se avisa.
+            _ultimo_adx = df["HTF_ADX"].iloc[-1] if len(df) else np.nan
+            if pd.isna(_ultimo_adx):
+                _htf_telemetria(symbol, "adx_nan_en_ultima_barra",
+                                htf_tf=str(htf_tf), htf_adx_min=float(htf_adx_min))
+            else:
+                _htf_telemetria(symbol, "ok", htf_tf=str(htf_tf),
+                                htf_adx=round(float(_ultimo_adx), 2),
+                                htf_adx_min=float(htf_adx_min))
             if htf_mode == 'adx_only':
                 regime_ok = (df["HTF_ADX"] >= htf_adx_min).fillna(False)
                 htf_long_ok = regime_ok
@@ -500,7 +553,11 @@ def _calc_symbol(df: pd.DataFrame, symbol: str, params_override=None) -> pd.Data
                     & (df["HTF_ADX"] >= htf_adx_min)
                 ).fillna(False)
         else:
-            # Filtro pedido pero features no disponibles → fail-closed (como antes)
+            # Filtro pedido pero features no disponibles → fail-closed (como antes).
+            # Ahora AVISA: sin esto el portfolio queda mudo sin alarma.
+            _htf_telemetria(symbol, htf_fail_motivo, htf_tf=str(htf_tf),
+                            htf_adx_min=float(htf_adx_min),
+                            barras=int(len(df)) if df is not None else 0)
             htf_long_ok = pd.Series(False, index=df.index)
             htf_short_ok = pd.Series(False, index=df.index)
 
