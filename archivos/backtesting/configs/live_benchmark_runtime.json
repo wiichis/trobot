@@ -21,12 +21,14 @@
   "long_filter_overrides": {},
   "timeframe": {
     "entry_tf": "5m",
-    "htf_filter_enabled": false,
-    "htf_tf": "30m",
+    "htf_filter_enabled": true,
+    "htf_tf": "1h",
     "htf_ema_fast": 50,
     "htf_ema_slow": 200,
-    "htf_adx_min": 20.0,
-    "htf_adx_period": 14
+    "htf_adx_min": 18.0,
+    "htf_adx_period": 14,
+    "_comment_htf": "Filtro de regimen ACTIVADO el 20/09/2026. Bloquea ENTRADAS NUEVAS cuando el ADX(14) sobre velas de 1h esta por debajo de htf_adx_min. No toca salidas: TP, SL, break-even, ratchet y trailing siguen igual, asi que se puede encender o apagar con posiciones abiertas. El 1h se resamplea de las propias velas 5m (merge_asof backward, sin lookahead). P2.1 habia sido RECHAZADO el 11/06, pero aquella medicion corrio con el tick size roto (d895c7b), el modelo de fill optimista (cc36b90), el reparto de tramos hardcodeado (cf61157) y el gate horario puesto; re-medido el 19/09 con la config real del live gana 5 de 6 ventanas, incluidas las DOS de falsacion. Recorta el caudal ~30% (104 -> 74 senales en 30d). OJO: los trades REALES desde el 01/08 no respaldan la mejora (habria ahorrado solo +0,73 USDT en 7 semanas y las bloqueadas fueron por trade menos malas), asi que el veredicto se juzga por 20-25 CIERRES reales, no por calendario. Opcion B (relax en lateral) quedo CONFIRMADA MUERTA: 0/5 y falla la falsacion, no reintentar. Revertir = htf_filter_enabled:false + restart, sin deploy.",
+    "htf_mode": "adx_only"
   },
   "cooldown": {
     "mode": "symbol_params"
@@ -47,7 +49,7 @@
     "_comment_break_even_after_tp1": "REVERTIDO a false el 11/09/2026 tras 2,9 dias en true. El experimento resulto INTESTABLE, no fallido: TP1 no llego a ocurrir ni una vez en las 13 entradas desde el 06/09 (el precio no alcanzo el nivel en 11 de 13; MFE medio +0,75% contra un TP1 a +1,51%), asi que el mecanismo nunca pudo actuar y las 6 posiciones corrieron sin ninguna proteccion hasta el stop completo. OJO: el ratchet exige tp_stage en tp1_filled/tp2_live/tp2_filled/tp3_live en LAS DOS configuraciones, asi que este flag NO decide si el ratchet corre, solo si hay break-even ANTES de TP1. A/B sobre las 70 posiciones reales recorriendo sus velas 5m con horizonte fijo: false gana en 3 de 5 horizontes (4 de 5 excluyendo LINK), convierte 13 stops completos en break-evens a 24h, pero por poco (~+0,04 USDT/posicion) y con BCH explicando el 68%. La zona muerta del 08/09 sigue existiendo; el arreglo de fondo es el NIVEL de TP1, no el disparador del BE. Volver a true = true + restart, sin deploy."
   },
   "ratchet": {
-    "_comment": "Ratchet temporal del stop, activado 05/09/2026. Si un tramo de TP llen\u00f3 y el siguiente tarda mas de after_min, el stop sube a pegarse al mejor precio alcanzado menos buffer_pct. Nunca baja del break-even. Apagar = enabled:false + restart (no requiere deploy).",
+    "_comment": "Ratchet temporal del stop, activado 05/09/2026. Si un tramo de TP llenó y el siguiente tarda mas de after_min, el stop sube a pegarse al mejor precio alcanzado menos buffer_pct. Nunca baja del break-even. Apagar = enabled:false + restart (no requiere deploy).",
     "enabled": true,
     "after_min": 30,
     "buffer_pct": 0.0025,

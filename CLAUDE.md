@@ -137,13 +137,26 @@ Cada par tiene su propio paramset en `pkg/best_prod.json`, optimizado individual
 
 ~~Parchear `_post_run_normalize_best` en `pkg/backtesting.py`~~ → **Hecho en commit `27cc863`**. El handler ahora solo escribe a `pkg/best_prod.json` si el usuario lo pidió explícitamente vía `--export_best pkg/best_prod.json`. Verificado en el sweep semanal: archivo intacto antes/después.
 
-### 🔄 P2.1 Filtro de régimen — REABIERTO el 19/09: la Opción A se dio vuelta
+### ✅ P2.1 Filtro de régimen — ACTIVADO el 20/09 (ADX 1h ≥ 18)
 
 **Ambas direcciones falsificadas el mismo día** (A/B parity, 10 pares, 30/60/90d, logs en `archivos/backtesting/regime_validation_20260611/`):
 
 - **Opción A (bloquear si ADX_1h<umbral)**: −51/−54/−53% del PnL. Los trades en lateral eran netos POSITIVOS (+21 USD/90d). Sensibilidad monótona: a más umbral, peor (ADX≥22 → portfolio negativo).
 - **Opción B (relajar `adx_min`/`min_vol_ratio` ×0.8/×0.9 en lateral)**: Δ −5/−12/−23 USD en 30/60/90d. Monótono también (aggr ×0.7/×0.85 → −77). Los trades marginales desbloqueados pierden (XMR +0.7→−15.4). **Y los pares silenciosos NO despiertan** (CFX 7→7 trades, ETH 7→7 en 30d): su blocker no es ADX/volumen.
 - Conclusión: los paramsets actuales están en un óptimo local respecto a estos knobs condicionados a régimen. No insistir con variantes (ver memoria `regime_filter_experiments`).
+
+**Activado el 20/09 14:40 UTC** con telemetría de fail-closed (`a1d61c3`). Es **flip de config**: `archivos/backtesting/configs/live_benchmark_runtime.json` → `timeframe`. Backup en prod: `.bak_20260920_pre_htf`. ⚠️ Ese archivo está en `.gitignore`, así que **no viaja por git** — se cambia en prod con `scp` y restart.
+
+**Verificado en vivo**, contrastando `HTF_LONG_OK` del CSV contra un ADX(1h) calculado por fuera: APT (ADX 13,77) → bloqueado, los otros nueve (18,4 a 54,1) → permitidos. Coincide exactamente.
+
+🐛 **Gotcha de verificación**: el primer chequeo dio **100% permitido en los 10 pares**, que era falso — `indicadores.csv` era de las 14:38 y la config se aplicó a las 14:39. **Tras un flip de config hay que esperar un ciclo POSTERIOR al restart** (comparar el mtime del CSV contra `ActiveEnterTimestamp`) y **contrastar contra un cálculo independiente**, no contra lo que el bot escribió.
+
+**Criterios definidos de antemano** (juzgar por **20-25 cierres reales**, no por calendario; a ~10 entradas/semana son unas 3 semanas):
+- ✅ **Éxito**: PnL medio por cierre mejor que el **−0,122** de referencia, con la tasa de entradas cayendo ~30%.
+- ❌ **Fracaso**: PnL medio por cierre igual o peor con 30% menos de muestra — paga el costo sin comprar nada.
+- 🚨 **Abortar ya**: cualquier `htf_regime_fail_closed` en el log.
+
+**Telemetría nueva** (`indicadores.py`): `htf_regime_fail_closed` (CRITICAL) cuando el filtro está pedido y sus features no están, cubriendo los dos caminos silenciosos —`excepcion:<tipo>`/`resample_vacio` y `adx_nan_en_ultima_barra`— más `htf_regime_recuperado` (INFO). Se emite **en la transición**, no por ciclo.
 
 #### 🔄 Re-medición del 19/09 — el rechazo de junio se apoyaba en un instrumento roto
 
@@ -1119,7 +1132,9 @@ Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue 
 | `session.entry_hours_utc` | `[]` (24/7) | 18/08, validado |
 | `tp_mode` | `partial_limit_tp` | 03/07 |
 | `ratchet.enabled` | `true` (30 min, buffer 0,25%) | 05/09 — **✅ validado 19/09**: 13 disparos en 30d, los 3 mejores cierres de la semana |
-| `break_even_after_tp1` | **`false`** | **11/09, revertido** |
+| `break_even_after_tp1` | **`false`** | 11/09, revertido |
+| `htf_filter_enabled` + `htf_adx_min` | **`true` / 18,0 sobre 1h** | **20/09 — EN PRUEBA, juzgar por 20-25 cierres** |
+| `peso` de ONDO | **0,13** (era 0,20) | 20/09 |
 
 **Los 13 bugs corregidos**, todos de ejecución, datos o medición — **ninguno de parámetros**:
 
