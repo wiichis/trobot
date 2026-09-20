@@ -782,6 +782,30 @@ Ningún par define `tp1_factor` ni `tp1_pct_override`, así que los 10 caen siem
 
 Cuando el TP1 se vuelve a someter, su precio cambia — **7 de 7 veces, y siempre alejándose de la entrada** (drift medio 129 bps, máximo 302). Caso AVAX del 09/09: el precio atravesó el TP1 a las 09:45 y a las **09:53 el bot movió la orden de 7,922 a 7,890**, debajo del mercado; la posición cerró minutos después sin registrar el fill. El nivel se recalcula desde el indicador vivo en vez de anclarse a la entrada — es el residuo de **P5.1a** anotado en `get_last_take_profit_stop_loss`. Sólo afecta a 7 de 71 posiciones, así que no es la causa dominante del gap de realización, pero es un defecto real y de dirección sistemática.
 
+### ❌ Barrido de `tp1_factor` — 19/09: el 0,70 ya estaba en el pico
+
+Primer uso del knob desde que se identificó el `* 0.70`. Es per-símbolo y está cableado en los dos motores, así que se barre **sin tocar código ni desplegar**. 10 pares × 8 valores (0,30-0,99) × 6 ventanas. ⚠️ El código ignora valores fuera de `(0,1)`: **`1.0` cae al default 0,70**, usar 0,99 como tope.
+
+**1) El default global está en el máximo.** Con el mismo factor para los 10 pares:
+
+| factor | 30d | 60d | 90d | 120d | holdout |
+|---|---|---|---|---|---|
+| 0,50 | −18,66 | −18,40 | −8,97 | +4,37 | −39,88 |
+| 0,60 | −18,01 | −19,52 | −8,31 | +2,01 | −37,95 |
+| **0,70 (actual)** | **−17,09** | **−16,79** | **−4,14** | **+8,78** | **−34,83** |
+| 0,80 | −18,47 | −20,22 | −6,49 | +8,20 | −35,37 |
+| 0,90 | −20,11 | −26,07 | −12,54 | +2,41 | −36,85 |
+
+**Toda alternativa pierde 0/5** y la curva cae a los dos lados.
+
+**2) El ganador por par se falsó.** BNB parecía EL hallazgo: 0,80/0,90/0,99 ganaban **5/5** con meseta monótona (Σ +10,5 / +21,8 / +30,2 — no era un valor de filo). En una **segunda ventana de 50 d terminando el 22/02/2026, que no participó de la elección**, los tres pierden y **monótonamente al revés: −0,3 / −1,1 / −2,5.** *A mayor ganancia en selección, mayor pérdida en falsación.*
+
+Único superviviente de las 6 ventanas: **APT 0,80**, Σ +3,4 con falsación +0,7 → sobre un sim inflado ~5× son **~+0,8 USDT reales en 120 d**. No se aplicó. LINK (0,80/0,90/0,99, meseta, 5/5) y DYDX (0,90, 4/4) **no tienen ventana de falsación** — su historia empieza después del corte, así que quedan como *sin falsar*, no como validados. Los otros 6 pares: ningún factor gana todas.
+
+**3) El mecanismo sí es real y vale anotarlo.** Alejar TP1 **baja la winrate y sube el PnL**: BNB 120d pasa de 62,7% / +27,96 a 60,3% / +36,94; LINK de 62,8% / +5,41 a 60,4% / +7,75. **El runner que cobra el trailing vale más que el tercio cobrado temprano**, que es exactamente lo que dice la validación del ratchet de esta misma semana. **ONDO es el espejo**: acercar TP1 sube su winrate de 39,5% a 56,7% y gana las 4 ventanas recientes… y pierde el holdout. **La dirección óptima no es la misma para todos los pares**, así que no hay cambio global en ninguna dirección.
+
+⚠️ **Lección de método, y es nueva**: la meseta NO alcanza como prueba de robustez. BNB tenía meseta, monotonía y 5/5, y se cayó igual. El error fue usar el holdout **también para elegir**. Al barrer un knob: elegir en las 4 ventanas recientes y **reservar el holdout entero para falsar**.
+
 ### 🔴 La pregunta que queda abierta: ¿hay edge?
 
 Con la ejecución ya correcta, el diagnóstico se desplaza de "el bot no hace lo que debería" a "lo que debería hacer, ¿gana?".
@@ -930,7 +954,7 @@ Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue 
 **Al retomar, en este orden**:
 1. **Evaluar AVAX y XMR** por sus primeros **5-8 cierres**, no por calendario. Rollback md5 `d868c273`. Señal de alarma temprana: si AVAX **no sube su caudal** (el sim pasa de 102 a 136 trades en 120d) es que el paramset no se está realizando en vivo, como ya pasó con DYDX.
 2. **Evaluar ETH y ONDO** — siguen en **0 cierres** desde el 11/09. Si en dos semanas más no producen, el problema no es el paramset sino que no generan señal. Rollback md5 `50a05c0a`.
-3. **Decidir el 0,70 de TP1** (ahora que el mecanismo se conoce): es un knob per-símbolo ya cableado en los dos motores (`tp1_factor`), así que se puede **barrer por par sin tocar código**. Cruzar contra el MFE mediano de 1,23%: con TP1 a 0,42·tp, LINK cobra a 0,50% (lo alcanza el ~77%) mientras BNB pide 1,26% (~48%). **Es el hilo más productivo abierto** y no requiere deploy.
+3. ~~**Decidir el 0,70 de TP1**~~ → ❌ **CERRADO 19/09: barrido hecho, NO cambiar nada.** Ver "Barrido de `tp1_factor`" abajo. El 0,70 resultó ser el **óptimo global** y el único ganador por par (BNB) **se falsó** en la ventana no usada para elegir.
 4. **Revisar el resto de la geometría con MFE a horizonte fijo**, ahora con los ratios REALES (tabla corregida en "La geometría TP1/SL"): **LINK** (0,34, el peor) y **BNB** (0,70 con TP1 a 1,26% contra MFE 1,10%) son los siguientes. Uno por vez.
 5. **DYDX**: decidir. Tras el 19/09 se sabe que **ni el sweep ni aflojar un filtro sirven** (la opción quirúrgica da 1/4 y pierde más). Las opciones reales son bajarle el peso al piso de confianza o aceptar que es un portfolio de 9.
 6. **Bug del TP1 que se re-coloca más lejos** (P5.1a): anclar el nivel a la entrada en vez de recalcularlo del indicador vivo. 7 de 7 casos, siempre alejándose. **Ahora se sabe que `ref_bar` es la vela en formación**, así que está confirmado de dónde viene.
