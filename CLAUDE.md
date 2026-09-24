@@ -145,7 +145,7 @@ Cada par tiene su propio paramset en `pkg/best_prod.json`, optimizado individual
 - **Opción B (relajar `adx_min`/`min_vol_ratio` ×0.8/×0.9 en lateral)**: Δ −5/−12/−23 USD en 30/60/90d. Monótono también (aggr ×0.7/×0.85 → −77). Los trades marginales desbloqueados pierden (XMR +0.7→−15.4). **Y los pares silenciosos NO despiertan** (CFX 7→7 trades, ETH 7→7 en 30d): su blocker no es ADX/volumen.
 - Conclusión: los paramsets actuales están en un óptimo local respecto a estos knobs condicionados a régimen. No insistir con variantes (ver memoria `regime_filter_experiments`).
 
-**Activado el 20/09 14:40 UTC** con telemetría de fail-closed (`a1d61c3`). Es **flip de config**: `archivos/backtesting/configs/live_benchmark_runtime.json` → `timeframe`. Backup en prod: `.bak_20260920_pre_htf`. ⚠️ **Corrección 23/09**: esta guía decía que el archivo estaba en `.gitignore`. **Es falso: está versionado** (el cambio viajó en `48418b8`). En prod quedó como modificación sin commitear sobre su HEAD (`cc8e8e3`), con el mismo contenido que trae `48418b8`. Antes del próximo `git merge` en prod: `git checkout -- archivos/backtesting/configs/live_benchmark_runtime.json` (el merge trae el mismo contenido) o el merge aborta con *local changes would be overwritten*.
+**Activado el 20/09 14:40 UTC** con telemetría de fail-closed (`a1d61c3`). Es **flip de config**: `archivos/backtesting/configs/live_benchmark_runtime.json` → `timeframe`. Backup en prod: `.bak_20260920_pre_htf`. ⚠️ **Corrección 23/09**: esta guía decía que el archivo no viaja por git. **Es falso: está versionado** (el cambio viajó en `48418b8`), aunque `archivos/` está en `.gitignore` — por eso `git add` lo rechaza y hay que usar `git add -f` (seguro: el archivo ya está trackeado). En prod quedó como modificación sin commitear sobre su HEAD (`cc8e8e3`), con el mismo contenido que trae `48418b8`. Antes del próximo `git merge` en prod: `git checkout -- archivos/backtesting/configs/live_benchmark_runtime.json` (el merge trae el mismo contenido) o el merge aborta con *local changes would be overwritten*.
 
 **Verificado en vivo**, contrastando `HTF_LONG_OK` del CSV contra un ADX(1h) calculado por fuera: APT (ADX 13,77) → bloqueado, los otros nueve (18,4 a 54,1) → permitidos. Coincide exactamente.
 
@@ -572,6 +572,29 @@ Lo que sí cambia:
 - **"Los costos se comen el edge" era en buena parte un artefacto**: los costos del sim bajan de 78,9 a 31,6 a 120d. El problema es el **bruto**, no los costos. Cobertura de costos: BCH, AVAX, LINK, XMR, BNB sí (5/10); DYDX, APT, CFX, ETH, ONDO no.
 - 🔴 **Selección adversa de la entrada PostOnly**: las órdenes que el sim deja expirar son ganadoras (8 de 10 pares empeoran a 60-120d). Contra eso, en la muestra real las 11 expiradas valían −1,44. **Hipótesis abierta**, no conclusión: medir en real qué habría hecho cada entrada expirada.
 - 🔴 **El ratchet, simulado, no suma**: resta en 4/4 ventanas, 5-7 pares empeoran, y el efecto se reparte (BCH +4,5 a +5,8, BNB −1,7 a −9,7). Su "validación" del 19/09 fueron 3 cierres y un harness aparte. **No está validado**; reabrir con los cierres reales.
+
+### 🔬 Ratchet y entradas expiradas medidos con datos REALES — 24/09
+
+**Ratchet: no está validado, y la evidencia real apunta a neutro o levemente negativo.** Disparó en sólo **6 posiciones** desde el 05/09. Las 2 del 05-06/09 se descartan porque corrían con los bugs del stop que retrocedía. En las 4 restantes se reconstruyeron dos ramas sobre velas 5m a horizonte fijo: con ratchet (validada: reproduce la salida real en precio y hora en las 4) y sin ratchet (BE + trailing del indicador, monótono):
+
+| posición | con − sin, 24 h | con − sin, 8 h |
+|---|---|---|
+| DYDX L 13/09 | +0,105 | +0,105 |
+| CFX S 15/09 | −0,120 | −0,120 |
+| BCH L 19/09 | −0,062 | −0,062 |
+| BNB L 21/09 | −0,165 | −0,324 |
+| **Σ** | **−0,24** | **−0,40** |
+
+Mismo signo que el parity (resta en 4/4 ventanas). Mecanismo: el trailing del indicador termina subiendo igual o más que el ratchet, pero sin cortar temprano; el ratchet adelanta la salida. Con n=4 no hay veredicto estadístico, pero **se cae la premisa de "validado"**: sus tres "mejores cierres" del 19/09 también los habría cobrado el trailing.
+
+**Entradas PostOnly que expiran: selección adversa real, en la dirección que predijo el parity.** 99 submits desde el 10/08, 21 expirados. Las expiradas son, por construcción, las que el precio abandonó a favor (+0,31% en sus ~18 min). Desde el precio límite:
+
+| | 1 h | 4 h | 8 h | 24 h | MAE 8 h |
+|---|---|---|---|---|---|
+| expiradas (21) | +0,28% | **+0,60%** | +0,35% | **+1,65%** | −1,02% |
+| llenadas (78) | +0,04% | +0,06% | +0,17% | −0,07% | −1,45% |
+
+A 4 h la diferencia está a ~1,6 errores estándar. Pasando la gestión completa por el parity (sólo pares/fechas con los mismos params): expiradas +0,053 por posición contra −0,004 (n=12, ~0,4 σ). **Sugestivo, no concluyente.** Incluso "persiguiendo" al mercado después del timeout (restando el +0,31% perdido) queda +0,29% a 4 h contra +0,06%. Siguiente paso barato: A/B en el parity de offset 0, timeout más largo y fallback a mercado al expirar, cobrando taker en la entrada.
 
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
 
