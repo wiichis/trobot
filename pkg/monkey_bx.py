@@ -15,6 +15,7 @@ from .live_runtime_config import (
     get_cooldown_minutes_override,
     get_post_sl_cooldown_bars,
     get_ratchet_config,
+    ratchet_buffer_pct,
     is_entry_hour_allowed_utc,
     get_entry_mode,
     get_entry_limit_offset_bps,
@@ -1432,6 +1433,9 @@ def _ratchet_stop_candidate(df_ind, symbol, position_side, entry_price, st_tp, c
     # Debe haber un tramo YA lleno y otro PENDIENTE. En tp3_* no queda nada que esperar.
     if stage not in ("tp1_filled", "tp2_live", "tp2_filled", "tp3_live"):
         return None
+    # Variante "sólo el último tramo": no toca la posición hasta que llenó TP2.
+    if cfg.get("only_after_tp2") and stage not in ("tp2_filled", "tp3_live"):
+        return None
 
     # OJO: `updated_at_utc` se reescribe en CADA upsert (incl. set_break_even_state, que
     # corre cada ciclo). Usarlo como reloj hacía que el ratchet se auto-bloqueara 30 min
@@ -1452,20 +1456,27 @@ def _ratchet_stop_candidate(df_ind, symbol, position_side, entry_price, st_tp, c
     if esperado < float(cfg["after_min"]):
         return None
 
+    atr_pct = None
     try:
-        d = df_ind[(df_ind["symbol"] == symbol)].copy()
-        d["date"] = pd.to_datetime(d["date"], utc=True, errors="coerce")
-        d = d[d["date"] >= desde]
+        d_sym = df_ind[(df_ind["symbol"] == symbol)].copy()
+        d_sym["date"] = pd.to_datetime(d_sym["date"], utc=True, errors="coerce")
+        d = d_sym[d_sym["date"] >= desde]
         if d.empty:
             return None
         es_long = str(position_side).upper() == "LONG"
         mejor = float(d["high"].max()) if es_long else float(d["low"].min())
+        if str(cfg.get("buffer_mode", "pct")).lower() == "atr":
+            # ATR% de la última vela CERRADA: la que está en formación lo subestima.
+            from .indicadores import last_closed_bar
+            _ult = last_closed_bar(d_sym)
+            if _ult is not None and "ATR_pct" in _ult:
+                atr_pct = _ult["ATR_pct"]
     except Exception:
         return None
     if not (mejor > 0):
         return None
 
-    buf = float(cfg["buffer_pct"])
+    buf = ratchet_buffer_pct(cfg, atr_pct)
     cand = mejor * (1.0 - buf) if es_long else mejor * (1.0 + buf)
 
     # El stop tiene que quedar del lado válido del precio VIVO: por debajo en un LONG,

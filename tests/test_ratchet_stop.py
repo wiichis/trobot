@@ -214,3 +214,60 @@ def test_no_se_registra_un_stop_que_el_exchange_rechazo():
             break
         assert 'if not _sl_post_ok:' in src[max(0, i - 900):i], 'el gate va antes del bump'
         i += 1
+
+
+class TestVariantes24_09:
+    """Variantes para re-probar el ratchet (24/09): buffer por ATR y sólo tras TP2.
+
+    Los defaults tienen que reproducir el comportamiento original.
+    """
+
+    def test_defaults_reproducen_el_original(self):
+        from pkg.live_runtime_config import ratchet_buffer_pct
+        assert ratchet_buffer_pct(CFG, atr_pct=0.01) == pytest.approx(0.0025)
+
+    def test_buffer_por_atr_usa_la_ultima_vela_cerrada(self):
+        """La última fila es la vela en formación: su ATR no se usa."""
+        df = _velas('X', highs=[100.5, 101.8, 101.2], lows=[99.8, 100.4, 100.9])
+        df['ATR_pct'] = [0.004, 0.003, 0.009]
+        cfg = dict(CFG, buffer_mode='atr', buffer_atr_mult=2.0)
+        r = _ratchet_stop_candidate(df, 'X', 'LONG', 100.0, _estado(), cfg, be_stop=100.02)
+        assert r == pytest.approx(101.8 * (1 - 0.006))
+
+    def test_buffer_por_atr_sin_columna_cae_al_fijo(self):
+        df = _velas('X', highs=[100.5, 101.8, 101.2], lows=[99.8, 100.4, 100.9])
+        cfg = dict(CFG, buffer_mode='atr', buffer_atr_mult=2.0)
+        r = _ratchet_stop_candidate(df, 'X', 'LONG', 100.0, _estado(), cfg, be_stop=100.02)
+        assert r == pytest.approx(101.8 * (1 - 0.0025))
+
+    def test_buffer_por_atr_respeta_el_piso(self):
+        from pkg.live_runtime_config import ratchet_buffer_pct, RATCHET_BUFFER_MIN
+        cfg = dict(CFG, buffer_mode='atr', buffer_atr_mult=1.0)
+        assert ratchet_buffer_pct(cfg, atr_pct=0.0002) == RATCHET_BUFFER_MIN
+
+    @pytest.mark.parametrize('stage', ['tp1_filled', 'tp2_live'])
+    def test_solo_tras_tp2_no_actua_antes(self, stage):
+        df = _velas('X', highs=[101.8], lows=[100.0])
+        cfg = dict(CFG, only_after_tp2=True)
+        assert _ratchet_stop_candidate(df, 'X', 'LONG', 100.0, _estado(stage), cfg, be_stop=100.02) is None
+
+    @pytest.mark.parametrize('stage', ['tp2_filled', 'tp3_live'])
+    def test_solo_tras_tp2_actua_despues(self, stage):
+        df = _velas('X', highs=[101.8], lows=[100.0])
+        cfg = dict(CFG, only_after_tp2=True)
+        r = _ratchet_stop_candidate(df, 'X', 'LONG', 100.0, _estado(stage), cfg, be_stop=100.02)
+        assert r == pytest.approx(101.8 * (1 - 0.0025))
+
+    def test_la_config_sanea_las_variantes(self, tmp_path, monkeypatch):
+        import json
+        import pkg.live_runtime_config as lrc
+        p = tmp_path / 'cfg.json'
+        p.write_text(json.dumps({'ratchet': {'enabled': True, 'buffer_mode': 'raro',
+                                             'buffer_atr_mult': 99, 'only_after_tp2': 1}}),
+                     encoding='utf-8')
+        monkeypatch.setattr(lrc, 'DEFAULT_CONFIG_PATH', p)
+        lrc.reload_live_runtime_config()
+        c = lrc.get_ratchet_config()
+        assert c['buffer_mode'] == 'pct'
+        assert c['buffer_atr_mult'] == 10.0
+        assert c['only_after_tp2'] is True

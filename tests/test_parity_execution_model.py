@@ -303,3 +303,24 @@ def test_sin_ratchet_el_mismo_camino_sale_en_break_even(parity):
     sl = [t for t in res["trades_list"] if t.exit_reason == "SL"]
     assert len(sl) == 1
     assert sl[0].exit_price == pytest.approx(99.98 * 1.0002)  # BE forzado tras TP1
+
+
+# ---------------------------------------------------------------- variantes del ratchet (24/09)
+
+
+def test_parity_ratchet_por_atr_usa_el_atr_de_la_ultima_vela_cerrada():
+    p = _pos(tp_fills=1, plan_filled=(True, False, False))
+    for _ in range(6):
+        _update_ratchet_stage_parity(p, pd.Series({"high": 101.5, "low": 101.2, "ATR_pct": 0.002}), 101.45)
+    cfg = dict(RATCHET, buffer_mode="atr", buffer_atr_mult=2.0)
+    assert _ratchet_candidate_parity(p, cfg) == pytest.approx(101.5 * (1 - 0.004))
+
+
+def test_parity_ratchet_solo_tras_tp2():
+    cfg = dict(RATCHET, only_after_tp2=True)
+    p1 = _pos(tp_fills=1, plan_filled=(True, False, False))
+    p2 = _pos(tp_fills=2, plan_filled=(True, True, False))
+    for p in (p1, p2):
+        _etapa(p, [102.5] * 6, closes=[102.45] * 6)
+    assert _ratchet_candidate_parity(p1, cfg) is None
+    assert _ratchet_candidate_parity(p2, cfg) == pytest.approx(102.5 * (1 - 0.0025))

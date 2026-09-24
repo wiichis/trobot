@@ -1312,6 +1312,7 @@ class LivePosition:
     stage_best: Optional[float] = None
     stage_bars: int = 0
     last_close: Optional[float] = None
+    last_atr_pct: Optional[float] = None
 
 
 # Costos de ejecución del parity, medidos contra los fills reales de BingX (sep/2026):
@@ -1593,11 +1594,15 @@ def _ratchet_candidate_parity(position: LivePosition, cfg: Dict[str, object]) ->
     # En el live el ratchet vive dentro de la rama del break-even, que exige be_trigger>0.
     if not position.be_trigger or float(position.be_trigger) <= 0:
         return None
+    # Variante "sólo el último tramo" (etapas tp2_filled/tp3_live del live).
+    if cfg.get('only_after_tp2') and position.tp_fills < 2:
+        return None
     if position.stage_best is None or position.last_close is None:
         return None
     if position.stage_bars * 5.0 < float(cfg.get('after_min', 30.0)):
         return None
-    buf = float(cfg.get('buffer_pct', 0.0025))
+    from pkg.live_runtime_config import ratchet_buffer_pct
+    buf = ratchet_buffer_pct(cfg, position.last_atr_pct)
     es_long = position.side == 'long'
     best = float(position.stage_best)
     cand = best * (1.0 - buf) if es_long else best * (1.0 + buf)
@@ -1635,6 +1640,12 @@ def _apply_ratchet_parity(position: LivePosition, cfg: Dict[str, object]) -> boo
 def _update_ratchet_stage_parity(position: LivePosition, row: pd.Series, price: float) -> None:
     """Al cerrar la vela: acumula el mejor precio de la etapa y la cuenta de velas."""
     position.last_close = float(price)
+    try:
+        _atr = float(row.get('ATR_pct', np.nan))
+        if _atr == _atr and _atr > 0:
+            position.last_atr_pct = _atr
+    except (TypeError, ValueError):
+        pass
     if position.tp_fills <= 0:
         return
     if position.side == 'long':
@@ -3280,6 +3291,12 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                         # La vela del fill no cuenta para la etapa nueva (el live mide
                         # desde stage_since_utc, que cae dentro de esta vela).
                         pos.last_close = price
+                        try:
+                            _atr = float(row.get('ATR_pct', np.nan))
+                            if _atr == _atr and _atr > 0:
+                                pos.last_atr_pct = _atr
+                        except (TypeError, ValueError):
+                            pass
                     else:
                         _update_ratchet_stage_parity(pos, row, price)
 

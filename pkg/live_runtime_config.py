@@ -88,6 +88,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "after_min": 30,
         "buffer_pct": 0.0025,
         "min_improve_pct": 0.0005,  # no recolocar el stop por mejoras triviales
+        # Variantes (24/09) para re-probar el ratchet. Los defaults reproducen el
+        # comportamiento original: buffer fijo y actuar desde que llena TP1.
+        "buffer_mode": "pct",        # "pct" = buffer_pct fijo | "atr" = buffer_atr_mult × ATR% 5m
+        "buffer_atr_mult": 2.0,
+        "only_after_tp2": False,     # True = sólo protege el último tramo (tras TP2)
     },
 }
 
@@ -441,9 +446,37 @@ def get_ratchet_config() -> Dict[str, Any]:
         except Exception:
             return default
 
+    mode = str(cfg.get("buffer_mode", "pct")).strip().lower()
+    if mode not in ("pct", "atr"):
+        mode = "pct"
     return {
         "enabled": bool(cfg.get("enabled", False)),
         "after_min": _f("after_min", 30.0, 5.0, 720.0),
         "buffer_pct": _f("buffer_pct", 0.0025, 0.001, 0.05),
         "min_improve_pct": _f("min_improve_pct", 0.0005, 0.0, 0.01),
+        "buffer_mode": mode,
+        "buffer_atr_mult": _f("buffer_atr_mult", 2.0, 0.5, 10.0),
+        "only_after_tp2": bool(cfg.get("only_after_tp2", False)),
     }
+
+
+RATCHET_BUFFER_MIN = 0.001  # por debajo, el stop entra en el ruido intrabarra (ver arriba)
+
+
+def ratchet_buffer_pct(cfg: Dict[str, Any], atr_pct: Any = None) -> float:
+    """Distancia del stop del ratchet al mejor precio, como fracción del precio.
+
+    Compartida por el live y el parity para que las dos calculen exactamente lo mismo.
+    En modo "atr" escala con la volatilidad del par (ATR% de la última vela cerrada):
+    un 0,25% fijo es holgado para BNB y queda dentro del ruido para CFX o DYDX. Si el
+    ATR no está disponible cae al buffer fijo. Nunca por debajo de RATCHET_BUFFER_MIN.
+    """
+    base = float(cfg.get("buffer_pct", 0.0025))
+    if str(cfg.get("buffer_mode", "pct")).lower() == "atr":
+        try:
+            a = float(atr_pct)
+            if a > 0 and a == a:
+                base = float(cfg.get("buffer_atr_mult", 2.0)) * a
+        except (TypeError, ValueError):
+            pass
+    return max(base, RATCHET_BUFFER_MIN)

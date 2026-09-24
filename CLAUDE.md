@@ -596,6 +596,31 @@ Mismo signo que el parity (resta en 4/4 ventanas). Mecanismo: el trailing del in
 
 A 4 h la diferencia está a ~1,6 errores estándar. Pasando la gestión completa por el parity (sólo pares/fechas con los mismos params): expiradas +0,053 por posición contra −0,004 (n=12, ~0,4 σ). **Sugestivo, no concluyente.** Incluso "persiguiendo" al mercado después del timeout (restando el +0,31% perdido) queda +0,29% a 4 h contra +0,06%. Siguiente paso barato: A/B en el parity de offset 0, timeout más largo y fallback a mercado al expirar, cobrando taker en la entrada.
 
+### ❌ Re-prueba del ratchet con variantes — 24/09: ninguna pasa, queda APAGADO
+
+Apagado en prod el 24/09 03:28 UTC (`235473b`) y re-probado fuera de prod con dos instrumentos. Infra nueva (inerte con los defaults, que reproducen el ratchet original): `buffer_mode: "atr"` + `buffer_atr_mult` (buffer = k × ATR% de la última vela cerrada, piso 0,1%) y `only_after_tp2`, en el live (`_ratchet_stop_candidate`) y en el parity, con la regla compartida `ratchet_buffer_pct()` en `live_runtime_config`.
+
+**Parity** (Δ contra ratchet apagado, capital 1000; elegir con las 4 recientes, falsar con hold1 = 60d al 23/04 y hold2 = 50d al 22/02):
+
+| variante | 30d | 60d | 90d | 120d | hold1 | hold2 | mayor par a 120d |
+|---|---|---|---|---|---|---|---|
+| actual (0,25%, 30 min) | −2,66 | −5,63 | −7,61 | −4,19 | −10,75 | +4,59 | — |
+| 0,25% / 60 min | −3,06 | −5,22 | −8,00 | +3,21 | −8,76 | +6,78 | BCH 144% |
+| 0,25% / 120 min | −4,24 | −7,76 | −8,32 | −4,41 | −6,20 | +1,82 | — |
+| ATR 1,5× | +1,95 | +1,91 | +0,61 | +9,48 | −10,41 | +7,56 | BCH 156% |
+| ATR 2× | +1,30 | +2,24 | +2,80 | +15,16 | −7,85 | +7,45 | BCH 114% |
+| ATR 3× | −2,89 | −3,92 | −5,34 | +4,98 | −9,79 | +4,19 | BCH 272% |
+| ATR 2× / 60 min | +1,60 | −0,54 | −2,51 | +11,99 | −6,44 | +9,68 | BCH 115% |
+| sólo tras TP2 | +4,89 | +5,57 | +6,84 | +5,58 | −3,44 | +0,12 | BNB 103% |
+| **sólo tras TP2 + ATR 2×** | +3,87 | +5,27 | +6,28 | +9,30 | **−4,12** | +2,93 | BNB 57% (7 mejoran, 2 empeoran) |
+
+**Replay sobre las 32 posiciones REALES que llenaron TP1** (desde el 28/07, arrancando en el fill real de TP1, horizonte fijo 24 h, mismas funciones del parity): actual +0,12 (sin su mejor posición −0,31) · ATR 3× +0,92 y ATR 2×/60 +0,91 (BCH >100%) · **sólo tras TP2 + ATR 2× +0,62, 7 mejoran / 1 empeora, ningún par >50%**. Validado contra las salidas reales del período con ratchet activo: coincide en 8 de 9; la diferencia (BNB 21/09) es de granularidad — el live evaluó a mitad de vela, el replay sólo ve velas cerradas.
+
+**Veredicto: ninguna variante pasa el protocolo completo.** Las 4 que ganan las ventanas recientes (ATR 1,5×, ATR 2×, sólo tras TP2, y su combinación) **pierden todas en hold1** — de hecho TODAS las variantes pierden en hold1, así que el efecto del ratchet depende del régimen. Las variantes de buffer por ATR son, además, un efecto de BCH.
+- El mejor candidato, **sólo tras TP2 + ATR 2×**, gana 4/4 recientes, es positivo en el replay real y pasa la concentración ahí, pero **falla hold1 (−4,12)** y a 120d BNB explica el 57%. Aun si fuera real: ~+9 a 120d a escala 1000 ≈ **+1,7 USDT reales en 4 meses**. No compensa ni el riesgo ni el ruido que mete en otros veredictos.
+- ⚠️ La versión original (0,25% / 30 min) es de las peores en todo: pierde 4/4 recientes y hold1. **Estuvo tres semanas en prod por una validación que no existía.**
+- **Queda APAGADO.** Revisitar sólo "sólo tras TP2 + ATR 2×", y sólo si se acumulan ≥30 posiciones reales que lleguen a TP2 (hoy son 9 desde el 28/07). Configs: `archivos/backtesting/configs/` no tiene estas variantes; se generan copiando el runtime config y tocando sólo el bloque `ratchet`.
+
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
 
 Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferencias entre lo que prod ejecuta y lo que el backtest simula, y **hacen que los A/B midan algo distinto de lo que se cree**.
@@ -1189,7 +1214,7 @@ Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue 
 |---|---|---|
 | `session.entry_hours_utc` | `[]` (24/7) | 18/08, validado |
 | `tp_mode` | `partial_limit_tp` | 03/07 |
-| `ratchet.enabled` | `true` (30 min, buffer 0,25%) | 05/09 — **✅ validado 19/09**: 13 disparos en 30d, los 3 mejores cierres de la semana |
+| `ratchet.enabled` | **`false`** | **24/09 — APAGADO**: la "validación" del 19/09 no se sostuvo (ver "Re-prueba del ratchet"); ninguna variante pasa el protocolo |
 | `break_even_after_tp1` | **`false`** | 11/09, revertido |
 | `htf_filter_enabled` + `htf_adx_min` | **`true` / 18,0 sobre 1h** | **20/09 — EN PRUEBA, juzgar por 20-25 cierres** |
 | `peso` de ONDO | **0,13** (era 0,20) | 20/09 |
