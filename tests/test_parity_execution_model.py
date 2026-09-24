@@ -324,3 +324,42 @@ def test_parity_ratchet_solo_tras_tp2():
         _etapa(p, [102.5] * 6, closes=[102.45] * 6)
     assert _ratchet_candidate_parity(p1, cfg) is None
     assert _ratchet_candidate_parity(p2, cfg) == pytest.approx(102.5 * (1 - 0.0025))
+
+
+# ---------------------------------------------------------------- variantes de entrada (24/09)
+
+
+def test_entrada_a_mercado_llena_al_cierre_de_t_mas_1_con_taker(parity):
+    ohlc = _flat(6) + [(100.0, 100.4, 100.0, 100.3)] + _flat(5, 100.3)
+    res = parity(_bars(ohlc), entry_fill_model="market")
+    t = res["trades_list"][0]
+    assert t.entry_time == T0 + pd.Timedelta(minutes=30)
+    assert t.entry_price == pytest.approx(100.3)
+    assert t.slippage_in > 0
+    assert t.commission_in == pytest.approx(100.3 * (1 + bt.calc_slippage_rate(0.002)) * t.qty * 0.0005)
+
+
+def test_fallback_a_mercado_al_expirar(parity):
+    # nunca vuelve al límite (99.98); expira en t+4 (vela 9) y entra al cierre de esa vela
+    ohlc = _flat(6) + _flat(6, 100.4)
+    res = parity(_bars(ohlc), entry_expiry_fallback="market")
+    assert res["entries_expired"] == 1
+    t = res["trades_list"][0]
+    assert t.entry_time == T0 + pd.Timedelta(minutes=45)
+    assert t.entry_price == pytest.approx(100.4)
+    assert t.slippage_in > 0
+
+
+def test_timeout_mas_largo_llena_lo_que_antes_expiraba(parity):
+    ohlc = _flat(10, 100.2) + [(100.2, 100.2, 99.9, 100.0)] + _flat(3)
+    ohlc[5] = (100.0, 100.05, 99.95, 100.0)
+    assert parity(_bars(ohlc))["entries_expired"] == 1
+    res = parity(_bars(ohlc), entry_timeout_bars=6)
+    assert res["entries_expired"] == 0
+    assert res["trades_list"][0].entry_price == pytest.approx(99.98)
+
+
+def test_offset_cero_pone_el_limite_en_el_cierre(parity):
+    ohlc = _flat(7) + [(100.0, 100.05, 99.9, 100.0)] + _flat(4)
+    res = parity(_bars(ohlc), entry_offset_bps=0.0)
+    assert res["entries_log"][0]["limit"] == pytest.approx(100.0)

@@ -621,6 +621,24 @@ Apagado en prod el 24/09 03:28 UTC (`235473b`) y re-probado fuera de prod con do
 - ⚠️ La versión original (0,25% / 30 min) es de las peores en todo: pierde 4/4 recientes y hold1. **Estuvo tres semanas en prod por una validación que no existía.**
 - **Queda APAGADO.** Revisitar sólo "sólo tras TP2 + ATR 2×", y sólo si se acumulan ≥30 posiciones reales que lleguen a TP2 (hoy son 9 desde el 28/07). Configs: `archivos/backtesting/configs/` no tiene estas variantes; se generan copiando el runtime config y tocando sólo el bloque `ratchet`.
 
+### ❌ A/B de la entrada — 24/09: la selección adversa es real pero NO es aprovechable; no tocar la entrada
+
+Las órdenes PostOnly que expiran son las mejores (+0,60% a 4 h), pero porque el precio **ya se fue**. Probado en el parity (Δ contra la entrada actual, capital 1000; 4 ventanas recientes + 2 de falsación):
+
+| variante | 30d | 60d | 90d | 120d | hold1 | hold2 |
+|---|---|---|---|---|---|---|
+| offset 0 bps | +0,33 | +0,09 | −0,12 | −1,12 | −1,82 | −4,18 |
+| timeout 6 velas | 0,00 | +4,10 | −7,57 | −7,79 | −2,84 | +1,26 |
+| timeout 10 velas | +0,55 | +12,05 | +0,98 | +0,55 | **−7,40** | **−2,81** |
+| fallback a mercado al expirar | −1,07 | −8,37 | −22,35 | −22,86 | −20,81 | +30,80 |
+| offset 0 + fallback | −3,56 | −15,12 | −28,50 | −30,53 | −18,91 | +26,59 |
+| siempre a mercado | −14,83 | −18,91 | −31,77 | −46,51 | −3,06 | +19,12 |
+
+- **Perseguir el precio cuesta más de lo que recupera.** El fallback y la entrada a mercado entran tarde, a peor precio y con fee taker: −23 a −47 a 120d. Que "sin fill" diera +22 el 23/09 era un contrafactual inalcanzable (llenar al cierre de la vela de señal con fee maker).
+- **Timeout de 10 velas** gana 4/4 recientes, pero con un solo aporte grande (+12 a 60d) y **pierde las dos falsaciones**. Offset 0 empeora en casi todo, también en la lente real.
+- Lente real (99 órdenes, retorno desde la entrada a horizonte fijo, neto de fees): el signo cambia con el horizonte (fallback +18% a 24 h, −2,4 pts a 8 h) y el ruido es de ±12 pts. No contradice al parity.
+- **Conclusión: la entrada PostOnly a 2 bps con timeout de ~17 min queda como está.** Infra reutilizable en el parity: `entry_fill_model='market'`, `entry_timeout_bars`, `entry_offset_bps`, `entry_expiry_fallback='market'`.
+
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
 
 Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferencias entre lo que prod ejecuta y lo que el backtest simula, y **hacen que los A/B midan algo distinto de lo que se cree**.

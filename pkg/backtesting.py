@@ -2871,6 +2871,9 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                               lookback_days: Optional[int] = None,
                               return_trades: bool = False,
                               entry_fill_model: str = 'live',
+                              entry_timeout_bars: Optional[int] = None,
+                              entry_offset_bps: Optional[float] = None,
+                              entry_expiry_fallback: str = 'none',
                               cost_model: str = 'live',
                               ratchet: Optional[bool] = None,
                               use_peso: bool = True,
@@ -2885,6 +2888,11 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
       cierre, que llena sólo si el mercado la atraviesa en las velas t+2..t+4 (ver
       PARITY_ENTRY_FIRST_FILL_BAR); si no, expira como `protection_timeout`;
       'instant' = llena al cierre de la vela de la señal (comportamiento previo).
+      'market' = orden a mercado sometida en la vela t+1 (donde el live somete, T+8):
+      llena al cierre de t+1 con fee taker y slippage.
+    - `entry_timeout_bars` / `entry_offset_bps`: timeout y offset de la LIMIT (None =
+      los del live). `entry_expiry_fallback='market'`: si la LIMIT expira, entra a
+      mercado al cierre de la última vela de la ventana, con fee taker y slippage.
     - `cost_model`: 'live' = fee maker sin slippage en entradas PostOnly y TPs LIMIT,
       taker con slippage en stops; 'legacy' = taker + slippage en todo.
     - `ratchet`: None = lo que diga el runtime config; False = apagado.
@@ -3012,7 +3020,12 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
     except Exception:
         _entry_is_limit = True
         _entry_offset = 0.0002
-    _entry_pending_model = _entry_is_limit and str(entry_fill_model).lower() == 'live'
+    if entry_offset_bps is not None:
+        _entry_offset = max(0.0, float(entry_offset_bps)) / 10000.0
+    _entry_market = str(entry_fill_model).lower() == 'market'
+    _entry_pending_model = (_entry_is_limit and str(entry_fill_model).lower() == 'live') or _entry_market
+    _entry_timeout = int(entry_timeout_bars) if entry_timeout_bars else PARITY_ENTRY_TIMEOUT_BARS
+    _entry_fallback_market = str(entry_expiry_fallback).lower() == 'market'
     _live_costs = str(cost_model).lower() == 'live'
     _entry_maker = _live_costs and _entry_is_limit
     _tp_maker = _live_costs and _tp_limit_maker
@@ -3071,9 +3084,9 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
 
     pos_counter = 0
 
-    def _open_live_position(sym, side, entry_price, qty, row, ts, atr_pct):
+    def _open_live_position(sym, side, entry_price, qty, row, ts, atr_pct, taker=False):
         nonlocal pos_counter
-        if _entry_maker:
+        if _entry_maker and not taker:
             slip_rate = 0.0
             fee_rate = PARITY_MAKER_FEE
         else:
@@ -3137,6 +3150,13 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
             pend = pending_entries.get(sym)
             if pend is not None:
                 pend['bars_waited'] += 1
+                if pend.get('market'):
+                    # Orden a mercado sometida dentro de t+1: llena a su cierre, taker.
+                    pending_entries.pop(sym, None)
+                    pend['log']['filled_time'] = ts
+                    _open_live_position(sym, pend['side'], float(row.get('close')), float(pend['qty']),
+                                        pend['row'], ts, float(pend['atr_pct']), taker=True)
+                    continue
                 if pend['bars_waited'] < PARITY_ENTRY_FIRST_FILL_BAR:
                     continue
                 # BUY limit abajo = mismo test que el TP de un short; SELL limit arriba =
@@ -3158,9 +3178,14 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                     pend['log']['filled_time'] = ts
                     _open_live_position(sym, pend['side'], float(pend['limit']), float(pend['qty']),
                                         pend['row'], ts, float(pend['atr_pct']))
-                elif pend['bars_waited'] >= PARITY_ENTRY_TIMEOUT_BARS:
+                elif pend['bars_waited'] >= _entry_timeout:
                     pending_entries.pop(sym, None)
                     entries_expired += 1
+                    if _entry_fallback_market:
+                        pend['log']['filled_time'] = ts
+                        pend['log']['fallback'] = True
+                        _open_live_position(sym, pend['side'], float(row.get('close')), float(pend['qty']),
+                                            pend['row'], ts, float(pend['atr_pct']), taker=True)
                 continue
 
             pos = open_positions.get(sym)
@@ -3372,6 +3397,7 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                         'row': cand['row'],
                         'atr_pct': cand['atr_pct'],
                         'bars_waited': 0,
+                        'market': _entry_market,
                         'policy': LimitFillPolicy(
                             buffer_bps=_as_float(p.get('limit_fill_buffer_bps', 2.0), 2.0),
                             require_close_confirmation=_as_bool(
