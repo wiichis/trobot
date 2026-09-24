@@ -30,7 +30,7 @@ import re
 import itertools
 import sys
 import atexit
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from multiprocessing import Pool, cpu_count
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple
@@ -1145,13 +1145,13 @@ def _assert_tick_size_sane(symbol: str, ref_price: float) -> None:
     )
 
 
-def _round_to_tick(value: float, tick: float) -> float:
+def _round_to_tick(value: float, tick: float, rounding=ROUND_DOWN) -> float:
     if tick is None or tick <= 0:
         return float(value)
     try:
         tick_dec = Decimal(str(tick))
         val_dec = Decimal(str(value))
-        rounded = (val_dec / tick_dec).to_integral_value(rounding=ROUND_DOWN) * tick_dec
+        rounded = (val_dec / tick_dec).to_integral_value(rounding=rounding) * tick_dec
         return float(rounded)
     except Exception:
         return float(value)
@@ -1305,6 +1305,39 @@ class LivePosition:
     cooldown_bars: int
     position_id: int
     bars_held: int = 0
+    # Ratchet (espejo de `_ratchet_stop_candidate` del live): cuántos tramos de TP
+    # llenaron, el mejor precio desde que arrancó la etapa actual y cuántas velas
+    # CERRADAS lleva esa etapa. `last_close` es el "precio vivo" de la barra anterior.
+    tp_fills: int = 0
+    stage_best: Optional[float] = None
+    stage_bars: int = 0
+    last_close: Optional[float] = None
+
+
+# Costos de ejecución del parity, medidos contra los fills reales de BingX (sep/2026):
+# entradas PostOnly y TPs LIMIT pagan 2 bps exactos (36/36 y 14/14 fills); los stops
+# (STOP_MARKET) pagan ~5 bps. Una orden maker no tiene slippage: llena a su precio.
+PARITY_MAKER_FEE = 0.0002
+PARITY_TAKER_FEE = 0.0005
+
+# Ventana de la entrada LIMIT PostOnly del live. La señal sale de la vela t (cierra en
+# T+5); el job de entradas somete en T+8 y el de protección cancela tras 20 ciclos de
+# 50 s, ~T+26. La vela t+1 [T+5, T+10) casi entera es ANTERIOR a la orden: si se la
+# cuenta, el sim llena con extremos que ocurrieron antes de que la orden existiera
+# (14 falsos fills en 98 órdenes reales). Por eso la orden sólo puede llenar en t+2..t+4.
+# Medido contra 98 submits reales (10/08-20/09): fill 78% sim vs 79% real, acuerdo
+# orden por orden 87% (95% si se conociera el precio límite real).
+PARITY_ENTRY_FIRST_FILL_BAR = 2
+PARITY_ENTRY_TIMEOUT_BARS = 4
+
+# Margen del ratchet respecto del precio vivo y offset del BE (idénticos al live:
+# RATCHET_MARGEN_PRECIO y TINY_BE en monkey_bx).
+PARITY_RATCHET_MARGEN_PRECIO = 0.001
+PARITY_TINY_BE = 0.0002
+
+# Kwargs de run_live_parity_portfolio que reproducen el parity anterior al 23/09.
+PARITY_LEGACY_EXECUTION = dict(entry_fill_model='instant', cost_model='legacy', ratchet=False,
+                               use_peso=False, force_be_after_tp1=False)
 
 
 def _allocate_entry_cost_live(position: LivePosition, qty_close: float) -> Tuple[float, float, float]:
@@ -1321,12 +1354,16 @@ def _allocate_entry_cost_live(position: LivePosition, qty_close: float) -> Tuple
 
 
 def _close_position_portion_live(position: LivePosition, qty_close: float, exit_price: float, ts: pd.Timestamp,
-                                 atr_pct: float, taker_fee: float, exit_reason: Optional[str] = None) -> Tuple[float, float, float, Trade]:
+                                 atr_pct: float, taker_fee: float, exit_reason: Optional[str] = None,
+                                 slippage: bool = True) -> Tuple[float, float, float, Trade]:
+    """Cierra `qty_close` de la posición. `taker_fee` es la fee que se cobra en ESTA
+    salida (pasar PARITY_MAKER_FEE para un TP LIMIT); `slippage=False` para una orden
+    maker, que llena a su precio."""
     if qty_close <= 0 or position.remaining_qty <= 0:
         return 0.0, 0.0, 0.0, None
     qty_close = min(qty_close, position.remaining_qty)
     entry_fee_share, slip_in_share, funding_share = _allocate_entry_cost_live(position, qty_close)
-    slip_rate = calc_slippage_rate(atr_pct)
+    slip_rate = calc_slippage_rate(atr_pct) if slippage else 0.0
     if position.side == 'long':
         actual_exit_notional = exit_price * (1 - slip_rate) * qty_close
     else:
@@ -1535,7 +1572,82 @@ def _initial_sl_from_row(row: pd.Series, side: str, entry_price: float, symbol: 
     return _round_to_tick(float(sl), _tick_size_for(symbol))
 
 
-def _update_live_sl(position: LivePosition, row: pd.Series, price: float) -> None:
+def _ratchet_candidate_parity(position: LivePosition, cfg: Dict[str, object]) -> Optional[float]:
+    """Stop que propondría el ratchet del live, o None. Espejo de
+    `monkey_bx._ratchet_stop_candidate`, con dos adaptaciones a velas de 5m:
+
+    - el "mejor precio" y el "precio vivo" salen sólo de velas YA CERRADAS
+      (`stage_best` y `last_close`), así que el stop se decide antes de ver la vela en
+      la que se testea: sin lookahead;
+    - el reloj cuenta velas cerradas desde la etapa (`stage_bars * 5` minutos), que es
+      algo más lento que el reloj de pared del live, nunca más rápido.
+
+    Exige un tramo ya lleno y otro pendiente (etapas tp1_filled..tp3_live del live).
+    """
+    if not cfg or not cfg.get('enabled'):
+        return None
+    if position.tp_fills <= 0:
+        return None
+    if not any((not t.get('filled')) and float(t.get('qty', 0.0) or 0.0) > 0 for t in position.tp_plan):
+        return None
+    # En el live el ratchet vive dentro de la rama del break-even, que exige be_trigger>0.
+    if not position.be_trigger or float(position.be_trigger) <= 0:
+        return None
+    if position.stage_best is None or position.last_close is None:
+        return None
+    if position.stage_bars * 5.0 < float(cfg.get('after_min', 30.0)):
+        return None
+    buf = float(cfg.get('buffer_pct', 0.0025))
+    es_long = position.side == 'long'
+    best = float(position.stage_best)
+    cand = best * (1.0 - buf) if es_long else best * (1.0 + buf)
+    px = float(position.last_close)
+    limite = px * (1.0 - PARITY_RATCHET_MARGEN_PRECIO) if es_long else px * (1.0 + PARITY_RATCHET_MARGEN_PRECIO)
+    if es_long and cand > limite:
+        return None
+    if (not es_long) and cand < limite:
+        return None
+    be_stop = position.entry_price * (1.0 + PARITY_TINY_BE) if es_long else position.entry_price * (1.0 - PARITY_TINY_BE)
+    cand = max(cand, be_stop, position.entry_price) if es_long else min(cand, be_stop, position.entry_price)
+    return float(cand)
+
+
+def _apply_ratchet_parity(position: LivePosition, cfg: Dict[str, object]) -> bool:
+    """Sube el stop al candidato del ratchet si mejora más de `min_improve_pct`."""
+    cand = _ratchet_candidate_parity(position, cfg)
+    if cand is None:
+        return False
+    tick = _tick_size_for(position.symbol)
+    min_imp = float(cfg.get('min_improve_pct', 0.0005))
+    if position.side == 'long':
+        cand = _round_to_tick(cand, tick)
+        if cand > position.sl_price * (1.0 + min_imp):
+            position.sl_price = cand
+            return True
+    else:
+        cand = _round_to_tick(cand, tick, rounding=ROUND_UP)
+        if cand < position.sl_price * (1.0 - min_imp):
+            position.sl_price = cand
+            return True
+    return False
+
+
+def _update_ratchet_stage_parity(position: LivePosition, row: pd.Series, price: float) -> None:
+    """Al cerrar la vela: acumula el mejor precio de la etapa y la cuenta de velas."""
+    position.last_close = float(price)
+    if position.tp_fills <= 0:
+        return
+    if position.side == 'long':
+        extremo = float(row.get('high', price))
+        position.stage_best = extremo if position.stage_best is None else max(position.stage_best, extremo)
+    else:
+        extremo = float(row.get('low', price))
+        position.stage_best = extremo if position.stage_best is None else min(position.stage_best, extremo)
+    position.stage_bars += 1
+
+
+def _update_live_sl(position: LivePosition, row: pd.Series, price: float,
+                    force_be_after_tp1: bool = False) -> None:
     side = position.side
     col = 'SL_L' if side == 'long' else 'SL_S'
     indicator_sl = None
@@ -1561,6 +1673,14 @@ def _update_live_sl(position: LivePosition, row: pd.Series, price: float) -> Non
             else:
                 indicator_sl = min(indicator_sl, position.entry_price * (1 - tiny_be))
     else:
+        # Invariante del live (`be_forzado_por_tp1`, 06/09): TP1 está siempre más lejos
+        # que be_trigger, así que su fill PRUEBA que el precio cruzó el umbral aunque
+        # el cierre de la vela haya vuelto atrás. El live arma el BE sí o sí.
+        if force_be_after_tp1 and be_trigger > 0 and getattr(position, 'tp_fills', 0) > 0:
+            if side == 'long':
+                indicator_sl = max(indicator_sl, position.entry_price * (1 + tiny_be))
+            else:
+                indicator_sl = min(indicator_sl, position.entry_price * (1 - tiny_be))
         if side == 'long' and be_trigger > 0:
             if price >= position.entry_price * (1 + be_trigger):
                 indicator_sl = max(indicator_sl, position.entry_price * (1 + tiny_be))
@@ -2738,7 +2858,31 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                               weights_csv: Optional[str], funding_8h: float = 0.0001,
                               best_path: Optional[str] = None,
                               lookback_days: Optional[int] = None,
-                              return_trades: bool = False) -> Dict[str, object]:
+                              return_trades: bool = False,
+                              entry_fill_model: str = 'live',
+                              cost_model: str = 'live',
+                              ratchet: Optional[bool] = None,
+                              use_peso: bool = True,
+                              force_be_after_tp1: bool = True) -> Dict[str, object]:
+    """Simulación de portfolio con la misma lógica de ejecución que el live.
+
+    Los knobs de ejecución existen para poder DESCOMPONER un cambio, no para elegir
+    supuestos: el default es siempre lo que hace prod (23/09/2026, validado cruzando
+    posición por posición contra los trades reales del 25/08 al 20/09).
+
+    - `entry_fill_model`: 'live' = orden LIMIT PostOnly a `entry_limit_offset_bps` del
+      cierre, que llena sólo si el mercado la atraviesa en las velas t+2..t+4 (ver
+      PARITY_ENTRY_FIRST_FILL_BAR); si no, expira como `protection_timeout`;
+      'instant' = llena al cierre de la vela de la señal (comportamiento previo).
+    - `cost_model`: 'live' = fee maker sin slippage en entradas PostOnly y TPs LIMIT,
+      taker con slippage en stops; 'legacy' = taker + slippage en todo.
+    - `ratchet`: None = lo que diga el runtime config; False = apagado.
+    - `use_peso`: respeta el `peso` por par de best_prod.json, acotado igual que el live.
+    - `force_be_after_tp1`: arma el BE al llenar TP1 aunque el cierre haya retrocedido.
+
+    `entry_fill_model='instant', cost_model='legacy', ratchet=False, use_peso=False,
+    force_be_after_tp1=False` reproduce el parity anterior al 23/09.
+    """
     if _indicadores is None:
         raise SystemExit("No se pudo importar indicadores.py; live_parity requiere pkg/indicadores.py.")
 
@@ -2849,6 +2993,63 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
         _lts_bars = 0
         _lts_min_loss = 0.0
 
+    # Ejecución de la entrada y costos: se atan a la config del LIVE.
+    try:
+        from pkg.live_runtime_config import get_entry_mode, get_entry_limit_offset_bps
+        _entry_is_limit = str(get_entry_mode()).lower() == 'limit_post_only'
+        _entry_offset = float(get_entry_limit_offset_bps()) / 10000.0
+    except Exception:
+        _entry_is_limit = True
+        _entry_offset = 0.0002
+    _entry_pending_model = _entry_is_limit and str(entry_fill_model).lower() == 'live'
+    _live_costs = str(cost_model).lower() == 'live'
+    _entry_maker = _live_costs and _entry_is_limit
+    _tp_maker = _live_costs and _tp_limit_maker
+
+    if ratchet is False:
+        _ratchet_cfg = None
+    else:
+        try:
+            from pkg.live_runtime_config import get_ratchet_config
+            _ratchet_cfg = get_ratchet_config()
+        except Exception:
+            _ratchet_cfg = None
+        if _ratchet_cfg is not None and not _ratchet_cfg.get('enabled'):
+            _ratchet_cfg = None
+
+    try:
+        from pkg.live_runtime_config import get_tp_min_close_notional_usdt
+        _tp_min_notional = float(get_tp_min_close_notional_usdt())
+    except Exception:
+        _tp_min_notional = 7.0
+    try:
+        _min_split = min(x for x in _runtime_tp_splits_parity() if x and x > 0)
+    except Exception:
+        _min_split = 1.0
+
+    def _peso_de(sym: str, eq: float) -> Optional[float]:
+        """Override `peso` de best_prod.json, espejo de monkey_bx._peso_para_simbolo:
+        tope 0,50 y piso = el peso que deja el tramo más chico de TP en el notional
+        mínimo de cierre. None = sin override (equal weight)."""
+        sym_u = str(sym).upper()
+        p = params_by_symbol.get(sym_u) or params_norm.get(_norm_symbol(sym_u)) or {}
+        raw = p.get('peso', p.get('weight', None))
+        try:
+            peso = float(raw) if raw is not None else None
+        except Exception:
+            peso = None
+        if peso is None or not math.isfinite(peso) or peso <= 0:
+            return None
+        peso = min(peso, 0.50)
+        if eq > 0 and _min_split > 0 and _tp_min_notional > 0:
+            peso = max(peso, (_tp_min_notional / _min_split) / eq)
+        return peso
+
+    pending_entries: Dict[str, Dict[str, object]] = {}
+    entries_submitted = 0
+    entries_expired = 0
+    entries_log: List[Dict[str, object]] = []
+
     equity = float(capital)
     trades: List[Trade] = []
     open_positions: Dict[str, LivePosition] = {}
@@ -2858,6 +3059,53 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
     equity_time = []
 
     pos_counter = 0
+
+    def _open_live_position(sym, side, entry_price, qty, row, ts, atr_pct):
+        nonlocal pos_counter
+        if _entry_maker:
+            slip_rate = 0.0
+            fee_rate = PARITY_MAKER_FEE
+        else:
+            slip_rate = calc_slippage_rate(atr_pct)
+            fee_rate = PARITY_TAKER_FEE
+        sl_in = entry_price * slip_rate * qty
+        if side == 'long':
+            actual_entry_notional = entry_price * (1 + slip_rate) * qty
+        else:
+            actual_entry_notional = entry_price * (1 - slip_rate) * qty
+        fee = abs(actual_entry_notional) * fee_rate
+
+        sym_u = str(sym).upper()
+        p = params_by_symbol.get(sym_u) or params_norm.get(_norm_symbol(sym_u)) or {}
+        be_trigger = float(p.get('be_trigger', 0.0)) if p.get('be_trigger') is not None else 0.0
+        be_mode = str(p.get('be_mode', 'price_trigger')).lower()
+        if be_mode not in ('price_trigger', 'after_tp1'):
+            be_mode = 'price_trigger'
+        be_offset = _as_float(p.get('be_offset', 0.0002), 0.0002)
+        tp_plan = _prepare_live_tp_plan(row, side, entry_price, qty, sym, p)
+        sl_price = _initial_sl_from_row(row, side, entry_price, sym)
+
+        pos_counter += 1
+        open_positions[sym] = LivePosition(
+            symbol=sym,
+            side=side,
+            entry_time=ts,
+            entry_price=entry_price,
+            qty=qty,
+            remaining_qty=qty,
+            entry_fee_remaining=fee,
+            slippage_in_remaining=sl_in,
+            funding_remaining=0.0,
+            sl_price=sl_price,
+            tp_plan=tp_plan,
+            be_trigger=be_trigger,
+            be_mode=be_mode,
+            be_offset=be_offset,
+            tp1_filled=False,
+            cooldown_bars=cooldown_map.get(sym, 0),
+            position_id=pos_counter,
+        )
+
     for ts in timeline:
         closed_this_bar = set()
         candidates = []
@@ -2871,6 +3119,38 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                 row = row.iloc[-1]
             if cooldowns.get(sym, 0) > 0:
                 cooldowns[sym] = max(0, cooldowns[sym] - 1)
+
+            # Orden de entrada LIMIT PostOnly esperando en el book (entry_fill_model='live').
+            # Mientras vive, el símbolo no acepta otra señal (el live lo salta si tiene
+            # órdenes abiertas). Si llena, la gestión arranca en la vela SIGUIENTE.
+            pend = pending_entries.get(sym)
+            if pend is not None:
+                pend['bars_waited'] += 1
+                if pend['bars_waited'] < PARITY_ENTRY_FIRST_FILL_BAR:
+                    continue
+                # BUY limit abajo = mismo test que el TP de un short; SELL limit arriba =
+                # el de un long. Hace falta atravesar el nivel o que el cierre lo confirme.
+                _lado_orden = 'short' if pend['side'] == 'long' else 'long'
+                try:
+                    _lleno = should_fill_tp_limit(
+                        position_side=_lado_orden,
+                        limit_price=float(pend['limit']),
+                        bar_high=float(row.get('high', np.nan)),
+                        bar_low=float(row.get('low', np.nan)),
+                        bar_close=float(row.get('close', np.nan)),
+                        policy=pend['policy'],
+                    ) if should_fill_tp_limit is not None else True
+                except Exception:
+                    _lleno = False
+                if _lleno:
+                    pending_entries.pop(sym, None)
+                    pend['log']['filled_time'] = ts
+                    _open_live_position(sym, pend['side'], float(pend['limit']), float(pend['qty']),
+                                        pend['row'], ts, float(pend['atr_pct']))
+                elif pend['bars_waited'] >= PARITY_ENTRY_TIMEOUT_BARS:
+                    pending_entries.pop(sym, None)
+                    entries_expired += 1
+                continue
 
             pos = open_positions.get(sym)
             if pos is not None:
@@ -2886,7 +3166,10 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                     pos.funding_remaining += fcost
                     funding_costs += fcost
 
-                _update_live_sl(pos, row, price)
+                # El ratchet decide con velas ya cerradas, antes de ver ésta.
+                if _ratchet_cfg is not None:
+                    _apply_ratchet_parity(pos, _ratchet_cfg)
+                _update_live_sl(pos, row, price, force_be_after_tp1=force_be_after_tp1)
                 pos.bars_held += 1
 
                 tp_hits = []
@@ -2932,8 +3215,15 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                             target['filled'] = True
                             continue
                         pnl_tp, comm_tp, slip_tp, trade = _close_position_portion_live(
-                            pos, qty_tp, float(target['price']), ts, atr_pct, 0.0005, exit_reason='TP'
+                            pos, qty_tp, float(target['price']), ts, atr_pct,
+                            PARITY_MAKER_FEE if _tp_maker else PARITY_TAKER_FEE,
+                            exit_reason='TP', slippage=not _tp_maker,
                         )
+                        # Nueva etapa del ladder: el reloj y el máximo del ratchet se
+                        # reinician (stage_since_utc en el live).
+                        pos.tp_fills += 1
+                        pos.stage_best = None
+                        pos.stage_bars = 0
                         if trade is not None:
                             trades.append(trade)
                         equity += pnl_tp
@@ -2985,7 +3275,15 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                         cooldowns[sym] = cooldown_map.get(sym, 0)
                         closed_this_bar.add(sym)
 
-            if sym in open_positions or cooldowns.get(sym, 0) > 0 or sym in closed_this_bar:
+                if sym in open_positions:
+                    if tp_hits:
+                        # La vela del fill no cuenta para la etapa nueva (el live mide
+                        # desde stage_since_utc, que cae dentro de esta vela).
+                        pos.last_close = price
+                    else:
+                        _update_ratchet_stage_parity(pos, row, price)
+
+            if sym in open_positions or sym in pending_entries or cooldowns.get(sym, 0) > 0 or sym in closed_this_bar:
                 continue
 
             long_sig = _as_bool_signal(row.get('Long_Signal', False))
@@ -3011,7 +3309,9 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
             for cand in candidates:
                 sym = cand['symbol']
                 sym_u = str(sym).upper()
-                weights[sym] = weights_map.get(sym_u) or weights_norm.get(_norm_symbol(sym_u)) or default_weight
+                w_override = _peso_de(sym, equity) if use_peso else None
+                weights[sym] = (w_override if w_override is not None else
+                                (weights_map.get(sym_u) or weights_norm.get(_norm_symbol(sym_u)) or default_weight))
             sum_active = sum(weights.values())
             if sum_active > 0:
                 factor = min(2.0, sum_active) / sum_active
@@ -3032,46 +3332,39 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
                 qty = math.floor((trade_amt / price) / step) * step
                 if qty <= 0:
                     continue
-                slip_rate = calc_slippage_rate(cand['atr_pct'])
-                entry_price = price
-                sl_in = price * slip_rate * qty
-                if cand['side'] == 'long':
-                    actual_entry_notional = price * (1 + slip_rate) * qty
+                entries_submitted += 1
+                if _entry_pending_model:
+                    # LIMIT PostOnly del live: a `entry_limit_offset_bps` del precio, del
+                    # lado pasivo del book (BUY abajo, SELL arriba), redondeado al tick
+                    # hacia afuera como `_sanitize_entry_limit_price`.
+                    tick = _tick_size_for(sym)
+                    if cand['side'] == 'long':
+                        limit_px = _round_to_tick(price * (1.0 - _entry_offset), tick)
+                    else:
+                        limit_px = _round_to_tick(price * (1.0 + _entry_offset), tick, rounding=ROUND_UP)
+                    sym_u = str(sym).upper()
+                    p = params_by_symbol.get(sym_u) or params_norm.get(_norm_symbol(sym_u)) or {}
+                    _log = {'symbol': sym, 'side': cand['side'], 'signal_time': ts,
+                            'signal_close': price, 'limit': limit_px, 'filled_time': None}
+                    entries_log.append(_log)
+                    pending_entries[sym] = {
+                        'log': _log,
+                        'side': cand['side'],
+                        'limit': limit_px,
+                        'qty': qty,
+                        'row': cand['row'],
+                        'atr_pct': cand['atr_pct'],
+                        'bars_waited': 0,
+                        'policy': LimitFillPolicy(
+                            buffer_bps=_as_float(p.get('limit_fill_buffer_bps', 2.0), 2.0),
+                            require_close_confirmation=_as_bool(
+                                p.get('limit_fill_require_close_confirmation', True), True),
+                        ) if LimitFillPolicy is not None else None,
+                    }
                 else:
-                    actual_entry_notional = price * (1 - slip_rate) * qty
-                fee = abs(actual_entry_notional) * 0.0005
-
-                sym_u = str(sym).upper()
-                p = params_by_symbol.get(sym_u) or params_norm.get(_norm_symbol(sym_u)) or {}
-                be_trigger = float(p.get('be_trigger', 0.0)) if p.get('be_trigger') is not None else 0.0
-                be_mode = str(p.get('be_mode', 'price_trigger')).lower()
-                if be_mode not in ('price_trigger', 'after_tp1'):
-                    be_mode = 'price_trigger'
-                be_offset = _as_float(p.get('be_offset', 0.0002), 0.0002)
-                tp_plan = _prepare_live_tp_plan(cand['row'], cand['side'], entry_price, qty, sym, p)
-                sl_price = _initial_sl_from_row(cand['row'], cand['side'], entry_price, sym)
-                cooldown_bars = cooldown_map.get(sym, 0)
-
-                pos_counter += 1
-                open_positions[sym] = LivePosition(
-                    symbol=sym,
-                    side=cand['side'],
-                    entry_time=ts,
-                    entry_price=entry_price,
-                    qty=qty,
-                    remaining_qty=qty,
-                    entry_fee_remaining=fee,
-                    slippage_in_remaining=sl_in,
-                    funding_remaining=0.0,
-                    sl_price=sl_price,
-                    tp_plan=tp_plan,
-                    be_trigger=be_trigger,
-                    be_mode=be_mode,
-                    be_offset=be_offset,
-                    tp1_filled=False,
-                    cooldown_bars=cooldown_bars,
-                    position_id=pos_counter,
-                )
+                    entries_log.append({'symbol': sym, 'side': cand['side'], 'signal_time': ts,
+                                        'signal_close': price, 'limit': price, 'filled_time': ts})
+                    _open_live_position(sym, cand['side'], price, qty, cand['row'], ts, cand['atr_pct'])
                 total_alloc += trade_amt
 
         equity_curve.append(equity)
@@ -3133,8 +3426,11 @@ def run_live_parity_portfolio(symbols: List[str], data_template: str, capital: f
         'max_dd_pct': round(float(max_dd_pct), 4) if max_dd_pct is not None else None,
         'sharpe_annual': round(float(sharpe_annual), 3) if sharpe_annual is not None else None,
     }
+    result['entries_submitted'] = entries_submitted
+    result['entries_expired'] = entries_expired
     if return_trades:
         result['trades_list'] = trades
+        result['entries_log'] = entries_log
         result['equity_curve'] = equity_curve
         result['equity_time'] = equity_time
     return result
@@ -3611,6 +3907,8 @@ def main():
     parser.add_argument('--parity_days', type=int, default=None, help='Limitar live-parity a los últimos N días (None = todo)')
     parser.add_argument('--parity_best', type=str, default=None, help='Ruta a best_prod.json para live-parity (si se omite, usa el cargado por indicadores)')
     parser.add_argument('--parity_per_symbol', action='store_true', help='Imprime resumen por símbolo en live-parity')
+    parser.add_argument('--parity_legacy_execution', action='store_true',
+                        help='Parity con el modelo de ejecución previo al 23/09 (fill instantáneo, costos taker, sin ratchet ni pesos). Sólo para comparar.')
     parser.add_argument('--weights_csv', type=str, default=None, help='CSV de pesos (obsoleto, se usa equal weight por defecto)')
     parser.add_argument('--portfolio_max_positions', type=int, default=3, help='Máximo de posiciones abiertas simultáneas (0 = sin límite)')
     parser.add_argument('--portfolio_alloc_pct', type=float, default=0.30, help='Fracción máxima del equity que puede asignar cada trade (0.30 = 30%%)')
@@ -3705,6 +4003,7 @@ def main():
             best_path=args.parity_best,
             lookback_days=args.parity_days,
             return_trades=args.parity_per_symbol,
+            **(PARITY_LEGACY_EXECUTION if args.parity_legacy_execution else {}),
         )
         if args.parity_per_symbol and result.get('trades_list'):
             rows = _summarize_trades_by_symbol(result['trades_list'])
@@ -3716,6 +4015,7 @@ def main():
         print(f"  Trades: {result['trades']} | PnL neto: {result['pnl_net']} | Winrate: {result['winrate_pct']}%")
         print(f"  Max DD: {result['max_dd_pct']} | Sharpe anualizado: {result['sharpe_annual']}")
         print(f"  Cost ratio: {result['cost_ratio']} (comisiones={result['commissions']}, slip={result['slippage_cost']}, funding={result['funding_cost']})")
+        print(f"  Entradas: {result.get('entries_submitted')} sometidas | {result.get('entries_expired')} expiradas sin llenar")
         return
 
     if args.portfolio_mode:

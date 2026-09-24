@@ -28,7 +28,7 @@ Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USD
 
 ## Composición actual del portfolio
 
-10 pares (al 2026-09-19, MD5 `8ce9f80d`):
+10 pares (al 2026-09-20, MD5 `68c049c1` — incluye el `peso` 0,13 de ONDO de `8da4bc8`):
 APT, **AVAX**, BCH, BNB, CFX, DYDX, ETH, LINK, ONDO, **XMR**.
 
 🔧 **AVAX y XMR RE-OPTIMIZADOS** (19/09, `3daa85c`) — validados con cross-val 4/4 **y holdout fuera de muestra**. Ver "Revisión 19/09". ⚠️ **AVAX sale del congelamiento**: la nota de abajo ("NO re-optimizar sus params") queda **derogada**.
@@ -145,7 +145,7 @@ Cada par tiene su propio paramset en `pkg/best_prod.json`, optimizado individual
 - **Opción B (relajar `adx_min`/`min_vol_ratio` ×0.8/×0.9 en lateral)**: Δ −5/−12/−23 USD en 30/60/90d. Monótono también (aggr ×0.7/×0.85 → −77). Los trades marginales desbloqueados pierden (XMR +0.7→−15.4). **Y los pares silenciosos NO despiertan** (CFX 7→7 trades, ETH 7→7 en 30d): su blocker no es ADX/volumen.
 - Conclusión: los paramsets actuales están en un óptimo local respecto a estos knobs condicionados a régimen. No insistir con variantes (ver memoria `regime_filter_experiments`).
 
-**Activado el 20/09 14:40 UTC** con telemetría de fail-closed (`a1d61c3`). Es **flip de config**: `archivos/backtesting/configs/live_benchmark_runtime.json` → `timeframe`. Backup en prod: `.bak_20260920_pre_htf`. ⚠️ Ese archivo está en `.gitignore`, así que **no viaja por git** — se cambia en prod con `scp` y restart.
+**Activado el 20/09 14:40 UTC** con telemetría de fail-closed (`a1d61c3`). Es **flip de config**: `archivos/backtesting/configs/live_benchmark_runtime.json` → `timeframe`. Backup en prod: `.bak_20260920_pre_htf`. ⚠️ **Corrección 23/09**: esta guía decía que el archivo estaba en `.gitignore`. **Es falso: está versionado** (el cambio viajó en `48418b8`). En prod quedó como modificación sin commitear sobre su HEAD (`cc8e8e3`), con el mismo contenido que trae `48418b8`. Antes del próximo `git merge` en prod: `git checkout -- archivos/backtesting/configs/live_benchmark_runtime.json` (el merge trae el mismo contenido) o el merge aborta con *local changes would be overwritten*.
 
 **Verificado en vivo**, contrastando `HTF_LONG_OK` del CSV contra un ADX(1h) calculado por fuera: APT (ADX 13,77) → bloqueado, los otros nueve (18,4 a 54,1) → permitidos. Coincide exactamente.
 
@@ -537,6 +537,41 @@ Pierde en 3 de 4 ventanas con el parity ya corregido. Detalle en "Revisión sema
 5. 🆕 **Check de ejecución diseñada**: contar fills `tp1/tp2/tp3` en `execution_ledger`. Si en N cierres hay 0 fills de TP, algo está roto aguas arriba — fue la señal que gritó el bug del escalonamiento durante un mes sin que nadie la leyera. **Medir siempre por EVENTOS** (`tp1_filled` / `entry_order_filled`), nunca agrupando cierres de `PnL.csv` por proximidad temporal: eso dio 12% cuando el valor real era 38%.
 7. 🆕 **Tests anclados a fechas fijas caducan en silencio** (25/08): `test_price_pull_partial_candles` usaba el 23/07 y empezó a fallar al pasar los 30 días de `SIGNAL_HISTORY_DAYS` — la purga borraba las velas del fixture. Falló días sin que hubiera regresión, justo en los tests que cubren el bug de velas parciales. Cualquier test que dependa de una ventana de retención debe anclarse al presente.
 6. 🆕 **Entradas que expiran sin llenar** (10/08, barato y de alto valor): contar `entry_order_canceled_or_expired` con `reason=protection_timeout` por par. Un par que acumula timeouts **no está mudo por señal, está mudo por precio** — su orden PostOnly se coloca donde no puede llenar. Fue el síntoma del bug de tick size y se confundió con selectividad de filtros durante un mes.
+
+### ✅ Parity con el modelo de ejecución del live — 23/09 (sin commitear al escribir esto)
+
+**Cómo se encontró**: cruzando el parity **posición por posición** contra los trades reales (25/08→20/09, 6 pares con params sin cambios, capital 188, filtro de régimen apagado como estaba el live). **Las señales coinciden: 41 de 43 entradas reales tienen su posición en el sim.** Lo de "el sim abre 3-4× más trades" ya no es cierto. Los huecos estaban todos en la ejecución:
+
+| Hueco | Antes | Real | Ahora en el parity |
+|---|---|---|---|
+| Fill de la entrada PostOnly | 100% al cierre | 79% (98 submits desde el 10/08) | LIMIT a 2 bps, llena sólo en velas **t+2..t+4** → 78%, acuerdo orden por orden 87% |
+| Fee entrada / TP | taker 5 bps + slippage | **2 bps exactos**, 36/36 y 14/14 fills | maker 2 bps sin slippage; stops siguen taker + slippage |
+| Ratchet del stop | no existía | activo desde el 05/09 | espejo de `_ratchet_stop_candidate`, con velas cerradas (sin lookahead) |
+| `peso` por par | ignorado (`_load_weight_map` no mira el path) | ONDO 0,13 | espejo de `_peso_para_simbolo`, con el piso del escalonado |
+| BE al llenar TP1 | sólo si el cierre cruza `be_trigger` | `be_forzado_por_tp1` | forzado |
+
+⚠️ **La vela t+1 no puede llenar la entrada**: el live somete en T+8, así que casi toda esa vela es anterior a la orden. Contarla daba 14 falsos fills en 98 órdenes. Con el precio límite REAL y ventana t+2.. el acuerdo sube a 95%, o sea que el residuo es no conocer el precio vivo de T+8.
+
+Sobre las mismas posiciones, **después del fix del BE del 06/09**: correlación sim↔real por posición **0,90** (era 0,75), costo por posición 0,040 contra 0,032 real (era 0,073). **Queda un sesgo optimista de bruto de ~0,13 por posición de 37 USDT** (sim −0,074 vs real −0,207) que no se explicó: el mayor caso es el TP1 re-anclado (ya corregido el 19/09) y hay stops del indicador que el live lee de la vela en formación (P5.1a).
+
+Knobs para descomponer (kwargs de `run_live_parity_portfolio`): `entry_fill_model`, `cost_model`, `ratchet`, `use_peso`, `force_be_after_tp1`. `PARITY_LEGACY_EXECUTION` / `--parity_legacy_execution` reproduce el parity anterior **byte por byte** (verificado). Tests: `tests/test_parity_execution_model.py` (22).
+
+**Edge rehecho con el modelo nuevo** (config viva con filtro de régimen, capital 1000, serie local+prod sin huecos hasta el 24/09):
+
+| | 30d | 60d | 90d | 120d |
+|---|---|---|---|---|
+| parity viejo | +1,66 | +1,86 | −8,71 | +2,02 |
+| **parity nuevo** | **+8,89** | **+7,27** | **+7,14** | **+26,02** |
+| aporte costos reales | +9,28 | +16,22 | +19,85 | +29,17 |
+| aporte fill PostOnly | −5,63 | −17,60 | −13,52 | −22,21 |
+| aporte ratchet | −2,66 | −5,62 | −7,62 | −4,19 |
+
+⚠️ **Positivo 4/4 NO significa edge.** El sesgo optimista residual (~0,13/posición real ≈ 0,7/posición a escala 1000, ×149 posiciones ≈ −100 a 120d) es mayor que el +26. **El real sigue perdiendo** (−7,05 en 30d). Leer el sim para comparar variantes, no para el nivel.
+
+Lo que sí cambia:
+- **"Los costos se comen el edge" era en buena parte un artefacto**: los costos del sim bajan de 78,9 a 31,6 a 120d. El problema es el **bruto**, no los costos. Cobertura de costos: BCH, AVAX, LINK, XMR, BNB sí (5/10); DYDX, APT, CFX, ETH, ONDO no.
+- 🔴 **Selección adversa de la entrada PostOnly**: las órdenes que el sim deja expirar son ganadoras (8 de 10 pares empeoran a 60-120d). Contra eso, en la muestra real las 11 expiradas valían −1,44. **Hipótesis abierta**, no conclusión: medir en real qué habría hecho cada entrada expirada.
+- 🔴 **El ratchet, simulado, no suma**: resta en 4/4 ventanas, 5-7 pares empeoran, y el efecto se reparte (BCH +4,5 a +5,8, BNB −1,7 a −9,7). Su "validación" del 19/09 fueron 3 cierres y un harness aparte. **No está validado**; reabrir con los cierres reales.
 
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
 
@@ -1116,7 +1151,7 @@ Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue 
 
 ## Estado al cierre del 19/09
 
-**Prod**: activo, `NRestarts=0`, 0 errores. `pkg/best_prod.json` md5 **`8ce9f80d`** coincidiendo local = HEAD = prod (desplegado 20/09 03:06 UTC). Balance **188,12 USDT**.
+**Prod**: activo, `NRestarts=0`, 0 errores. `pkg/best_prod.json` md5 **`68c049c1`** coincidiendo local = HEAD = prod (verificado 23/09; `8ce9f80d` era el del 19/09, antes del `peso` de ONDO). Balance **188,12 USDT**.
 
 **Portfolio**: 10 pares. Cambios de params desde el 03/07: DYDX (25/08), ETH + ONDO (11/09) y **AVAX + XMR (19/09)**.
 - **AVAX**: `tp` 0,018 · `sl_pct` 0,018 · `adx_min` 14 · `fresh_cross` 3 — EN PRUEBA, juzgar por 5-8 cierres. Rollback md5 `d868c273`.
