@@ -5,6 +5,7 @@ import os
 import atexit
 import signal
 import pkg.price_bingx_5m
+import pkg.paper_momentum
 import schedule
 import time
 import threading
@@ -152,6 +153,9 @@ if __name__ == '__main__':
     # Velas de los pares en BANCA (pkg/bench.json): no operan, sólo se simulan. El
     # minuto :04 no choca con el pull (:01,:06,...) ni con las entradas (:03,:08,...).
     schedule.every().hour.at(":04").do(pkg.price_bingx_5m.sync_bench_candles)
+    # Prueba SIN DINERO del momentum entre pares (pkg/paper_momentum.json). Chequea cada
+    # hora contra su estado en disco; rebalancea cada 72 h. No manda órdenes.
+    schedule.every().hour.at(":05").do(pkg.paper_momentum.run_paper_momentum)
 
     # Colocar órdenes 2 minutos después de cada cierre de vela 5‑min (ahora en minutos 03, 08, ..., 58)
     for minute in range(3, 60, 5):

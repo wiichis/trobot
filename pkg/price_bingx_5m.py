@@ -34,7 +34,7 @@ log = logging.getLogger("trobot")
 
 # --- Helper robusto para leer velas de BingX (una sola vez y reutilizable) ---
 
-def _fetch_bingx_candles(symbol: str, limit: int, end_time_ms: Optional[int] = None):
+def _fetch_bingx_candles(symbol: str, limit: int, end_time_ms: Optional[int] = None, interval: str = "5m"):
     """
     Obtiene velas de 5m para un símbolo desde la API de BingX.
     - Maneja respuestas en dict/list con claves variables (data/list/klines/lines/...).
@@ -44,7 +44,7 @@ def _fetch_bingx_candles(symbol: str, limit: int, end_time_ms: Optional[int] = N
     """
     url = (
         "https://open-api.bingx.com/openApi/swap/v2/quote/klines"
-        f"?symbol={symbol}&interval=5m&limit={limit}"
+        f"?symbol={symbol}&interval={interval}&limit={limit}"
     )
     if end_time_ms is not None:
         url = f"{url}&endTime={int(end_time_ms)}"
