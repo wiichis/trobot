@@ -18,10 +18,11 @@ releer; cola → position_id_register.csv → releer; estado de TP → tp_stage_
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+
+from tests.exchange_falso import ExchangeFalso, montar
 
 SYM = "ONDO-USDT"
 # Ids reales del caso del 24/09.
@@ -37,136 +38,16 @@ ONDO_PARAMS = {"tp": 0.025, "tp_mode": "fixed", "sl_mode": "percent", "sl_pct": 
 AVISO_TIMEOUT = "No se ejecutó a tiempo"
 
 
-class ExchangeFalso:
-    """BingX con el estado mínimo para el caso: órdenes, posiciones y precio."""
-
-    def __init__(self):
-        self.orders = {}
-        self.pos = {}
-        self.price = {}
-        self.cancel_calls = []
-        self.posts = []
-        self.cancel_ocupado = set()   # órdenes vivas que el exchange no deja cancelar
-        self._seq = 2103070000000000000
-
-    # ── estado ──
-    def agregar(self, otype, side, pside, qty, *, price=0.0, stop=0.0, oid=None, executed=0.0):
-        if oid is None:
-            self._seq += 256
-            oid = self._seq
-        self.orders[str(oid)] = dict(
-            symbol=SYM, orderId=int(oid), side=side, positionSide=pside, type=otype,
-            origQty=float(qty), price=float(price), stopPrice=float(stop),
-            executedQty=float(executed), time=1758707804138,
-        )
-        return str(oid)
-
-    def posicion(self, pside, qty, avg=0.4281):
-        self.pos[pside] = {"qty": round(float(qty), 8), "avg": float(avg)}
-
-    def llenar_entrada(self, oid, qty):
-        o = self.orders[oid]
-        o["executedQty"] = round(o["executedQty"] + qty, 8)
-        actual = self.pos.get(o["positionSide"], {}).get("qty", 0.0)
-        self.posicion(o["positionSide"], actual + qty, avg=o["price"])
-        if o["executedQty"] >= o["origQty"] - 1e-9:
-            del self.orders[oid]
-
-    def llenar_cierre(self, oid):
-        o = self.orders.pop(oid)
-        p = self.pos[o["positionSide"]]
-        p["qty"] = round(p["qty"] - o["origQty"], 8)
-
-    def stops(self):
-        return {k: o for k, o in self.orders.items() if o["type"] == "STOP_MARKET"}
-
-    # ── API de pkg.bingx, con la forma de las respuestas reales ──
-    def query_pending_orders(self):
-        orders = [{
-            "symbol": o["symbol"], "orderId": o["orderId"], "side": o["side"],
-            "positionSide": o["positionSide"], "type": o["type"],
-            "origQty": f"{o['origQty']}", "price": f"{o['price']}",
-            "executedQty": f"{o['executedQty']}", "avgPrice": "0.0000", "cumQuote": "0",
-            "stopPrice": f"{o['stopPrice']}" if o["stopPrice"] else "",
-            "profit": "0.0000", "commission": "0.000000",
-            "status": "PARTIALLY_FILLED" if o["executedQty"] else "NEW",
-            "time": o["time"], "updateTime": o["time"], "clientOrderId": "",
-            "leverage": "5X", "workingType": "MARK_PRICE", "onlyOnePosition": False,
-            "reduceOnly": False, "postOnly": o["type"] == "LIMIT", "stopGuaranteed": "false",
-            "triggerOrderId": 0, "trailingStopRate": 0, "trailingStopDistance": 0,
-        } for o in self.orders.values()]
-        return json.dumps({"code": 0, "msg": "", "data": {"orders": orders}})
-
-    # BingX rechaza los cierres TP/LIMIT/MARKET bajo ~6,4 USDT (101485/110422, 08/07),
-    # pero acepta el STOP_MARKET: en prod el SL de 11,04 × 0,4275 ≈ 4,7 USDT entró 9 veces.
-    MIN_CIERRE_USDT = 6.4
-
-    def post_order(self, symbol, quantity, price, stopPrice, position_side, type, side, **kw):
-        self.posts.append(dict(type=type, side=side, position_side=position_side,
-                               qty=float(quantity), price=float(price), stop=float(stopPrice)))
-        cierra = (position_side == "LONG") == (side == "SELL")
-        if cierra and type in ("LIMIT", "TAKE_PROFIT_MARKET", "MARKET"):
-            ref = {"LIMIT": float(price), "TAKE_PROFIT_MARKET": float(stopPrice)}.get(type, self.price.get(SYM, 0.0))
-            if float(quantity) * ref < self.MIN_CIERRE_USDT:
-                return json.dumps({"code": 101485, "msg": "The minimum order amount is 6.4 USDT", "data": {}})
-        oid = self.agregar(type, side, position_side, quantity, price=price, stop=stopPrice)
-        return json.dumps({"code": 0, "msg": "", "data": {"order": {
-            "orderId": int(oid), "orderID": oid, "symbol": symbol,
-            "positionSide": position_side, "side": side, "type": type,
-            "price": float(price), "quantity": float(quantity), "stopPrice": float(stopPrice),
-            "workingType": "MARK_PRICE", "timeInForce": kw.get("timeInForce", "GTC")}}})
-
-    def cancel_order(self, symbol, order_Id):
-        oid = str(order_Id)
-        self.cancel_calls.append(oid)
-        if oid in self.cancel_ocupado:
-            return json.dumps({"code": 109500, "msg": "system busy", "data": {}})
-        o = self.orders.pop(oid, None)
-        if o is None:
-            # Ya llenó o expiró. El código exacto no importa: sólo code == 0 es éxito.
-            return json.dumps({"code": 80018, "msg": "order not exist", "data": {}})
-        return json.dumps({"code": 0, "msg": "", "data": {"order": {
-            "symbol": symbol, "orderId": o["orderId"], "side": o["side"],
-            "positionSide": o["positionSide"], "type": o["type"],
-            "origQty": f"{o['origQty']}", "executedQty": f"{o['executedQty']}",
-            "status": "CANCELLED"}}})
-
-    def perpetual_swap_positions(self, symbol):
-        data = [{
-            "symbol": SYM, "positionId": "1", "positionSide": side, "isolated": False,
-            "positionAmt": f"{p['qty']}", "availableAmt": f"{p['qty']}",
-            "unrealizedProfit": "0.0", "realisedProfit": "0.0", "initialMargin": "1.0",
-            "avgPrice": f"{p['avg']}", "leverage": 5,
-            "markPrice": f"{self.price.get(SYM, p['avg'])}", "updateTime": 0,
-        } for side, p in self.pos.items() if symbol == SYM and p["qty"] > 0]
-        return json.dumps({"code": 0, "msg": "", "data": data})
-
-    def last_price_trading_par(self, symbol):
-        return json.dumps({"code": 0, "msg": "", "data": {"symbol": symbol, "price": f"{self.price[symbol]}"}})
-
-
 @pytest.fixture
 def ondo(isolated_workspace, runtime_event_spy, temp_tp_state, monkeypatch):
-    import pkg.monkey_bx as mb
-
-    ex = ExchangeFalso()
-    for name in ("query_pending_orders", "post_order", "cancel_order",
-                 "perpetual_swap_positions", "last_price_trading_par"):
-        monkeypatch.setattr(mb.pkg.bingx, name, getattr(ex, name))
-    best = isolated_workspace / "best_prod.json"
-    best.write_text(json.dumps([{"symbol": SYM, "params": ONDO_PARAMS}]))
-    monkeypatch.setattr(mb, "BEST_PROD_PATH", str(best))
-    mensajes = []
-    monkeypatch.setattr(mb, "bot_send_text", lambda m: mensajes.append(str(m)))
-    monkeypatch.setattr(mb, "_TP_SKIP_EMIT_MEMO", {})
-    pd.DataFrame([{
-        "symbol": SYM, "date": "2026-09-24 08:50:00+00:00", "close": 0.4266,
+    ctx = montar(isolated_workspace, monkeypatch, runtime_event_spy, symbol=SYM,
+                 params=ONDO_PARAMS, indicadores={
+        "date": "2026-09-24 08:50:00+00:00", "close": 0.4266,
         "TP1_S": 0.42168, "TP2_S": 0.41740, "TP3_S": 0.41097, "Stop_Loss_Short": 0.4309,
         "TP1_L": 0.43252, "TP2_L": 0.43725, "TP3_L": 0.44372, "Stop_Loss_Long": 0.4223,
         "Take_Profit_Short": 0.4159, "Take_Profit_Long": 0.4373,
-    }]).to_csv(isolated_workspace / "archivos" / "indicadores.csv", index=False)
-    return SimpleNamespace(mb=mb, ex=ex, mensajes=mensajes, eventos=runtime_event_spy,
-                           base=isolated_workspace)
+    }, precio_entrada=0.4281)
+    return ctx
 
 
 def _cola(base, *, counter, entry_order_id="", side="SHORT"):
@@ -261,8 +142,16 @@ class TestTimeoutConPosicionAbierta:
         rem = [e for e in ondo.eventos["lifecycle"] if e["category"] == "entry_remainder_canceled"]
         assert len(rem) == 1 and rem[0]["qty"] == pytest.approx(34.03)
         assert rem[0]["order_id"] == ENTRADA
-        # Con SL y TP1 vivos quedó protegida: sale de la cola por el camino normal.
+        # Al empezar el ciclo el remanente seguía en el book: la fila espera un ciclo más,
+        # que lee la posición después de la cancelación.
+        assert _leer_cola()["symbol"].tolist() == [SYM]
+
+        ondo.mb.colocando_TK_SL()
+
+        # Con SL y TP1 vivos y la entrada resuelta, sale de la cola. Sin duplicar nada.
         assert SYM not in _leer_cola()["symbol"].tolist()
+        assert len([p for p in ex.posts if p["type"] == "STOP_MARKET"]) == 1
+        assert ex.cancel_calls == [ENTRADA]
 
     def test_si_falta_el_sl_no_suelta_la_fila(self, ondo, monkeypatch):
         """Una posición sin stop no puede salir de la cola de protección."""
@@ -311,6 +200,26 @@ class TestTimeoutSinPosicion:
         assert len(ev) == 1 and ev[0]["order_id"] == ENTRADA and ev[0]["reason"] == "protection_timeout"
         led = [e for e in ondo.eventos["ledger"] if e["event_type"] == "entry_order_canceled_or_expired"]
         assert led[0]["order_id"] == ENTRADA
+        assert _leer_cola().empty
+
+    def test_entrada_que_lleno_en_parte_y_ya_cerro_no_dice_que_no_se_ejecuto(self, ondo):
+        """La fila espera al remanente; si en ese tiempo la posición cerró por SL, al vencer
+        el plazo el exchange informa lo que llenó (executedQty) y no hay posición."""
+        ex = ondo.ex
+        ex.price[SYM] = 0.4300
+        ex.agregar("LIMIT", "SELL", "SHORT", 57.02, price=0.4281, oid=ENTRADA, executed=22.99)
+        _cola(ondo.base, counter=19, entry_order_id=ENTRADA)   # sin posición: el SL ya la cerró
+        ondo.mb.obteniendo_ordenes_pendientes()
+
+        ondo.mb.colocando_TK_SL()
+
+        assert ex.cancel_calls == [ENTRADA]
+        assert _avisos_timeout(ondo) == []
+        cats = _categorias(ondo)
+        assert "entry_order_canceled_or_expired" not in cats
+        rem = [e for e in ondo.eventos["lifecycle"] if e["category"] == "entry_remainder_canceled"]
+        assert len(rem) == 1 and rem[0]["qty"] == pytest.approx(22.99)
+        assert rem[0]["reason"] == "protection_timeout_posicion_ya_cerrada"
         assert _leer_cola().empty
 
     def test_si_el_exchange_no_la_cancelo_no_dice_cancelada(self, ondo):
@@ -439,13 +348,15 @@ class TestProtegidaSoloConSL:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_replay_ondo_desde_la_entrada(ondo, monkeypatch):
-    """colocando_ordenes → fill parcial → crece → TP1 → 40 ciclos de protección.
+    """colocando_ordenes → fill parcial → crece → TP1 → hasta que vence la entrada.
 
     A diferencia de prod, aquí el remanente SÍ figura en openOrders (como en los otros 3
-    fills parciales medidos). Mientras está vivo la posición puede crecer, así que no se
-    da por protegida; al vencer el plazo se cancela él, y sólo él.
+    fills parciales medidos). Mientras está vivo la fila sigue en la cola: cuando la
+    posición crece, el SL pasa a cubrirla entera y la base del reparto la sigue, así que
+    el fill de TP1 se confirma. Al vencer el plazo se cancela el remanente, y sólo él.
     """
     import pkg.monkey_bx as mb
+    import pkg.tp_stage_state as tps
     ex = ondo.ex
     ex.price[SYM] = 0.4281
     monkeypatch.setattr(mb.pkg.price_bingx_5m, "currencies_list", lambda: [SYM])
@@ -463,27 +374,37 @@ def test_replay_ondo_desde_la_entrada(ondo, monkeypatch):
     ex.llenar_entrada(entrada, 22.99)
     ex.price[SYM] = 0.4266
     mb.colocando_TK_SL()
-    assert _leer_cola().empty
-    stop_inicial = list(ex.stops())
-    assert len(stop_inicial) == 1
+    (stop_inicial, o_stop), = ex.stops().items()
+    assert o_stop["origQty"] == pytest.approx(22.99)
     tp1 = [oid for oid, o in ex.orders.items() if o["type"] == "LIMIT" and o["side"] == "BUY"]
     assert len(tp1) == 1 and ex.orders[tp1[0]]["origQty"] == pytest.approx(22.99)
+    assert _leer_cola()["symbol"].tolist() == [SYM], "con el remanente vivo la fila sigue"
 
-    # ~09:03 el remanente llena 11,04 más; 09:33 TP1 llena → quedan 11,04.
+    # ~09:03 — el remanente llena 11,04 más. El ciclo siguiente ve la posición crecida.
     ex.llenar_entrada(entrada, 11.04)
+    mb.colocando_TK_SL()
+    (stop_nuevo, o_nuevo), = ex.stops().items()
+    assert stop_nuevo != stop_inicial and stop_inicial in ex.cancel_calls
+    assert o_nuevo["origQty"] == pytest.approx(34.03), "el SL cubre la posición entera"
+    assert o_nuevo["stopPrice"] == pytest.approx(o_stop["stopPrice"]), "al mismo precio"
+    assert float(tps.get_tp_state(SYM, "SHORT")["tp1_submit_position_qty"]) == pytest.approx(34.03)
+
+    # 09:33 — TP1 llena → quedan 11,04. Con la base re-anclada, el fill se confirma
+    # (34,03 − 11,04 = 22,99 ≥ 60% de 22,99); antes daba 11,95 y no se confirmaba nunca.
     ex.llenar_cierre(tp1[0])
     ex.price[SYM] = 0.4210
-    assert entrada in ex.orders, "quedan 22,99 de la entrada en el book"
-
+    assert entrada in ex.orders, "quedan 22,14 de la entrada en el book"
     for _ in range(40):
-        mb.obteniendo_ordenes_pendientes()
+        mb.obteniendo_ordenes_pendientes()   # lo hacen también los otros jobs
         mb.colocando_TK_SL()
 
-    assert ex.cancel_calls == [entrada], "el remanente, una vez; nada más"
-    assert entrada not in ex.orders
-    assert set(stop_inicial) <= set(ex.stops()), "el stop nunca se tocó"
-    assert _avisos_timeout(ondo) == []
     cats = _categorias(ondo)
+    assert "tp1_filled" in cats
+    assert ex.cancel_calls == [stop_inicial, entrada], \
+        "el stop viejo al redimensionar y el remanente al vencer; nada más"
+    assert stop_nuevo in ex.orders and entrada not in ex.orders
+    assert _avisos_timeout(ondo) == []
+    assert cats.count("stop_resized") == 1
     assert cats.count("entry_remainder_canceled") == 1
     assert "entry_order_canceled_or_expired" not in cats
     assert "protection_sl_only" in cats
@@ -538,7 +459,7 @@ def test_entradas_del_registro_ignoran_stop_y_tps():
 def test_estado_posicion_con_tipo_nan_no_inventa_sin_posicion(monkeypatch):
     """`str(nan).upper()` es 'NAN': filtrar por ese lado diría "sin posición" sobre una viva."""
     import pkg.monkey_bx as mb
-    ex = ExchangeFalso()
+    ex = ExchangeFalso(SYM, 0.4281)
     ex.posicion("SHORT", 11.04)
     monkeypatch.setattr(mb.pkg.bingx, "perpetual_swap_positions", ex.perpetual_swap_positions)
     assert mb._estado_posicion(SYM, "NAN") == ("abierta", pytest.approx(11.04))

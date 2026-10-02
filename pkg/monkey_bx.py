@@ -1679,20 +1679,30 @@ def _entry_orders_in_register(symbol_orders: pd.DataFrame, position_side: str) -
 
 
 def _cancel_order_checked(symbol: str, order_id) -> tuple:
-    """Cancela y LEE la respuesta: (ok, detalle).
+    """Cancela y LEE la respuesta: (ok, detalle, executedQty).
 
     `pkg.bingx.cancel_order` devuelve el texto del exchange. Darlo por cancelado sin
     leerlo es lo que hacía avisar "Orden cancelada" aunque el exchange la rechazara.
+    `executedQty` (lo que la orden llegó a llenar) viene en la respuesta del cancel; 0.0
+    si no lo trae.
     """
     oid = _norm_order_id(order_id)
     if not oid:
-        return False, "order_id_vacio"
+        return False, "order_id_vacio", 0.0
     try:
         resp = pkg.bingx.cancel_order(symbol, oid)
     except Exception as e:
-        return False, f"excepcion:{e}"
+        return False, f"excepcion:{e}", 0.0
     ok, err = _validate_order_response(resp)
-    return ok, ('' if ok else str(err))
+    ejecutada = 0.0
+    if ok:
+        try:
+            data = json.loads(resp) if isinstance(resp, str) else resp
+            orden = (data.get('data') or {}).get('order') or {}
+            ejecutada = abs(_safe_float(orden.get('executedQty'), 0.0))
+        except Exception:
+            ejecutada = 0.0
+    return ok, ('' if ok else str(err)), ejecutada
 
 
 def _estado_posicion(symbol: str, position_side: str):
@@ -1726,7 +1736,7 @@ def _estado_posicion(symbol: str, position_side: str):
     return ('abierta', qty) if qty > 0 else ('sin_posicion', 0.0)
 
 
-def _timeout_de_proteccion(symbol: str, position_side: str, entry_order_id, symbol_orders, sl_exists: bool) -> str:
+def _timeout_de_proteccion(symbol: str, position_side: str, entry_order_id, symbol_orders) -> str:
     """Vence el plazo de la cola de protección. Devuelve 'retirar' o 'seguir'.
 
     El plazo es el de la ENTRADA: una LIMIT PostOnly que no llenó en ~17 min se
@@ -1740,8 +1750,10 @@ def _timeout_de_proteccion(symbol: str, position_side: str, entry_order_id, symb
     LIMIT del lado que abre. El SL y los TP no se tocan nunca.
 
     - sin posición: la entrada no llenó → aviso de siempre y se retira de la cola.
-    - posición abierta: llenó (parcial o total) → sin "Orden cancelada". Se retira de
-      la cola si ya tiene SL; si no, sigue para que este mismo ciclo lo coloque.
+    - posición abierta: llenó (parcial o total) → sin "Orden cancelada", y 'seguir': la
+      fila pasa por el camino normal de protección, que ajusta el SL a la posición
+      (el remanente pudo llenar justo antes de cancelarlo) y la saca de la cola cuando
+      queda protegida.
     - posición ilegible: no se afirma nada y se reintenta en el próximo plazo.
     """
     symbol_u = str(symbol).upper()
@@ -1757,10 +1769,12 @@ def _timeout_de_proteccion(symbol: str, position_side: str, entry_order_id, symb
             candidatas.append(oid)
 
     canceladas, fallidas_listadas = [], []
+    ejecutada = 0.0
     for oid in candidatas:
-        ok, detalle = _cancel_order_checked(symbol_u, oid)
+        ok, detalle, ej = _cancel_order_checked(symbol_u, oid)
         if ok:
             canceladas.append(oid)
+            ejecutada += ej
         elif oid in listadas:
             # Sigue figurando como pendiente y el exchange no la canceló: no afirmar
             # que expiró ni soltar la fila mientras pueda seguir llenando.
@@ -1774,6 +1788,34 @@ def _timeout_de_proteccion(symbol: str, position_side: str, entry_order_id, symb
     if estado == 'sin_posicion':
         if fallidas_listadas:
             return 'seguir'
+        if ejecutada > 0:
+            # La entrada SÍ llenó en parte y esa posición ya cerró (p. ej. por SL) antes
+            # de que venciera el remanente. No es una orden "que no se ejecutó".
+            print(f"Timeout de proteccion: {symbol_u} cancelado el remanente de {entry_oid}; "
+                  f"había llenado {ejecutada} y la posición ya cerró.")
+            emit_lifecycle_event(
+                "entry_remainder_canceled",
+                "INFO",
+                symbol=symbol_u,
+                position_side=pside,
+                qty=ejecutada,
+                order_id=entry_oid,
+                reason="protection_timeout_posicion_ya_cerrada",
+                source="colocando_TK_SL_counter",
+            )
+            append_execution_ledger_event(
+                "entry_remainder_canceled",
+                data_quality="actual",
+                source="protection_timeout_counter",
+                order_id=entry_oid,
+                symbol=symbol_u,
+                position_side=pside,
+                fill_qty=ejecutada,
+                cancel_reason="protection_timeout",
+                partial_fill_status="partial",
+                notes="la posicion ya habia cerrado",
+            )
+            return 'retirar'
         canceled = bool(canceladas)
         emoji = "⛔" if canceled else "⏳"
         status = "cancelada" if canceled else "expirada"
@@ -1830,9 +1872,7 @@ def _timeout_de_proteccion(symbol: str, position_side: str, entry_order_id, symb
                 cancel_reason="protection_timeout",
                 partial_fill_status="partial",
             )
-        if fallidas_listadas or not sl_exists:
-            return 'seguir'
-        return 'retirar'
+        return 'seguir'
 
     emit_lifecycle_event(
         "execution_quality_warning",
@@ -1844,6 +1884,174 @@ def _timeout_de_proteccion(symbol: str, position_side: str, entry_order_id, symb
         source="colocando_TK_SL_counter",
     )
     return 'seguir'
+
+
+def _stops_del_registro(symbol: str, position_side: str) -> pd.DataFrame:
+    df = _load_orders_register_df()
+    if df.empty:
+        return df
+    pside = str(position_side or '').upper().strip()
+    m = (df['symbol'] == str(symbol).upper()) & (df['type'].astype(str).str.upper().str.strip() == 'STOP_MARKET')
+    m &= df['positionSide'].isin([pside, '', 'NAN', 'NONE'])
+    return df[m]
+
+
+def _cantidad_cubierta(stops: pd.DataFrame):
+    """Suma de `origQty` de los STOP; None si el registro no trae la cantidad."""
+    if stops is None or stops.empty or 'origQty' not in stops.columns:
+        return None
+    q = pd.to_numeric(stops['origQty'], errors='coerce')
+    if q.isna().all():
+        return None
+    total = float(q.fillna(0.0).sum())
+    # Un stop vivo con cantidad 0 no existe: es otro formato de respuesta, no un stop
+    # vacío. Tratarlo como corto lo recolocaría en cada ciclo.
+    return total if total > 0 else None
+
+
+def _ajustar_cantidad_sl(symbol: str, position_side: str, position_qty, *, source: str) -> str:
+    """El STOP_MARKET tiene que cubrir la posición ENTERA. Devuelve qué hizo.
+
+    El SL se coloca con la cantidad que hay cuando se ve la posición. Si la entrada llenó
+    parcial y el remanente llena después, la posición crece y el stop no: en los 4 fills
+    parciales reales desde el 01/08 el remanente llenó en 4-9 min y el stop quedó con la
+    cantidad del primer fill. BNB 07/09: el SL de 0,01 sobre una posición de 0,05 disparó
+    a las 07:43 y cerró sólo el 20%; el resto siguió con un stop nuevo, más lejos.
+
+    Mismo precio, cantidad completa. El nuevo se coloca ANTES de cancelar el viejo: un
+    STOP de cierre en Hedge mode no puede abrir la posición contraria, así que el
+    solapamiento de ~1 s es inocuo, y la posición nunca queda sin stop.
+
+    'sin_stop' · 'cubierto' · 'sin_cantidad' · 'redimensionado' · 'fallido'
+    """
+    sym = str(symbol).upper()
+    pside = str(position_side or '').upper().strip()
+    if pside not in ('LONG', 'SHORT'):
+        return 'sin_stop'
+    step = _step_size_for(sym)
+    pos = _round_step(abs(_safe_float(position_qty, 0.0)), step)
+    if pos <= 0:
+        return 'sin_stop'
+
+    stops = _stops_del_registro(sym, pside)
+    if stops.empty:
+        return 'sin_stop'
+    cub = _cantidad_cubierta(stops)
+    if cub is None:
+        return 'sin_cantidad'
+    if cub >= pos - step * 0.5:
+        return 'cubierto'
+
+    # El registro puede ser de hace un ciclo: confirmarlo contra el exchange antes de
+    # tocar un stop.
+    try:
+        obteniendo_ordenes_pendientes()
+    except Exception:
+        pass
+    stops = _stops_del_registro(sym, pside)
+    if stops.empty:
+        return 'sin_stop'
+    cub = _cantidad_cubierta(stops)
+    if cub is None:
+        return 'sin_cantidad'
+    if cub >= pos - step * 0.5:
+        return 'cubierto'
+
+    precios = pd.to_numeric(stops['stopPrice'], errors='coerce').dropna()
+    precios = precios[precios > 0]
+    if precios.empty:
+        return 'sin_cantidad'
+    # Con más de un stop, el más protector: el más alto en LONG, el más bajo en SHORT.
+    stop_px = float(precios.max() if pside == 'LONG' else precios.min())
+    viejos = [x for x in (_norm_order_id(v) for v in stops['orderId']) if x]
+
+    ok, det = _post_with_retry(sym, pos, 0, stop_px, pside, "STOP_MARKET",
+                               _position_close_side(pside), return_details=True)
+    if not ok:
+        emit_lifecycle_event(
+            "stop_resize_failed",
+            "CRITICAL",
+            symbol=sym,
+            position_side=pside,
+            intento_stop=stop_px,
+            qty=pos,
+            reason="sl_resize_post_failed",
+            detail=f"cubierta={cub} posicion={pos}; queda el stop anterior",
+            source=source,
+        )
+        return 'fallido'
+    nuevo = _norm_order_id(det.get('order_id')) if isinstance(det, dict) else ''
+    for oid in viejos:
+        okc, detc, _ej = _cancel_order_checked(sym, oid)
+        if not okc:
+            # Quedan dos stops que suman más que la posición: en Hedge mode no puede
+            # abrir la contraria, y el próximo ciclo lo ve 'cubierto'.
+            print(f"SL redimensionado de {sym}: no se pudo cancelar el stop viejo {oid}: {detc}")
+    _append_sl_watch(sym, stop_px, pside, nuevo or None)
+    emit_lifecycle_event(
+        "stop_resized",
+        "INFO",
+        symbol=sym,
+        position_side=pside,
+        qty_anterior=cub,
+        qty=pos,
+        stop_price=stop_px,
+        order_id=nuevo,
+        source=source,
+    )
+    append_execution_ledger_event(
+        "stop_resized",
+        data_quality="actual",
+        source=source,
+        order_id=nuevo,
+        symbol=sym,
+        side=_position_close_side(pside),
+        position_side=pside,
+        order_type="STOP_MARKET",
+        stop_price=stop_px,
+        submit_qty=pos,
+        notes=f"qty_anterior={cub} stops_cancelados={','.join(viejos)}",
+    )
+    print(f"SL de {sym} {pside} redimensionado {cub} -> {pos} @ {stop_px}")
+    try:
+        obteniendo_ordenes_pendientes()
+    except Exception:
+        pass
+    return 'redimensionado'
+
+
+def _reanclar_base_del_ladder(symbol: str, position_side: str, state: dict, position_qty) -> dict:
+    """Si la posición crece antes de que llene TP1, la base del reparto la sigue.
+
+    La base (`tp1_submit_position_qty`) se fija al someter TP1 y se conserva a propósito:
+    reescribirla con la posición viva la degradaba a medida que llenaban los tramos (bug
+    del 27/07). Pero con un fill parcial la posición CRECE después de fijarla. ONDO 24/09:
+    base 22,99, posición 34,03; al llenar TP1 quedaron 11,04, la reducción medida (11,95)
+    no llegó al 60% del tramo (13,79), el fill nunca se confirmó y el stage quedó en
+    tp1_live. Sólo sube, y sólo antes de que llene un tramo: una reducción no la mueve.
+    """
+    stage = str((state or {}).get('tp_stage', '')).lower().strip()
+    if stage not in ('', 'none', 'tp1_live'):
+        return state
+    base = _safe_float_or_none((state or {}).get('tp1_submit_position_qty'))
+    if base is None or base <= 0:
+        return state
+    step = _step_size_for(symbol)
+    qty = _round_step(abs(_safe_float(position_qty, 0.0)), step)
+    if qty <= base + step * 0.5:
+        return state
+    st = upsert_tp_state(symbol, position_side, tp1_submit_position_qty=qty)
+    append_execution_ledger_event(
+        "tp_base_reanchored",
+        data_quality="inferred",
+        source="reanclar_base_del_ladder",
+        symbol=str(symbol).upper(),
+        position_side=str(position_side).upper(),
+        submit_qty=qty,
+        notes=f"tp1_submit_position_qty {base} -> {qty} (la entrada siguió llenando)",
+    )
+    print(f"Base del ladder de {symbol} {position_side}: {base} -> {qty}")
+    return st if isinstance(st, dict) and st else get_tp_state(symbol, position_side)
 
 
 def _protegida_solo_con_sl(symbol: str, position_side: str, position_qty, price_ref) -> bool:
@@ -3716,8 +3924,16 @@ def colocando_TK_SL():
         sl_exists = not symbol_orders[symbol_orders['type'] == 'STOP_MARKET'].empty
         tp_exists = not _extract_tp_orders(symbol_orders, position_side_hint, tp_mode_runtime).empty
 
-        # Si ambos existen, ya está protegido: eliminamos la entrada y seguimos
-        if sl_exists and tp_exists:
+        # Remanente de la entrada todavía en el book: la posición puede crecer después de
+        # colocado el SL, así que la fila no sale de la cola hasta que se resuelva.
+        entrada_viva_inicio = bool(_entry_orders_in_register(symbol_orders, position_side_hint))
+
+        # Si ambos existen, ya está protegido: eliminamos la entrada y seguimos. Una fila
+        # que viene de una entrada (colocando_ordenes guarda su id) no toma este atajo:
+        # pasa por el camino que LEE la posición, porque el remanente pudo llenar entre
+        # ciclos y el SL quedarse con la cantidad del primer fill.
+        if (sl_exists and tp_exists and not entrada_viva_inicio
+                and not _norm_order_id(row.get('entry_order_id'))):
             df_posiciones.drop(index, inplace=True)
             continue
 
@@ -3726,7 +3942,7 @@ def colocando_TK_SL():
         if counter >= PROTECTION_TIMEOUT_CYCLES:
             try:
                 accion = _timeout_de_proteccion(
-                    symbol, position_side_hint, row.get('entry_order_id'), symbol_orders, sl_exists)
+                    symbol, position_side_hint, row.get('entry_order_id'), symbol_orders)
             except Exception as e:
                 print(f"Error al manejar timeout para {symbol}: {e}")
                 accion = 'retirar'  # sacar de la cola para no ciclar
@@ -3957,6 +4173,10 @@ def colocando_TK_SL():
                             _append_sl_watch(symbol, float(sl_px), 'LONG', order_id)
                         except Exception:
                             _append_sl_watch(symbol, float(sl_px), 'LONG', None)
+                else:
+                    # Que el SL que ya existe cubra la posición entera: si la entrada llenó
+                    # parcial, el remanente la agranda después de colocado el stop.
+                    _ajustar_cantidad_sl(symbol, "LONG", position_qty, source="colocando_TK_SL")
 
                 # Cantidades parciales para TPs
                 try:
@@ -3970,6 +4190,7 @@ def colocando_TK_SL():
                 placed_all_tps = True
                 if tp_mode_effective == "partial_limit_tp":
                     st_curr = get_tp_state(symbol, "LONG")
+                    st_curr = _reanclar_base_del_ladder(symbol, "LONG", st_curr, pos_qty)
                     st_curr = _reconcile_stage_before_submit(symbol, "LONG", st_curr, symbol_orders)
                     stage_idx_target = _next_tp_idx_from_stage(st_curr.get("tp_stage", "none"))
                     stage_price_ref = None
@@ -4185,7 +4406,12 @@ def colocando_TK_SL():
 
                 # Si SL existe y todos los TP están listos, retirar de la cola. También
                 # con SL y ningún TP posible (el resto no llega al notional mínimo).
-                if exito_sl and (placed_all_tps or (
+                # Mientras quede un remanente de la entrada (al empezar el ciclo o ahora),
+                # la fila sigue: el próximo ciclo lee la posición ya crecida.
+                _df_ord_now = _load_orders_register_df()
+                entrada_viva = entrada_viva_inicio or bool(_entry_orders_in_register(
+                    _df_ord_now[_df_ord_now['symbol'] == symbol], "LONG"))
+                if exito_sl and not entrada_viva and (placed_all_tps or (
                         tp_mode_effective == "partial_limit_tp"
                         and _protegida_solo_con_sl(symbol, "LONG", pos_qty, stage_price_ref))):
                     df_posiciones.drop(index, inplace=True)
@@ -4317,22 +4543,28 @@ def colocando_TK_SL():
                     exito_sl = _post_with_retry(symbol, position_qty, 0, sl_px, "SHORT", "STOP_MARKET", "BUY")
                     if exito_sl:
                         time.sleep(1)
-                # Registrar SL en watch para detectar fill y disparar cooldown
-                try:
-                    _ = obteniendo_ordenes_pendientes()
-                    df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
-                    m = df_ordenes[(df_ordenes['symbol']==symbol) & (df_ordenes['type']=='STOP_MARKET')].copy()
-                    order_id = None
-                    if not m.empty:
-                        if 'stopPrice' in m.columns:
-                            m['stopPrice'] = pd.to_numeric(m['stopPrice'], errors='coerce')
-                            m['diff'] = (m['stopPrice'] - float(sl_px)).abs() / max(abs(float(sl_px)), 1e-9)
-                            m = m.sort_values('diff')
-                            if not m.empty and m['diff'].iloc[0] < 1e-3:
-                                order_id = m['orderId'].iloc[0] if 'orderId' in m.columns else None
-                    _append_sl_watch(symbol, float(sl_px), 'SHORT', order_id)
-                except Exception:
-                    _append_sl_watch(symbol, float(sl_px), 'SHORT', None)
+                        # Registrar SL en watch para detectar fill y disparar cooldown. Sólo
+                        # el que se acaba de colocar, igual que en LONG: antes corría cada
+                        # ciclo con el precio del INDICADOR, y con el stop ya movido por el
+                        # BE no casaba (orderId vacío) y pisaba el watch bueno.
+                        try:
+                            _ = obteniendo_ordenes_pendientes()
+                            df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+                            m = df_ordenes[(df_ordenes['symbol']==symbol) & (df_ordenes['type']=='STOP_MARKET')].copy()
+                            order_id = None
+                            if not m.empty:
+                                if 'stopPrice' in m.columns:
+                                    m['stopPrice'] = pd.to_numeric(m['stopPrice'], errors='coerce')
+                                    m['diff'] = (m['stopPrice'] - float(sl_px)).abs() / max(abs(float(sl_px)), 1e-9)
+                                    m = m.sort_values('diff')
+                                    if not m.empty and m['diff'].iloc[0] < 1e-3:
+                                        order_id = m['orderId'].iloc[0] if 'orderId' in m.columns else None
+                            _append_sl_watch(symbol, float(sl_px), 'SHORT', order_id)
+                        except Exception:
+                            _append_sl_watch(symbol, float(sl_px), 'SHORT', None)
+                else:
+                    # Que el SL que ya existe cubra la posición entera (ver LONG).
+                    _ajustar_cantidad_sl(symbol, "SHORT", position_qty, source="colocando_TK_SL")
 
                 # Cantidades parciales
                 try:
@@ -4346,6 +4578,7 @@ def colocando_TK_SL():
                 placed_all_tps = True
                 if tp_mode_effective == "partial_limit_tp":
                     st_curr = get_tp_state(symbol, "SHORT")
+                    st_curr = _reanclar_base_del_ladder(symbol, "SHORT", st_curr, pos_qty)
                     st_curr = _reconcile_stage_before_submit(symbol, "SHORT", st_curr, symbol_orders)
                     stage_idx_target = _next_tp_idx_from_stage(st_curr.get("tp_stage", "none"))
                     stage_price_ref = None
@@ -4558,7 +4791,12 @@ def colocando_TK_SL():
                         else:
                             placed_all_tps = False
 
-                if exito_sl and (placed_all_tps or (
+                # Mientras quede un remanente de la entrada (al empezar el ciclo o ahora),
+                # la fila sigue: el próximo ciclo lee la posición ya crecida.
+                _df_ord_now = _load_orders_register_df()
+                entrada_viva = entrada_viva_inicio or bool(_entry_orders_in_register(
+                    _df_ord_now[_df_ord_now['symbol'] == symbol], "SHORT"))
+                if exito_sl and not entrada_viva and (placed_all_tps or (
                         tp_mode_effective == "partial_limit_tp"
                         and _protegida_solo_con_sl(symbol, "SHORT", pos_qty, stage_price_ref))):
                     df_posiciones.drop(index, inplace=True)
@@ -4933,6 +5171,13 @@ def unrealized_profit_positions():
                     print(f"Error al actualizar el Stop Loss para {symbol}: {e}")
             else:
                 print(f"SL actual para {symbol} (LONG) es suficientemente bueno, no se modifica.")
+                # Red de seguridad para las posiciones que ya salieron de la cola: el
+                # precio no se mueve, pero el stop tiene que cubrir la posición entera.
+                try:
+                    _ajustar_cantidad_sl(symbol, "LONG", position_qty, source="unrealized_profit_positions")
+                    _reanclar_base_del_ladder(symbol, "LONG", st_tp, position_qty)
+                except Exception as e:
+                    print(f"Error al ajustar la cantidad del SL de {symbol}: {e}")
 
         elif positionSide == 'SHORT':
             stop_loss = symbol_data['Stop_Loss_Short'].iloc[0]
@@ -5056,6 +5301,13 @@ def unrealized_profit_positions():
                     print(f"Error al actualizar el Stop Loss para {symbol}: {e}")
             else:
                 print(f"SL actual para {symbol} (SHORT) es suficientemente bueno, no se modifica.")
+                # Red de seguridad para las posiciones que ya salieron de la cola: el
+                # precio no se mueve, pero el stop tiene que cubrir la posición entera.
+                try:
+                    _ajustar_cantidad_sl(symbol, "SHORT", position_qty, source="unrealized_profit_positions")
+                    _reanclar_base_del_ladder(symbol, "SHORT", st_tp, position_qty)
+                except Exception as e:
+                    print(f"Error al ajustar la cantidad del SL de {symbol}: {e}")
         else:
             # Silenciado: print(f"positionSide desconocido para {symbol}: {positionSide}")
             continue
