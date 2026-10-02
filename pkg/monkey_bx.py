@@ -808,7 +808,11 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
             if tp_fill_mode_state == "exchange_state":
                 confirm_source = "exchange_state_unavailable_fallback_inferred"
             if confirmed:
-                st = set_tp_filled(symbol_u, pside_u, tp_idx=tp_idx)
+                set_tp_filled(symbol_u, pside_u, tp_idx=tp_idx)
+                # Soltar el order_id ya atribuido, igual que _reconcile_stage_before_submit:
+                # si la misma orden vuelve a "desaparecer" (snapshot vacío transitorio y
+                # luego visible otra vez), no debe volver a contarse ni retroceder el stage.
+                st = upsert_tp_state(symbol_u, pside_u, **{f"tp{tp_idx}_order_id": ""})
                 emit_lifecycle_event(
                     f"{stage_name}_filled",
                     "INFO",
@@ -844,46 +848,50 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
                         _record_trade_closed(symbol_u, pside_u, "tp3")
                     except Exception:
                         pass
+            elif confirm_reason == "position_unavailable":
+                # La posición ya no existe: la orden se fue con el cierre (SL, BE o
+                # trailing), que lo registra el SL watch. No es un fallo de TP ni hay
+                # nada que proteger. Medido 28/07-30/09: 103 de 157 desapariciones de
+                # TP LIMIT fueron así. Sólo al ledger: como tpN_failed habrían sido
+                # ~1,6 alertas de Telegram por día por cierres normales.
+                # OJO: un TP3 que se llena también deja la posición en cero, así que
+                # este camino NO distingue "TP3 lleno" de "cerró por stop". Para eso
+                # hace falta consultar el estado de la orden en el exchange.
+                append_execution_ledger_event(
+                    f"{stage_name}_gone_position_flat",
+                    data_quality="inferred",
+                    source=f"pending_gone_limit_{stage_name}",
+                    ts_utc=ts,
+                    order_id=order_id_norm,
+                    symbol=symbol_u,
+                    side=side_u,
+                    position_side=pside_u,
+                    order_type=otype,
+                    submitted_price=_safe_float_or_none(st_tp.get(f"{stage_name}_price")),
+                    submit_qty=_safe_float_or_none(st_tp.get(f"{stage_name}_qty")),
+                    partial_fill_status="unknown",
+                    notes=f"{confirm_source}|{confirm_reason}",
+                )
             else:
+                # Sin fallback a mercado en este camino, aunque `tp_legacy_fallback_on_error`
+                # esté activo. El job de colocación (50 s) re-somete el LIMIT del mismo
+                # tramo por su cuenta: lo hizo en 7 de 7 casos reales (10-43 s). Un
+                # TAKE_PROFIT_MARKET aquí sólo convertía un TP maker en taker y, ante un
+                # snapshot vacío transitorio (orden todavía viva), cubría el tramo dos
+                # veces. El fallback sigue activo donde tiene sentido: cuando el SUBMIT
+                # del LIMIT es rechazado (colocando_TK_SL).
                 _emit_tp_failed(
                     tp_idx=tp_idx,
                     symbol=symbol_u,
                     position_side=pside_u,
                     reason=f"{stage_name}_confirmation_failed",
-                    detail=f"{confirm_source}|{confirm_reason}",
+                    detail=f"{confirm_source}|{confirm_reason}|el LIMIT se re-somete en el próximo ciclo",
                     order_id=order_id_norm,
                     data_quality="inferred",
                     source=f"pending_gone_limit_{stage_name}",
                     tp_price=st_tp.get(f"{stage_name}_price"),
                     tp_qty=st_tp.get(f"{stage_name}_qty"),
                 )
-                if get_tp_legacy_fallback_on_error():
-                    stage_qty = _safe_float_or_none(st_tp.get(f"{stage_name}_qty"))
-                    if stage_qty is not None and current_qty is not None:
-                        stage_qty = min(float(stage_qty), float(current_qty))
-                    ok_fallback = _submit_tp_legacy_fallback(
-                        tp_idx=tp_idx,
-                        symbol=symbol_u,
-                        position_side=pside_u,
-                        market_ref=_last_traded_price(symbol_u),
-                        tp_price=st_tp.get(f"{stage_name}_price"),
-                        tp_qty=stage_qty,
-                        tp_fill_mode=str(st_tp.get("tp_fill_confirmation_mode", "inferred")),
-                        reason=f"{stage_name}_confirmation_failed:{confirm_reason}",
-                    )
-                    if not ok_fallback:
-                        _emit_tp_failed(
-                            tp_idx=tp_idx,
-                            symbol=symbol_u,
-                            position_side=pside_u,
-                            reason="legacy_fallback_submit_failed",
-                            detail=f"{stage_name}_confirmation_failed:{confirm_reason}",
-                            order_id=order_id_norm,
-                            data_quality="inferred",
-                            source=f"pending_gone_limit_{stage_name}",
-                            tp_price=st_tp.get(f"{stage_name}_price"),
-                            tp_qty=stage_qty,
-                        )
             continue
 
         if otype == 'TAKE_PROFIT_MARKET':

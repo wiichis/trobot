@@ -193,9 +193,11 @@ def test_partial_mode_submits_tp3_only_after_tp2_filled_short(
     assert "tp2_submitted" not in categories
 
 
-def test_stage_confirmation_failure_uses_fallback_when_enabled(
+def test_confirmacion_fallida_no_usa_fallback_aunque_este_habilitado(
     isolated_workspace, runtime_event_spy, temp_tp_state, monkeypatch
 ):
+    """El job de colocación re-somete el LIMIT del tramo (7 de 7 casos reales); un
+    TAKE_PROFIT_MARKET aquí sólo lo volvía taker o cubría el tramo dos veces."""
     import pkg.monkey_bx as mb
     import pkg.tp_stage_state as tps
 
@@ -236,7 +238,102 @@ def test_stage_confirmation_failure_uses_fallback_when_enabled(
     mb._log_pending_order_transitions(prev_df, curr_df)
     categories = [x["category"] for x in runtime_event_spy["lifecycle"]]
     assert "tp2_failed" in categories
-    assert len(fb_calls) == 1
+    assert fb_calls == []
+    # El stage no se toca: el próximo ciclo de colocación recoloca el tramo 2.
+    assert tps.get_tp_state("HBAR-USDT", "LONG")["tp_stage"] == "tp2_live"
+
+
+def test_tp_que_se_va_con_la_posicion_no_es_fallo_ni_dispara_fallback(
+    isolated_workspace, runtime_event_spy, temp_tp_state, monkeypatch
+):
+    """103 de 157 TP LIMIT (28/07-30/09) desaparecieron junto con la posición (SL, BE
+    o trailing). No hay nada que proteger: ni tpN_failed (Telegram) ni fallback."""
+    import pkg.monkey_bx as mb
+    import pkg.tp_stage_state as tps
+
+    tps.set_tp_submitted(
+        "LINK-USDT", "LONG", tp_idx=1, order_id="2088206310997753856", qty=1.1,
+        price=9.2, submit_position_qty=3.3, tp_mode="partial_limit_tp",
+        fill_confirmation_mode="inferred",
+    )
+    prev_df = make_orders_df([{"symbol": "LINK-USDT", "orderId": 2088206310997753856,
+                               "type": "LIMIT", "side": "SELL", "positionSide": "LONG",
+                               "price": 9.2}])
+    monkeypatch.setattr(mb, "get_tp_legacy_fallback_on_error", lambda: True)
+    monkeypatch.setattr(mb, "total_positions", lambda _s: (None, None, None, None, None))
+    fb_calls = []
+    monkeypatch.setattr(mb, "_submit_tp_legacy_fallback", lambda **kwargs: fb_calls.append(kwargs) or True)
+
+    mb._log_pending_order_transitions(prev_df, make_orders_df([]))
+
+    assert fb_calls == []
+    assert [x for x in runtime_event_spy["lifecycle"] if x["category"].startswith("tp")] == []
+    flat = [e for e in runtime_event_spy["ledger"] if e["event_type"] == "tp1_gone_position_flat"]
+    assert len(flat) == 1
+    assert flat[0]["order_id"] == "2088206310997753856"
+
+
+def test_transiciones_suelta_el_order_id_y_no_recuenta_el_fill(
+    isolated_workspace, runtime_event_spy, temp_tp_state, monkeypatch
+):
+    """Un snapshot vacío transitorio hace que la misma orden 'desaparezca' dos veces
+    (BNB 16/09). Tras confirmar, el id se suelta: ni doble conteo ni retroceso de stage."""
+    import pkg.monkey_bx as mb
+    import pkg.tp_stage_state as tps
+
+    tps.set_tp_submitted(
+        "BNB-USDT", "LONG", tp_idx=1, order_id="2100285908442939392", qty=0.02,
+        price=760.0, submit_position_qty=0.06, tp_mode="partial_limit_tp",
+        fill_confirmation_mode="inferred",
+    )
+    monkeypatch.setattr(mb, "total_positions", lambda _s: ("BNB-USDT", "LONG", 755.0, 0.04, 0.0))
+    prev_df = make_orders_df([{"symbol": "BNB-USDT", "orderId": 2100285908442939392,
+                               "type": "LIMIT", "side": "SELL", "positionSide": "LONG",
+                               "price": 760.0}])
+    empty = make_orders_df([])
+
+    mb._log_pending_order_transitions(prev_df, empty)
+    st = tps.get_tp_state("BNB-USDT", "LONG")
+    assert st["tp_stage"] == "tp1_filled"
+    assert st["tp1_order_id"] == ""
+
+    # TP2 ya vivo; la orden de TP1 "reaparece" y vuelve a desaparecer.
+    tps.set_tp_submitted("BNB-USDT", "LONG", tp_idx=2, order_id="2100300000000000000",
+                         qty=0.02, price=765.0, submit_position_qty=0.06,
+                         tp_mode="partial_limit_tp", fill_confirmation_mode="inferred")
+    mb._log_pending_order_transitions(prev_df, empty)
+
+    filled = [e for e in runtime_event_spy["lifecycle"] if e["category"] == "tp1_filled"]
+    assert len(filled) == 1
+    assert tps.get_tp_state("BNB-USDT", "LONG")["tp_stage"] == "tp2_live"
+
+
+def test_reconcile_no_recuenta_lo_que_confirmo_transiciones(
+    isolated_workspace, runtime_event_spy, temp_tp_state, monkeypatch
+):
+    """Con los ids exactos, transiciones confirma primero (corre en el snapshot);
+    reconcile sólo actúa sobre tpN_live, así que queda en no-op."""
+    import pkg.monkey_bx as mb
+    import pkg.tp_stage_state as tps
+
+    tps.set_tp_submitted(
+        "XMR-USDT", "SHORT", tp_idx=1, order_id="2086568015825993728", qty=0.03,
+        price=260.0, submit_position_qty=0.09, tp_mode="partial_limit_tp",
+        fill_confirmation_mode="inferred",
+    )
+    monkeypatch.setattr(mb, "total_positions", lambda _s: ("XMR-USDT", "SHORT", 265.0, 0.06, 0.0))
+    prev_df = make_orders_df([{"symbol": "XMR-USDT", "orderId": 2086568015825993728,
+                               "type": "LIMIT", "side": "BUY", "positionSide": "SHORT",
+                               "price": 260.0}])
+    empty = make_orders_df([])
+
+    mb._log_pending_order_transitions(prev_df, empty)
+    mb._reconcile_stage_before_submit("XMR-USDT", "SHORT",
+                                      tps.get_tp_state("XMR-USDT", "SHORT"), empty)
+
+    filled = [e for e in runtime_event_spy["ledger"] if e["event_type"] == "tp1_filled"]
+    assert len(filled) == 1
+    assert filled[0]["source"] == "pending_gone_limit_tp1"
 
 
 def test_stage_confirmation_failure_no_fallback_when_disabled(
