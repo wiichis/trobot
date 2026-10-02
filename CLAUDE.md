@@ -719,7 +719,7 @@ Las órdenes PostOnly que expiran son las mejores (+0,60% a 4 h), pero porque el
   - banca → activo: params que pasaron el protocolo (4 ventanas + falsación, `protocolo_ok`) **y** ≥15 trades simulados hacia adelante con PnL por trade mayor al sesgo del sim (0,35% del notional ≈ los 0,13 USDT/posición del cruce del 23/09).
   - banca → fuera: más de 60 días (dos ciclos mensuales) sin poder activarse.
 - **Revisión semanal**: `python3 scripts/bench_shadow.py --data <long.csv> --bench_data <bench.csv> --pnl <PnL.csv>` (bajar los tres de prod). **Sólo propone**; las transiciones las decide el usuario. Reporte en `archivos/bench/reportes/`.
-- **Re-optimización**: mensual y sólo de los pares en banca, con el protocolo completo y `--htf_mode adx_only`.
+- ~~**Re-optimización**: mensual y sólo de los pares en banca~~ → **descartada el 02/10**: ver "Optimizador sobre el parity". Optimizar params empeora el resultado fuera de muestra; un par en banca vuelve sólo si su forward con los params actuales es bueno.
 - **Primera corrida (01/10) propuso también ONDO** (sim −0,23/−0,17/−0,82/−1,08, real +3,78/−0,91/−0,70/−0,07): **movido a banca el 02/10** con el OK del usuario.
 
 **Candidatos** (15, en observación): UNI, SUI, ARB, ENA, WLD, TAO, QNT, 1000PEPE (nunca probados) y LTC, SOL, NEAR, AAVE, XRP, ZEC, HYPE (descartados antes de los fixes de tick y fill, así que aquel veredicto no vale). Historia: `scripts/candidatos_velas.py` une los mensuales de Binance USDT-M (dic-25 → ago-26, en `archivos/candidatos/binance/`) con el API de BingX desde el 17/08; en el solape el close difiere 1-5 bps de mediana (p99 5-17): **Binance sirve como proxy**. Serie en `archivos/candidatos/velas_candidatos.csv`, reglas de contrato agregadas a las dos tablas `SYMBOL_TRADING_RULES` (idénticas, 29 pares).
@@ -738,6 +738,23 @@ Tabla completa en `archivos/candidatos/validacion/resumen.csv`. Los 15 siguen en
 - **Propuesta pendiente**: optimizar directamente sobre el parity (el modelo del live), eligiendo en un tramo de entrenamiento y midiendo en uno posterior que no participa. Una corrida de parity de un par cuesta ~5 s: 500 trials ≈ 7 min por semilla.
 
 **Dos bugs de los scripts de simulación, corregidos**: `indicadores._calc_symbol` apaga las señales de todo par fuera de `TRADE_SYMBOLS` (que sale de `best_prod.json` al importar). Sin `bench.habilitar_en_indicadores()`, **cada candidato y cada par en banca daban 0 trades en silencio** — `bench_shadow.py` lo tenía latente desde que AVAX/DYDX/ONDO salieron de `best_prod.json`. Y con ruta relativa, `--export_best` escribe **dentro** de `--out_dir`.
+
+### 🔴 Optimizador sobre el parity — 02/10: optimizar params ya no sirve en esta estrategia
+
+`scripts/optimizar_parity.py` (tests en `tests/test_optimizar_parity.py`) busca params simulando con el **parity** (ejecución del live, filtro de régimen, peso 0,20) y elige **sólo con un entrenamiento de 90 días** que termina 60 días antes del fin de los datos; el test (últimos 60 días) y las dos falsaciones no participan. El candidato es el #1 del entrenamiento (≥10 posiciones, ≥2 de 3 tercios positivos); pasa si es positivo en test y en las dos falsaciones y, si hay paramset vigente, le gana en las tres. Una ventana sin datos (par de historia corta) cuenta como no aprobada. ~4 min por par con 500 trials. Resultados en `archivos/optimizacion/<PAR>_s101/informe.json`.
+
+**Corrido sobre 25 pares** (15 candidatos, AVAX/DYDX/ONDO en banca y los 7 activos), 500 combinaciones cada uno:
+
+- **El #1 del entrenamiento no pasa en ninguno: 0 de 25.** Y en los 10 pares con paramset vigente, **nunca le gana al vigente**.
+- **Más entrenamiento ⇒ peor fuera de muestra.** Sobre los 125 paramsets del top-5: correlación entre PnL de entrenamiento y PnL fuera de muestra **−0,38** (test), **−0,40** (hold1), **−0,23** (hold2); sólo **~20%** positivos fuera de muestra. Casos extremos: LINK +30,7 → −31,5, NEAR +25,4 → −26,6, XMR +13,5 → −27,7.
+- **Los vigentes aguantan mejor que cualquier optimización.** En el test (últimos 60 días): activos BCH +6,69, XMR +4,59, ETH +3,58, BNB +3,18, LINK +2,41 (5 de 7 positivos; APT −4,46 y CFX −1,07 no). En banca, AVAX −9,81, DYDX −4,62 y ONDO −1,37 (0 de 3): **confirma la decisión de la banca**.
+
+**Conclusiones operativas**:
+1. **No re-optimizar params**, con ningún método: la búsqueda encuentra lo que se acomodó a un tramo del mercado, no un edge que se repita. Los params vigentes quedan congelados.
+2. **La re-optimización mensual de la banca se cae**: un par en banca sólo vuelve si su forward con los params que tiene se vuelve bueno; si no, sale a los 60 días.
+3. **Ningún candidato reemplaza a nadie**: el portfolio sigue con 7. Los 15 quedan en observación por si cambia el régimen.
+4. **APT y CFX** también son negativos en el test: vigilarlos con `bench_shadow.py`.
+5. La palanca que queda **no son los params**: es la estrategia en sí (el edge depende del régimen) o el tamaño de la exposición.
 
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
 
