@@ -28,6 +28,7 @@ Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USD
 
 ## Composición actual del portfolio
 
+⏸️ **ENTRADAS PAUSADAS desde el 02/10 21:09 UTC** (`entries.enabled: false`, `bd7fd79`): la estrategia no tiene edge medido; el bot sólo gestiona posiciones abiertas. Reanudar = `true` + restart.
 **7 pares activos** (al 2026-10-02, MD5 `0fd4f8bc`): APT, BCH, BNB, CFX, ETH, LINK, XMR — con `peso` 0,20 explícito, así el tamaño por trade no sube al pasar de 10 a 7 pares (el equal-weight daría 0,29).
 **En banca** (`pkg/bench.json`, no operan, se simulan hacia adelante): **AVAX**, **DYDX** y **ONDO** desde el 02/10, más 15 candidatos en observación. Ver "Banca de pares". Rollback a 10 pares: md5 `68c049c1`; a 8 (con ONDO): `a9711a05`.
 
@@ -793,6 +794,26 @@ Tabla completa en `archivos/candidatos/validacion/resumen.csv`. Los 15 siguen en
 - **F5 (momentum entre pares) es la única positiva neta**, en las dos mitades (+0,03% dic-may, +0,23% may-sep) y la sostiene la pata larga (+0,38% contra −0,13% de la corta): los que más subieron siguen subiendo. No es significativa todavía (t neto +0,9).
 - La partición tendencia/rango **no muestra un "switch" claro**: F5 rinde más en rango (+0,22%) que en tendencia (+0,02%), al revés de lo intuitivo; F1 igual.
 - **Próximo paso propuesto**: F5 a horizonte largo (mirada 7 días, mantener 3-7 días, rebalanceo semanal) para que los costos pesen menos; variante sólo-largos; más pares (top 50 por volumen, requiere bajar más historia). Variantes fijadas de antemano y mitad de la historia reservada para validar.
+
+### ⏸️ 02/10 — entradas pausadas y momentum entre pares a horizonte largo
+
+**Pausa** (`bd7fd79`, desplegado 21:09 UTC): nuevo `entries.enabled` en el runtime config y `are_entries_enabled()`; `colocando_ordenes()` no evalúa señales ni abre posiciones si es false, con un único evento `entries_paused` por proceso. La gestión de posiciones abiertas no lo consulta. Verificado: un evento a las 21:13, cero entradas, y la BNB SHORT abierta conserva TP y stop. ⚠️ **Congela el veredicto del filtro de régimen** (quedó en 14 de 20-25 cierres): sin cierres reales, sólo se puede seguir en simulación.
+
+**Datos**: 14 pares más de Binance (BTC, PUMP, DOGE, INJ, ASTER, SAND, FARTCOIN, ZRO, YFI, ADA, XPL, UAI, MOVR, NIGHT; dic-25 → sep-26, 47,5 MB) en `archivos/candidatos/binance/`. Universo de 39 pares.
+
+**Momentum entre pares** (`scripts/lab_momentum_cruzado.py`, 4 variantes fijadas antes de correr, 16 bps por vuelta y pata; criterio: positivo en dic-abr y may-sep, t > 2, ningún mes > 50%):
+
+| variante | neto/pata | t | dic-abr | may-sep | meses + |
+|---|---|---|---|---|---|
+| V1 72 h / 24 h, 3×3 (la F5 original) | +0,005% | 0,0 | +0,13% | −0,11% | 5/10 |
+| V2 7 d / 7 d, 5×5 | −1,32% | −1,4 | +0,43% | **−2,98%** | 4/10 |
+| **V3 mirar 7 d / mantener 3 d, 5×5** | **+0,46%** | 1,3 | **+0,46%** | **+0,46%** | 6/10 |
+| V4 7 d / 7 d, sólo 5 largos | −0,11% | −0,1 | −1,08% | +0,82% | 5/10 |
+
+- **La F5 original se diluye** al pasar de 25 a 39 pares (+0,12% → +0,005%): no era una propiedad robusta.
+- **Mantener 7 días se rompe por la pata corta** (−2,53%; septiembre −9,5%): los que más cayeron rebotan fuerte —squeezes en monedas chicas.
+- **V3 es la única consistente**: igual en las dos mitades, 6 de 10 meses, ningún mes domina (31%), la carga la pata larga (+0,91% contra +0,02%). **No cumple** el criterio (t 1,3) y es la mejor de 4: el riesgo de que sea suerte es real.
+- ⇒ **Ninguna estrategia del laboratorio tiene edge demostrado todavía.** El paso honesto para V3 no es más backtest (cada variante extra aumenta la chance de falso positivo) sino **probarla hacia adelante, sin dinero**, varias semanas.
 
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
 
