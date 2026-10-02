@@ -77,6 +77,23 @@ def _norm_order_id(value) -> str:
     return text
 
 
+def _read_orders_csv(path) -> pd.DataFrame:
+    """Lee un CSV de órdenes con `orderId` como TEXTO.
+
+    Sin dtype, una sola fila con el id vacío vuelve la columna float64 y un id de BingX
+    (~2,1e18) sale como '2.103045465791529e+18', que ya no coincide con nada: es el bug
+    que dejó al job de transiciones sin atribuir fills de TP (tp_stage_state.csv, 01/10)
+    y a `sync_cooldowns_from_sl_fills` comparando ids rotos (31 `stop_loss_hit` con id
+    en notación científica). Los vacíos quedan NaN; `_norm_order_id` los lleva a ''.
+    """
+    return pd.read_csv(path, dtype={'orderId': str})
+
+
+# Mismo problema en entry_watch.csv. `request_id` es hex y casi nunca parece número,
+# pero leerlo como texto cuesta lo mismo.
+_ENTRY_WATCH_DTYPES = {'order_id': str, 'request_id': str}
+
+
 def _emit_runtime_storage_warning(
     *,
     symbol: str,
@@ -1023,7 +1040,7 @@ def _normalize_orders_df(df: pd.DataFrame) -> pd.DataFrame:
 def _load_orders_register_df() -> pd.DataFrame:
     """Carga `order_id_register.csv` normalizado con fallback a DataFrame vacío."""
     try:
-        df = pd.read_csv('./archivos/order_id_register.csv')
+        df = _read_orders_csv('./archivos/order_id_register.csv')
     except FileNotFoundError:
         df = pd.DataFrame(columns=['symbol', 'orderId', 'type', 'stopPrice', 'time'])
     except Exception:
@@ -1081,17 +1098,25 @@ def _load_active_cooldowns(now=None) -> dict:
 
 def _append_sl_watch(symbol: str, stop_price: float, position_side: str, order_id) -> None:
     try:
-        df = pd.read_csv(SL_WATCH_CSV) if os.path.exists(SL_WATCH_CSV) else pd.DataFrame(columns=['symbol','stop_price','position_side','orderId','ts'])
+        df = _read_orders_csv(SL_WATCH_CSV) if os.path.exists(SL_WATCH_CSV) else pd.DataFrame(columns=['symbol','stop_price','position_side','orderId','ts'])
         df['symbol'] = df['symbol'].astype(str).str.upper()
+        if 'orderId' in df.columns:
+            df['orderId'] = df['orderId'].apply(_norm_order_id)
         symbol = str(symbol).upper()
         row = {
             'symbol': symbol,
             'stop_price': float(stop_price) if stop_price is not None else None,
             'position_side': str(position_side).upper(),
-            'orderId': str(order_id) if order_id not in (None, '', float('nan')) else '',
+            # `order_id not in (..., float('nan'))` nunca atrapaba NaN (nan != nan) y
+            # escribía 'nan', que luego pasaba por id válido.
+            'orderId': _norm_order_id(order_id),
             'ts': datetime.utcnow().isoformat()
         }
         df = df[~((df['symbol'] == symbol) & (df['position_side'] == row['position_side']))]
+        # reset_index: tras el filtro, len(df) coincidía con la etiqueta de la última
+        # fila y `df.loc[len(df)]` pisaba el watch de OTRO par (mismo bug que
+        # upsert_tp_state). Ese par perdía la inferencia de su stop.
+        df = df.reset_index(drop=True)
         df.loc[len(df)] = row
         df.to_csv(SL_WATCH_CSV, index=False)
     except Exception as e:
@@ -1126,10 +1151,11 @@ def _append_entry_watch(
         'ts_utc',
     ]
     try:
-        df = pd.read_csv(ENTRY_WATCH_CSV) if os.path.exists(ENTRY_WATCH_CSV) else pd.DataFrame(columns=cols)
+        df = pd.read_csv(ENTRY_WATCH_CSV, dtype=_ENTRY_WATCH_DTYPES) if os.path.exists(ENTRY_WATCH_CSV) else pd.DataFrame(columns=cols)
         for c in cols:
             if c not in df.columns:
                 df[c] = ''
+        df['order_id'] = df['order_id'].apply(_norm_order_id)
         symbol_u = str(symbol).upper().strip()
         pside_u = str(position_side).upper().strip()
         df['symbol'] = df['symbol'].astype(str).str.upper().str.strip()
@@ -1171,7 +1197,7 @@ def _consume_entry_watch(symbol: str, position_side: str):
     if not os.path.exists(ENTRY_WATCH_CSV):
         return None
     try:
-        df = pd.read_csv(ENTRY_WATCH_CSV)
+        df = pd.read_csv(ENTRY_WATCH_CSV, dtype=_ENTRY_WATCH_DTYPES)
     except Exception:
         return None
     if df.empty:
@@ -3435,7 +3461,7 @@ def obteniendo_ordenes_pendientes():
         df = pd.DataFrame(orders)
 
     try:
-        prev_df = pd.read_csv(ORDER_PENDING_PREV_CSV) if os.path.exists(ORDER_PENDING_PREV_CSV) else pd.DataFrame(columns=['symbol','orderId','type','stopPrice','time'])
+        prev_df = _read_orders_csv(ORDER_PENDING_PREV_CSV) if os.path.exists(ORDER_PENDING_PREV_CSV) else pd.DataFrame(columns=['symbol','orderId','type','stopPrice','time'])
         prev_df = _normalize_orders_df(prev_df)
         df = _normalize_orders_df(df)
         csv_file = './archivos/order_id_register.csv'
@@ -3749,7 +3775,7 @@ def sync_cooldowns_from_sl_fills():
     try:
         if not os.path.exists(SL_WATCH_CSV):
             return
-        df_watch = pd.read_csv(SL_WATCH_CSV)
+        df_watch = _read_orders_csv(SL_WATCH_CSV)
     except Exception as e:
         print(f"No se pudo leer SL watch: {e}")
         return
@@ -3761,7 +3787,7 @@ def sync_cooldowns_from_sl_fills():
     df_watch['position_side'] = df_watch['position_side'].astype(str).str.upper()
 
     try:
-        df_orders = pd.read_csv('./archivos/order_id_register.csv')
+        df_orders = _read_orders_csv('./archivos/order_id_register.csv')
         df_orders = _normalize_orders_df(df_orders)
     except Exception:
         df_orders = pd.DataFrame(columns=['symbol','orderId','type','stopPrice'])
@@ -3787,7 +3813,9 @@ def sync_cooldowns_from_sl_fills():
     for _, row in df_watch.iterrows():
         symbol = str(row.get('symbol', '')).upper()
         position_side = str(row.get('position_side', '')).upper()
-        order_id = str(row.get('orderId', '')).strip()
+        # NaN (fila sin id) daba 'nan', que es verdadero: nunca se usaba la comparación
+        # por precio de abajo y la fila se descartaba con la posición viva.
+        order_id = _norm_order_id(row.get('orderId'))
         stop_price = None
         try:
             stop_price = float(row.get('stop_price'))
@@ -4168,7 +4196,7 @@ def colocando_TK_SL():
                         time.sleep(1)
                         try:
                             _ = obteniendo_ordenes_pendientes()
-                            df_tmp = pd.read_csv('./archivos/order_id_register.csv')
+                            df_tmp = _read_orders_csv('./archivos/order_id_register.csv')
                             df_tmp = _normalize_orders_df(df_tmp)
                             m = df_tmp[(df_tmp['symbol'] == symbol) & (df_tmp['type'] == 'STOP_MARKET')].copy()
                             order_id = None
@@ -4327,7 +4355,7 @@ def colocando_TK_SL():
                     # Revalidar si la etapa objetivo esta viva tras submit.
                     try:
                         _orders = obteniendo_ordenes_pendientes()
-                        df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+                        df_ordenes = _read_orders_csv('./archivos/order_id_register.csv')
                         symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
                         existing_tp = _extract_tp_orders(symbol_orders, "LONG", tp_mode_detect)
                         st_new = get_tp_state(symbol, "LONG")
@@ -4441,7 +4469,7 @@ def colocando_TK_SL():
                     if ok_sl:
                         try:
                             _ = obteniendo_ordenes_pendientes()
-                            df_tmp = pd.read_csv('./archivos/order_id_register.csv')
+                            df_tmp = _read_orders_csv('./archivos/order_id_register.csv')
                             df_tmp = _normalize_orders_df(df_tmp)
                             m = df_tmp[(df_tmp['symbol'] == symbol) & (df_tmp['type'] == 'STOP_MARKET')].copy()
                             order_id = None
@@ -4557,7 +4585,7 @@ def colocando_TK_SL():
                         # BE no casaba (orderId vacío) y pisaba el watch bueno.
                         try:
                             _ = obteniendo_ordenes_pendientes()
-                            df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+                            df_ordenes = _read_orders_csv('./archivos/order_id_register.csv')
                             m = df_ordenes[(df_ordenes['symbol']==symbol) & (df_ordenes['type']=='STOP_MARKET')].copy()
                             order_id = None
                             if not m.empty:
@@ -4715,7 +4743,7 @@ def colocando_TK_SL():
                     # Revalidar si la etapa objetivo esta viva tras submit.
                     try:
                         _orders = obteniendo_ordenes_pendientes()
-                        df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+                        df_ordenes = _read_orders_csv('./archivos/order_id_register.csv')
                         symbol_orders = df_ordenes[df_ordenes['symbol'] == symbol]
                         existing_tp = _extract_tp_orders(symbol_orders, "SHORT", tp_mode_detect)
                         st_new = get_tp_state(symbol, "SHORT")
@@ -4826,7 +4854,7 @@ def colocando_TK_SL():
                     if ok_sl:
                         try:
                             _ = obteniendo_ordenes_pendientes()
-                            df_tmp = pd.read_csv('./archivos/order_id_register.csv')
+                            df_tmp = _read_orders_csv('./archivos/order_id_register.csv')
                             df_tmp = _normalize_orders_df(df_tmp)
                             m = df_tmp[(df_tmp['symbol'] == symbol) & (df_tmp['type'] == 'STOP_MARKET')].copy()
                             order_id = None
@@ -4882,7 +4910,7 @@ def colocando_TK_SL():
 def filtrando_posiciones_antiguas() -> pd.DataFrame:
     try:
         # Cargar los datos
-        data = pd.read_csv('./archivos/order_id_register.csv')
+        data = _read_orders_csv('./archivos/order_id_register.csv')
         
         # `time` del registro es epoch ms -> UTC naive, así que el "ahora" debe ser UTC
         # naive también. Antes había un `- timedelta(hours=9)` (y un `+5` comentado para
@@ -5105,7 +5133,7 @@ def unrealized_profit_positions():
                     # Actualizar watch con el nuevo SL
                     try:
                         _ = obteniendo_ordenes_pendientes()
-                        df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+                        df_ordenes = _read_orders_csv('./archivos/order_id_register.csv')
                         df_ordenes = _normalize_orders_df(df_ordenes)
                         m = df_ordenes[(df_ordenes['symbol']==symbol) & (df_ordenes['type']=='STOP_MARKET')].copy()
                         order_id = None
@@ -5234,7 +5262,7 @@ def unrealized_profit_positions():
                     # Actualizar watch con el nuevo SL
                     try:
                         _ = obteniendo_ordenes_pendientes()
-                        df_ordenes = pd.read_csv('./archivos/order_id_register.csv')
+                        df_ordenes = _read_orders_csv('./archivos/order_id_register.csv')
                         df_ordenes = _normalize_orders_df(df_ordenes)
                         m = df_ordenes[(df_ordenes['symbol']==symbol) & (df_ordenes['type']=='STOP_MARKET')].copy()
                         order_id = None
