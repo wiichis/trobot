@@ -15,6 +15,8 @@ from .live_runtime_config import universe_allows_symbol
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m.csv"
+CSV_30M_PATH = BASE_DIR / "archivos" / "cripto_price_30m.csv"
+LONG_CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m_long.csv"
 
 # Velas de los pares en BANCA (pkg/bench.json): archivo propio, fuera del camino de
 # órdenes. Ver pkg/bench.py.
@@ -228,7 +230,7 @@ def price_bingx_5m() -> None:
     df_30m = df_30m[["symbol", "open", "high", "low", "close", "volume", "date"]]
     df_30m["date"] = pd.to_datetime(df_30m["date"], utc=True)
 
-    df_30m.to_csv(BASE_DIR / "archivos" / "cripto_price_30m.csv", index=False)
+    df_30m.to_csv(CSV_30M_PATH, index=False)
 
 
 def completar_huecos_5m() -> None:
@@ -508,11 +510,9 @@ def actualizar_long_ultimas_12h():
     """
     import pandas as pd
     from datetime import datetime, timezone
-    from pathlib import Path
 
-    base_dir = Path(__file__).resolve().parent.parent
-    csv_path = base_dir / "archivos" / "cripto_price_5m.csv"
-    long_path = base_dir / "archivos" / "cripto_price_5m_long.csv"
+    csv_path = CSV_PATH
+    long_path = LONG_CSV_PATH
 
     if not csv_path.exists():
         print("Archivo cripto_price_5m.csv no encontrado.")
