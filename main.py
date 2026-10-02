@@ -149,6 +149,9 @@ if __name__ == '__main__':
     schedule.every(12).hours.at(":01").do(pkg.price_bingx_5m.actualizar_long_ultimas_12h)
     schedule.every().hour.at(":02").do(pkg.price_bingx_5m.completar_huecos_5m)
     schedule.every(12).hours.at(":02").do(pkg.price_bingx_5m.completar_ultimos_3dias)
+    # Velas de los pares en BANCA (pkg/bench.json): no operan, sólo se simulan. El
+    # minuto :04 no choca con el pull (:01,:06,...) ni con las entradas (:03,:08,...).
+    schedule.every().hour.at(":04").do(pkg.price_bingx_5m.sync_bench_candles)
 
     # Colocar órdenes 2 minutos después de cada cierre de vela 5‑min (ahora en minutos 03, 08, ..., 58)
     for minute in range(3, 60, 5):

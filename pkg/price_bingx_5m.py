@@ -16,6 +16,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m.csv"
 
+# Velas de los pares en BANCA (pkg/bench.json): archivo propio, fuera del camino de
+# órdenes. Ver pkg/bench.py.
+BENCH_CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m_bench.csv"
+BENCH_HISTORY_DAYS = 400
+BENCH_FETCH_LIMIT = 36            # 3 h: cubre un ciclo atrasado y corrige la vela parcial
+BENCH_MAX_REQUESTS_PER_RUN = 25   # el backfill se hace de a poco para no demorar el trading
+BENCH_BACKFILL_DAYS = 45          # lo que da el API de BingX hacia atrás
+
 # Máximo de días que mantiene el archivo corto usado para señales.
 SIGNAL_HISTORY_DAYS = 30
 
@@ -469,11 +477,18 @@ def _ensure_long_history(df_long: pd.DataFrame, now_utc: pd.Timestamp) -> pd.Dat
     cutoff = cutoff.tz_localize('UTC') if cutoff.tzinfo is None else cutoff
     df_long = df_long[df_long['date'] >= cutoff]
 
-    # Depurar símbolos retirados dejando un colchón corto para cierres pendientes
+    # Depurar símbolos retirados dejando un colchón corto para cierres pendientes.
+    # Los pares en BANCA no se depuran: su histórico es el que se usa para simularlos.
     try:
         activos = set(currencies_list())
     except Exception:
         activos = set()
+    if activos:
+        try:
+            from .bench import bench_symbols
+            activos |= set(bench_symbols())
+        except Exception as exc:
+            log.warning("No se pudo leer la banca para preservar su histórico: %s", exc)
     if activos:
         grace_cut = now_ts - pd.Timedelta(days=RETIRED_SYMBOL_GRACE_DAYS)
         df_long = df_long[
@@ -552,3 +567,84 @@ def actualizar_long_ultimas_12h():
     df_concat.to_csv(long_path, index=False)
 
     print(f"Archivo {long_path.name} actualizado con {added_rows} velas nuevas.")
+
+
+def sync_bench_candles(now_utc: Optional[datetime] = None) -> int:
+    """Baja velas de 5m de los pares en BANCA a `cripto_price_5m_bench.csv`.
+
+    Corre en el scheduler del bot, así que NUNCA levanta excepción: en `main.py` una
+    excepción en un job corta el loop entero, y la banca no puede costar el trading.
+    No toca `cripto_price_5m.csv` ni `indicadores.csv`: ningún par en banca puede llegar
+    al camino de órdenes por acá.
+
+    Devuelve cuántas velas nuevas agregó (o -1 si falló).
+    """
+    try:
+        from .bench import bench_symbols
+        try:
+            activos = set(currencies_list())
+        except Exception:
+            activos = set()
+        symbols = bench_symbols(excluir=activos)
+        if not symbols:
+            return 0
+
+        now_ts = pd.Timestamp(now_utc or datetime.now(timezone.utc))
+        now_ts = now_ts.tz_localize("UTC") if now_ts.tzinfo is None else now_ts.tz_convert("UTC")
+
+        if BENCH_CSV_PATH.exists():
+            df = pd.read_csv(BENCH_CSV_PATH)
+            df["date"] = pd.to_datetime(df["date"], utc=True, errors="coerce")
+            df = df.dropna(subset=["symbol", "date"])
+        else:
+            df = pd.DataFrame(columns=["symbol", "open", "high", "low", "close", "volume", "date"])
+        n_antes = len(df)
+
+        nuevos = []
+        requests_left = BENCH_MAX_REQUESTS_PER_RUN
+        for symbol in symbols:
+            if requests_left <= 0:
+                break
+            sdf = df[df["symbol"] == symbol]
+            last = sdf["date"].max() if not sdf.empty else None
+            # 1) lo más reciente (corrige la vela que quedó en formación la vez anterior)
+            try:
+                chunk = pd.DataFrame(_fetch_bingx_candles(symbol, BENCH_FETCH_LIMIT))
+                requests_left -= 1
+            except Exception as exc:
+                log.warning("bench: no se pudieron bajar velas de %s: %s", symbol, exc)
+                continue
+            if chunk.empty:
+                continue
+            nuevos.append(chunk)
+            # 2) rellenar hacia atrás si hay hueco, de a un pedido por vez
+            earliest_known = chunk["date"].min()
+            target = (last if last is not None else now_ts - pd.Timedelta(days=BENCH_BACKFILL_DAYS))
+            while earliest_known > target and requests_left > 0:
+                end_ms = int((earliest_known - pd.Timedelta(minutes=5)).timestamp() * 1000)
+                try:
+                    back = pd.DataFrame(_fetch_bingx_candles(symbol, 1000, end_time_ms=end_ms))
+                    requests_left -= 1
+                except Exception as exc:
+                    log.warning("bench: backfill de %s cortado: %s", symbol, exc)
+                    break
+                if back.empty or back["date"].min() >= earliest_known:
+                    break
+                nuevos.append(back)
+                earliest_known = back["date"].min()
+                time.sleep(0.2)
+            time.sleep(0.2)
+
+        if nuevos:
+            df = pd.concat([df] + nuevos, ignore_index=True)
+        df["date"] = pd.to_datetime(df["date"], utc=True, errors="coerce")
+        df = (df.dropna(subset=["symbol", "date"])
+                .drop_duplicates(subset=["symbol", "date"], keep="last")
+                .sort_values(["symbol", "date"]))
+        df = df[df["date"] >= now_ts - pd.Timedelta(days=BENCH_HISTORY_DAYS)]
+        df.to_csv(BENCH_CSV_PATH, index=False)
+        return max(0, len(df) - n_antes)
+    except Exception as exc:  # nunca tirar el bot por la banca
+        log.warning("bench: sync_bench_candles falló: %s", exc)
+        return -1
+

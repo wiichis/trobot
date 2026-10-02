@@ -28,8 +28,8 @@ Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USD
 
 ## Composición actual del portfolio
 
-10 pares (al 2026-09-20, MD5 `68c049c1` — incluye el `peso` 0,13 de ONDO de `8da4bc8`):
-APT, **AVAX**, BCH, BNB, CFX, DYDX, ETH, LINK, ONDO, **XMR**.
+**8 pares activos** (al 2026-10-02, MD5 `a9711a05`): APT, BCH, BNB, CFX, ETH, LINK, ONDO, XMR — con `peso` 0,20 explícito (ONDO 0,13), así el tamaño por trade no sube al pasar de 10 a 8 pares (el equal-weight daría 0,25).
+**En banca** (`pkg/bench.json`, no operan, se simulan hacia adelante): **AVAX** y **DYDX** desde el 02/10, más 15 candidatos en observación. Ver "Banca de pares". Rollback a 10 pares: md5 `68c049c1`.
 
 🔧 **AVAX y XMR RE-OPTIMIZADOS** (19/09, `3daa85c`) — validados con cross-val 4/4 **y holdout fuera de muestra**. Ver "Revisión 19/09". ⚠️ **AVAX sale del congelamiento**: la nota de abajo ("NO re-optimizar sus params") queda **derogada**.
 
@@ -639,6 +639,21 @@ Las órdenes PostOnly que expiran son las mejores (+0,60% a 4 h), pero porque el
 - Lente real (99 órdenes, retorno desde la entrada a horizonte fijo, neto de fees): el signo cambia con el horizonte (fallback +18% a 24 h, −2,4 pts a 8 h) y el ruido es de ±12 pts. No contradice al parity.
 - **Conclusión: la entrada PostOnly a 2 bps con timeout de ~17 min queda como está.** Infra reutilizable en el parity: `entry_fill_model='market'`, `entry_timeout_bars`, `entry_offset_bps`, `entry_expiry_fallback='market'`.
 
+### 🏦 Banca de pares — diseño del 01/10 (AVAX y DYDX los primeros)
+
+**Idea (del usuario)**: los pares que no rinden dejan de operar pero se siguen simulando; vuelven si demuestran resultado, y se reemplazan si no. **Ajuste, con datos**: el resultado de un par NO persiste de un mes al siguiente (Spearman −0,07 en sim, ~0,07 en real). Un interruptor mensual ("activo si el mes pasado fue positivo") habría hecho +3,09 contra +18,63 de dejar todos, y los apagados +15,54; mirando 2 meses, −22,24. Igual que el placebo del 11/09. Por eso las transiciones exigen muestra, no un mes.
+
+- **Separación total del trading**: `pkg/best_prod.json` = lo que opera. `pkg/bench.json` = banca (estados `banca` con params, `observacion` sin params). La banca no entra a `currencies_list()`, ni a `cripto_price_5m.csv`, ni a `indicadores.csv`. Sus velas van a `archivos/cripto_price_5m_bench.csv` por un job propio (`sync_bench_candles`, cada hora a :04, nunca levanta excepción, máx. 25 pedidos por corrida para no demorar el trading). `_ensure_long_history` ya no purga el histórico de los pares en banca (antes lo habría borrado a los 14 días).
+- **Criterios** (`pkg/bench.py`, con tests):
+  - activo → banca: sim negativo en ≥3 de 4 ventanas **y** real negativo en ≥3 de los últimos 4 bloques de 14 días (un bloque sin operar no cuenta como negativo).
+  - banca → activo: params que pasaron el protocolo (4 ventanas + falsación, `protocolo_ok`) **y** ≥15 trades simulados hacia adelante con PnL por trade mayor al sesgo del sim (0,35% del notional ≈ los 0,13 USDT/posición del cruce del 23/09).
+  - banca → fuera: más de 60 días (dos ciclos mensuales) sin poder activarse.
+- **Revisión semanal**: `python3 scripts/bench_shadow.py --data <long.csv> --bench_data <bench.csv> --pnl <PnL.csv>` (bajar los tres de prod). **Sólo propone**; las transiciones las decide el usuario. Reporte en `archivos/bench/reportes/`.
+- **Re-optimización**: mensual y sólo de los pares en banca, con el protocolo completo y `--htf_mode adx_only`.
+- 🔔 **Primera corrida (01/10) propone también ONDO**: sim −0,23/−0,17/−0,82/−1,08 y real +3,78/−0,91/−0,70/−0,07. Pendiente de decisión.
+
+**Candidatos** (15, en observación): UNI, SUI, ARB, ENA, WLD, TAO, QNT, 1000PEPE (nunca probados) y LTC, SOL, NEAR, AAVE, XRP, ZEC, HYPE (descartados antes de los fixes de tick y fill, así que aquel veredicto no vale). Historia: `scripts/candidatos_velas.py` une los mensuales de Binance USDT-M (dic-25 → ago-26, en `archivos/candidatos/binance/`) con el API de BingX desde el 17/08; en el solape el close difiere 1-5 bps de mediana (p99 5-17): **Binance sirve como proxy**. Serie en `archivos/candidatos/velas_candidatos.csv`, reglas de contrato agregadas a las dos tablas `SYMBOL_TRADING_RULES` (idénticas, 29 pares).
+
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
 
 Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferencias entre lo que prod ejecuta y lo que el backtest simula, y **hacen que los A/B midan algo distinto de lo que se cree**.
@@ -1236,6 +1251,8 @@ Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue 
 | `break_even_after_tp1` | **`false`** | 11/09, revertido |
 | `htf_filter_enabled` + `htf_adx_min` | **`true` / 18,0 sobre 1h** | **20/09 — EN PRUEBA, juzgar por 20-25 cierres** |
 | `peso` de ONDO | **0,13** (era 0,20) | 20/09 |
+| `peso` del resto | **0,20 explícito** | 02/10 — con 8 pares el equal-weight subiría a 0,25 |
+| pares activos | **8** (AVAX y DYDX a banca) | 02/10 |
 
 **Los 13 bugs corregidos**, todos de ejecución, datos o medición — **ninguno de parámetros**:
 
