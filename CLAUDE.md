@@ -756,6 +756,23 @@ Tabla completa en `archivos/candidatos/validacion/resumen.csv`. Los 15 siguen en
 4. **APT y CFX** también son negativos en el test: vigilarlos con `bench_shadow.py`.
 5. La palanca que queda **no son los params**: es la estrategia en sí (el edge depende del régimen) o el tamaño de la exposición.
 
+### ❌ Edge a horizonte fijo — re-medido el 02/10: la señal NO tiene un edge persistente
+
+`scripts/edge_horizonte.py`: cada señal del mismo `_calc_symbol` del bot (params vigentes, config viva), mantenida 2/4/8/12/24 h con tres salidas — sin stop, stop inicial, stop + trailing ATR del indicador (sin TPs ni BE) —, neto de costos reales (maker 2 bps entrada, taker 5 bps + slippage salida). 503 señales de 10 pares, dic-25 → sep-26. Salida en `archivos/analisis/`.
+
+| a 8 h | señales | sin stop | stop | stop + trailing |
+|---|---|---|---|---|
+| params de hoy + filtro de régimen, todo | 503 | −0,033% | −0,007% | +0,021% (se 0,063) |
+| **réplica del 31/08** (params de entonces, sin filtro, may→ago) | 279 | **+0,259%** | +0,150% | +0,076% |
+| mismos params del 31/08, toda la historia | 658 | +0,002% | −0,019% | −0,048% |
+| mismos params del 31/08, **después del 31/08** | 79 | **−0,643%** | **−0,426%** | −0,393% |
+
+- **La medición del 31/08 era correcta para su ventana** (la réplica da +0,336% de ventaja bruta contra +0,32% de entonces), **pero la ventana era la buena**: may +0,51% y jun +0,37% por señal. En el resto de la historia es ~0, y **fuera de muestra (septiembre) muy negativa**. El "+0,198% neto por señal" no era una propiedad de la señal sino de ese período.
+- **Ningún horizonte ni salida tiene edge distinguible de cero** sobre los 10 meses (todo dentro de ±1 error estándar). Por mes alterna: 6 positivos, 5 negativos.
+- **La asimetría long/short no es estable**: los shorts superan a los longs en 6 de 11 meses (t < 1,4).
+- ⇒ **Se descartan** la salida a horizonte fijo y el horizonte por lado como palancas de edge. Lo único abierto es **identificar el régimen ANTES** (el edge aparece en meses de tendencia): medir si la señal rinde distinto alineada con la tendencia de BTC / del mercado, sin filtrar nada todavía. El filtro ADX 1h es el intento vivo de eso (veredicto a 20-25 cierres).
+- ⚠️ **Corrige "La paradoja del edge"** y la sección "Revisión semanal 31/08 — la SEÑAL tiene edge": la paradoja se resuelve porque **no había edge persistente que el sistema estuviera desperdiciando**.
+
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
 
 Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferencias entre lo que prod ejecuta y lo que el backtest simula, y **hacen que los A/B midan algo distinto de lo que se cree**.
@@ -893,7 +910,7 @@ Es un modelo de **peor caso** (en la práctica el trailing captura más que el B
 
 **DYDX: sin veredicto — no operó ni una vez.** 2 señales, 1 orden el 27/08, expirada por `protection_timeout`. La regla de vigilancia ("si pierde su primera semana") **no es aplicable**: el sim dice que con los params nuevos opera 1-2 veces por semana. ⚠️ **Redefinida: se juzga por los primeros 5-8 trades CERRADOS, no por calendario.**
 
-#### 🎯 El hallazgo principal: la señal de entrada SÍ tiene edge
+#### 🎯 El hallazgo principal: la señal de entrada SÍ tiene edge *(⚠️ 02/10: no persiste — era de la ventana may-ago; ver "Edge a horizonte fijo — re-medido")*
 
 Medido con `_calc_symbol` (la misma función que corre el bot), retorno futuro de cada señal contra el baseline del mismo par, **independiente de la gestión de salida**:
 
@@ -1276,7 +1293,7 @@ Cobertura de costos mejoró de **3/10 a 6/10** pares (cubren: BCH, BNB, CFX, AVA
 
 ⚠️ **Y la geometría TP1/SL NO generaliza como ranking** (corrección del 31/08): LINK y AVAX tienen el peor ratio (0,48 y 0,50) y **sí** cubren su costo; los cuatro que no lo cubren tienen geometría buena (0,80 a 2,64). El modelo sirvió para diagnosticar DYDX, no para ordenar el portfolio. Se retira la recomendación de "LINK y AVAX son los siguientes".
 
-**La paradoja que queda abierta**: la señal tiene **+0,198% neto por señal** manteniendo 8h con el stop actual (ver "Revisión semanal 31/08"), y el sistema pierde. No lo explican el stop, ni el reparto de tramos, ni el time-exit. Candidatos vivos: el BE (pero es pair-specific) y la distancia entre "mantener a horizonte fijo" y "salir por TP/trailing".
+~~**La paradoja que queda abierta**~~ ⚠️ **Resuelta el 02/10** (ver "Edge a horizonte fijo — re-medido"): el +0,198% era de la ventana may-ago; en 10 meses es ~0 y fuera de muestra negativo. La señal tiene **+0,198% neto por señal** manteniendo 8h con el stop actual (ver "Revisión semanal 31/08"), y el sistema pierde. No lo explican el stop, ni el reparto de tramos, ni el time-exit. Candidatos vivos: el BE (pero es pair-specific) y la distancia entre "mantener a horizonte fijo" y "salir por TP/trailing".
 
 ---
 
