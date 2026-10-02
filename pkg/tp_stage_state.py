@@ -60,6 +60,13 @@ TP_STAGE_COLUMNS = [
     "updated_at_utc",
 ]
 
+# Los orderId de BingX (~2,1e18) se leen como TEXTO. Sin dtype, una sola fila con el id
+# vacío (lo normal: tp_stage=none) vuelve la columna float64, y str(float) da
+# '2.103045465791529e+18', que nunca coincide con el id de openOrders. Hasta el 01/10
+# eso dejó al job de transiciones sin atribuir ningún fill de TP, y al reescribir el
+# CSV el id se degradaba de forma permanente.
+TP_ORDER_ID_COLUMNS = ("tp1_order_id", "tp2_order_id", "tp3_order_id")
+
 
 def _emit_state_event(category: str, severity: str = "WARN", **fields) -> None:
     """Telemetría de transiciones del estado de TP. Nunca debe romper la persistencia.
@@ -145,7 +152,7 @@ def _load_state_df() -> pd.DataFrame:
     if not TP_STAGE_STATE_CSV.exists():
         return pd.DataFrame(columns=TP_STAGE_COLUMNS)
     try:
-        df = pd.read_csv(TP_STAGE_STATE_CSV)
+        df = pd.read_csv(TP_STAGE_STATE_CSV, dtype={c: str for c in TP_ORDER_ID_COLUMNS})
     except Exception as exc:
         _emit_state_event(
             "tp_state_read_failed",
@@ -158,6 +165,8 @@ def _load_state_df() -> pd.DataFrame:
     for c in TP_STAGE_COLUMNS:
         if c not in df.columns:
             df[c] = ""
+    for c in TP_ORDER_ID_COLUMNS:
+        df[c] = df[c].fillna("").astype(str).str.strip()
     df["symbol"] = df["symbol"].astype(str).str.upper().str.strip()
     df["position_side"] = df["position_side"].astype(str).str.upper().str.strip()
     return df[TP_STAGE_COLUMNS].copy()
@@ -380,6 +389,11 @@ def upsert_tp_state(
         row["protective_stop"] = _safe_float_or_none(protective_stop)
 
     row["updated_at_utc"] = _now_iso_utc()
+    # reset_index ANTES de `df.loc[len(df)]`: tras `df[~m]` el índice queda con un hueco
+    # y len(df) coincidía con la etiqueta de la ÚLTIMA fila, que se sobrescribía. Cada
+    # upsert de una fila que no era la última borraba el estado de otro par (firma:
+    # los 100 `tp_state_row_recreated` del 09/09 con BCH/ETH/AVAX/ONDO abiertos).
+    df = df.reset_index(drop=True)
     df.loc[len(df)] = {c: row.get(c, "") for c in TP_STAGE_COLUMNS}
     save_ok = _save_state_df(df)
     row["persist_ok"] = bool(save_ok)
