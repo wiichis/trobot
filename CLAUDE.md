@@ -354,7 +354,7 @@ La lógica conservadora (`should_fill_tp_limit` / `LimitFillPolicy`) **ya exist�
 
 **El modelo se ata a la config del LIVE** (`get_tp_mode`, `get_tp_one_at_a_time`), no al flag `conservative_limit_fills` de los params: ese flag existe para que un sweep elija su supuesto de ejecución y está en `False` en los 10 pares, así que colgarlo de ahí habría dejado el parity optimista igual. Si el live vuelve a TPs market, el parity lo sigue solo.
 
-⚠️ **El fix corrige el modelo pero NO cierra el gap**: la tasa de posiciones que tocan TP pasó de 57% a 55% (90d), contra un **38% real**. Se probó además armar el BE intrabarra (como el live, que revisa cada 50 s, en vez de con el cierre de la vela): sólo lleva 55% → 50%. **La causa dominante del resto sigue sin identificar** — queda en P5.
+⚠️ **El fix corrige el modelo pero NO cierra el gap**: la tasa de posiciones que tocan TP pasó de 57% a 55% (90d), contra un **38% real** *(⚠️ corrección 02/10: contado en el exchange es **45%**; ver "Bug 01-02/10")*. Se probó además armar el BE intrabarra (como el live, que revisa cada 50 s, en vez de con el cierre de la vela): sólo lleva 55% → 50%. **La causa dominante del resto sigue sin identificar** — queda en P5.
 
 ### 🐛 Bug 31/08 — el reparto de tramos de TP estaba hardcodeado en el parity — CORREGIDO (`cf61157`)
 
@@ -389,6 +389,8 @@ Fix: comparar contra `_last_traded_price`, y **armar el BE sí o sí cuando TP1 
 **+ una regresión propia**: `stage_since_utc` vacío vuelve del CSV como **NaN**, y `str(nan) == "nan"` es VERDADERO → el encadenamiento `or` nunca caía al respaldo, `pd.to_datetime("nan")` daba NaT y **el ratchet quedó inerte** (`158f3e3`). Fix: `_ts_o_vacio()`. Se detectó al calcular a mano cuándo dispararía el próximo ratchet, no por un test — los tests construían el estado en memoria y nunca pasaban por el ciclo guardar→leer del CSV, que es donde `""` se vuelve NaN.
 
 > **La lección, y es de proceso**: los seis fallos están en los **bordes con el mundo real** —el CSV que devuelve NaN, el exchange que rechaza, el registro que llega desfasado, el reloj del server— no en la lógica. Los tests con estado construido a mano no los ven. Al tocar el camino de ejecución, probar contra el ciclo completo de persistencia y contra respuestas reales del exchange.
+>
+> **+ 01-02/10, tres más del mismo borde**: ids que vuelven float al releer el CSV, `df.loc[len(df)]` pisando la fila de otro par, y `'nan'` pasando por id válido. Y una regla nueva: **la fuente de verdad de un fill es el estado de la orden en el exchange**, no la inferencia por posición. La telemetría del bot veía 41 de 66 fills de TP (ver "Bug 01-02/10").
 
 ### 🆕 Ratchet temporal del stop — implementado 05/09 (`f0e9819`)
 
@@ -437,7 +439,46 @@ El emisor traga cualquier excepción: **observar no puede costar la persistencia
 
 Eventos nuevos: `entry_remainder_canceled`, `protection_sl_only`, `stop_resized`, `stop_resize_failed` (CRITICAL). Tests: `tests/test_timeout_proteccion.py` y `tests/test_sl_sigue_a_la_posicion.py`, contra un exchange falso con la forma real de BingX (`tests/exchange_falso.py`) que deja correr el ciclo real de los CSV; con el código anterior fallan por las razones del bug (el de BNB deja 0,04 abiertos al disparar el stop).
 
-🔴 **Encontrado en el camino, abierto**: `tp_stage_state.csv` lee `tp1/2/3_order_id` sin `dtype` → float64 en prod → el job de transiciones **nunca atribuye un fill de TP**: desde el 28/07 los 32 `tp1_filled` y 9 `tp2_filled` vienen todos de `reconcile_before_submit`, y TP3 (que sólo confirma ese job) es inconfirmable. Pesa sobre "TP3 nunca llena". En curso en una sesión aparte; al arreglarlo, medir antes de desplegar porque activa el fallback de TP a mercado.
+✅ **Encontrado en el camino y ya resuelto**: los `order_id` de `tp_stage_state.csv` volvían como float. Ver la sección siguiente.
+
+### 🐛 Bug 01-02/10 — los order_id volvían float del CSV, y el exchange dice que el bot veía 41 de 66 fills de TP — CORREGIDO Y DESPLEGADO
+
+**El bug.** `_load_state_df` leía `tp_stage_state.csv` sin `dtype`. Con una sola fila de id vacío (lo normal: `tp_stage=none`) las tres columnas `tpN_order_id` volvían float64 y el id de BingX salía como `2.103045465791529e+18`, que nunca coincide con openOrders. **El job de transiciones no atribuyó ni uno de los 41 fills del 28/07 al 30/09**; todos vinieron de `reconcile_before_submit`. Además, al reescribir el CSV el id derivaba de forma permanente (14 de 41 difieren hasta 1.280 unidades). Mismo borde en `sl_watch.csv`: 31 `stop_loss_hit` con id en notación científica.
+
+**Dos bugs más en el mismo ciclo de persistencia:**
+- `df.loc[len(df)] = row` después de `df[~m]` **pisaba la última fila**: el índice queda con un hueco y `len(df)` coincide con la etiqueta de la última. Lo hacían `upsert_tp_state` y `_append_sl_watch`, así que cada upsert de una fila que no era la última borraba el estado de TP (o el watch del SL) de otro par. Firma: los 100 `tp_state_row_recreated` del 09/09, con BCH/ETH/AVAX/ONDO abiertos a la vez.
+- En `sync_cooldowns_from_sl_fills`, una fila sin id daba `'nan'`, que es verdadero: nunca se usaba la comparación por precio y la fila se descartaba con la posición viva.
+
+**La verdad del exchange.** Consultadas en BingX (`GET /openApi/swap/v2/trade/order`) las 157 órdenes TP LIMIT del 28/07 al 30/09:
+
+| | llenaron | el bot vio |
+|---|---|---|
+| TP1 | **53** | 32 |
+| TP2 | **10** | 9 |
+| TP3 | **3** | 0 |
+
+- **TP3 sí llena**: LINK 15/08, XMR 22/08 y LINK 23/08. Al llenar deja la posición en cero, la reducción no se puede medir, y el SL watch lo registraba como stop (XMR 22/08: `stop_loss` +1,31) o no quedaba registrado (LINK 15/08).
+- **TP1 llenó en 46 de 103 posiciones (45%)**, no en el 38% que se usaba de referencia.
+- Las 7 órdenes que "desaparecieron con la posición viva" estaban **todas llenas**. La base de cantidad estaba desfasada (entrada llenada en varias veces) y el bot volvía a someter el mismo tramo: **6 posiciones llenaron TP1 dos o tres veces** (APT 19/08, tres).
+- Desglose de las 157: 41 llenas que el bot vio; 87 canceladas al cerrar la posición por stop; 16 llenas con la posición ya en cero al detectarlo (13 TP1 seguidos de un stop y los 3 TP3); 7 llenas con la posición viva; 2 llenas más; 4 reemplazadas antes de desaparecer.
+
+**Fixes, todos desplegados el 02/10:**
+- `c06dd11` — `tpN_order_id` como texto al leer; `reset_index` antes de `df.loc[len(df)]`.
+- `145f07e` — **sin fallback a mercado en el job de transiciones.** Al empezar a matchear, cada confirmación fallida disparaba `_submit_tp_legacy_fallback`: habrían sido 103 close orders sobre posiciones ya cerradas y 7 TP maker convertidos en taker, cuando el job de colocación ya re-somete el LIMIT en 10-43 s. Con la posición en cero se anota `tpN_gone_position_flat` sólo en el ledger (como `tpN_failed` serían ~1,6 alertas de Telegram por día). Al confirmar se suelta el `order_id`, igual que reconcile. El fallback sigue activo cuando el SUBMIT del LIMIT es rechazado.
+- `7ace307` — `_read_orders_csv()` lee `orderId` como texto en `order_id_register`, `order_pending_prev` y `sl_watch`; `entry_watch` lee `order_id`/`request_id` como texto; `reset_index` en `_append_sl_watch`.
+- `aae1a59` — **`tp_fill_confirmation_mode: exchange_state`** (el valor existía y nunca se había implementado). Cuando una orden TP desaparece, el estado en BingX decide:
+  - `FILLED` confirma con el precio y la cantidad reales. Un TP3 lleno registra el cierre como `tp3` antes que el SL watch, que ve el cierre reciente y ya no lo duplica como stop.
+  - `CANCELLED` no confirma, aunque la posición se haya reducido, y suelta el id.
+  - `NEW`/`PENDING`/`PARTIALLY_FILLED` es un pending_gone falso: sólo ledger.
+  - Si la consulta falla, respaldo por inferencia. **Rollback: `inferred` + restart, sin deploy.**
+
+Estados reales de BingX: `FILLED`, `CANCELLED` (doble L), `NEW`; openOrders informa las órdenes vivas como `PENDING`. El historial llega al menos a 7 semanas. Para consultar desde prod, las claves vienen del `EnvironmentFile` del servicio (`/etc/default/trobot`).
+
+**Verificado en vivo** con la BNB SHORT del 02/10 15:00: id de TP1 exacto en `tp_stage_state.csv` junto a filas con id vacío, e id del STOP exacto en `sl_watch.csv`. **Falta ver** el primer `tpN_filled` con `source=exchange_order_status`.
+
+**Qué se cae con esto** (corregido donde aparecía): "TP3 nunca llena (0 de 39)"; el 38% de realización de TP1 en vivo; y, en la semana del 18-25/08, que el último tramo lo capturó el trailing — 2 de esos 4 TP3 llenaron en la orden TP3. El gap de P5.2c (sim 50-55% vs vivo) se achica de ~12-15 a ~5-10 puntos.
+
+Tests: `tests/test_tp_state_ids_csv.py`, `tests/test_order_ids_csv.py` y `tests/test_tp_confirmacion_exchange.py`. `query_order` queda bloqueada por defecto en `conftest` (ningún test sale a la red) y el exchange falso la responde con la forma real.
 
 ### ❌ P2 Timeframe 15m — CERRADO 03/07: sweep completo, RECHAZADO
 
@@ -529,17 +570,17 @@ Corría con `APPLY=0`, así que sólo reportaba por Telegram; nunca tocó parám
 **✅ ~17/08 — análisis de edge rehecho con datos limpios — HECHO el 18/08.** Resultado en "¿hay edge?" abajo. Sigue negativo en 4/4 y el diagnóstico se afina: 7 de 10 pares no cubren su propio costo.
 
 **✅ ~24/08 — veredicto de estructura de salidas — EMITIDO el 25/08: NO revertir TP×2.**
-Pierde en 3 de 4 ventanas con el parity ya corregido. Detalle en "Revisión semanal 25/08". Lo que queda abierto de la estructura es **TP3, que nunca llena** (0 de 39).
+Pierde en 3 de 4 ventanas con el parity ya corregido. Detalle en "Revisión semanal 25/08". Lo que queda abierto de la estructura es **TP3, que nunca llena** (0 de 39). *(⚠️ Falso, corregido el 02/10: TP3 llenó 3 veces; el bot no podía verlo. Ver "Bug 01-02/10".)*
 
 **🔓 Congelamiento de parámetros: VENCIDO el 24/08.** Rigió desde el 03/07. Durante su vigencia se corrigieron 7 bugs de ejecución/datos (07, 08, 13, 14, 27, 28/07, 10/08) y ninguno era un parámetro. Ahora se pueden tocar params, pero con la cadencia de abajo y **con cross-val obligatoria**.
 
-**❌ P-TP3 — CANCELADO el 25/08, la premisa era falsa.** Se propuso porque "TP3 nunca llena (0 de 39)". Cierto sobre los *fills*, pero el encuadre era erróneo: hubo **4 `tp3_submitted`** en la semana (XMR ×2, LINK, AVAX) — y para someter TP3, TP1 y TP2 **ya se llenaron**. Esas 4 posiciones hicieron **+2,21 de los +2,87 de la semana (77%)**, y en 3 de 4 el **último tramo fue el que más aportó** (+0,826, +0,449, +0,374), capturado por el **trailing**, no por la orden TP3. El tercer tramo no es peso muerto: es donde está la ganancia. *(Lo detectó el usuario al contar alertas de Telegram — la telemetría de `tp3_submitted` decía lo contrario que la de `tp3_filled`.)*
+**❌ P-TP3 — CANCELADO el 25/08, la premisa era falsa.** Se propuso porque "TP3 nunca llena (0 de 39)". Cierto sobre los *fills*, pero el encuadre era erróneo: hubo **4 `tp3_submitted`** en la semana (XMR ×2, LINK, AVAX) — y para someter TP3, TP1 y TP2 **ya se llenaron**. Esas 4 posiciones hicieron **+2,21 de los +2,87 de la semana (77%)**, y en 3 de 4 el **último tramo fue el que más aportó** (+0,826, +0,449, +0,374), capturado por el **trailing**, no por la orden TP3. *(⚠️ Corrección 02/10, contra el exchange: 2 de esos 4 TP3 **sí** llenaron en la orden — XMR 22/08 @437,87 y LINK 23/08 @11,328; el de XMR quedó registrado como `stop_loss` +1,31. La conclusión de abajo se refuerza.)* El tercer tramo no es peso muerto: es donde está la ganancia. *(Lo detectó el usuario al contar alertas de Telegram — la telemetría de `tp3_submitted` decía lo contrario que la de `tp3_filled`.)*
 - Lo único que sí vale mirar: **AVAX**, el 1 de 4 donde el trailing devolvió todo lo capturado en TP1+TP2 (−0,426 en el último tramo).
 
 **Cola de trabajo — en este orden**
 1. ~~01/09 — veredicto de DYDX~~ → **sin veredicto el 31/08: DYDX no operó**. Criterio redefinido a **5-8 trades cerrados**, no calendario.
 2. **P-geometría** 🆕 *(el hilo más productivo; ver "La geometría TP1/SL")*: LINK y AVAX tienen TP1/SL de 0,48 y 0,50, la misma geometría que hundía a DYDX. Uno por vez y sólo si DYDX se realiza.
-3. **P-paridad** *(P5.2c)*: cerrar el gap de realización de TP (sim 50-55% vs vivo 38%). Mientras siga abierto, todo A/B de salidas conserva un sesgo optimista de ~12-15 puntos.
+3. **P-paridad** *(P5.2c)*: cerrar el gap de realización de TP (sim 50-55% vs vivo **45%**; era 38% hasta contar los fills en el exchange el 02/10). Mientras siga abierto, todo A/B de salidas conserva un sesgo optimista de ~5-10 puntos.
 4. **P-proceso**: cadencia MENSUAL de re-optimización (máx. 1-2 pares/mes; cada cambio debe ganarle a "no tocar nada" en cross-val). **Al re-optimizar, usar siempre `--conservative_limit_fills`** — sin eso el sweep vuelve a premiar TP cercanos.
 5. **P-pesos**: concentrar capital en vez del equal-weight actual. ⚠️ Ver la trampa de selección in-sample en "¿hay edge?".
 
@@ -561,7 +602,7 @@ Pierde en 3 de 4 ventanas con el parity ya corregido. Detalle en "Revisión sema
 2. **Dashboard mejorado**: agregar página de "salud del portfolio" con métricas de cada par (PnL 7/30/90d, winrate, pf, max_dd) y alertas visuales.
 3. **CI ligero**: hook que verifique `md5sum pkg/best_prod.json` local == HEAD == prod después de cualquier deploy.
 4. 🆕 **Check de paridad de datos (alto valor, barato)**: comparar semanalmente el OHLC de `cripto_price_5m.csv` de prod contra el API para las velas cerradas — deben coincidir al 100%. El bug de velas parciales del 28/07 vivió meses sin detectarse y contaminó todos los indicadores. Excluir siempre la última vela.
-5. 🆕 **Check de ejecución diseñada**: contar fills `tp1/tp2/tp3` en `execution_ledger`. Si en N cierres hay 0 fills de TP, algo está roto aguas arriba — fue la señal que gritó el bug del escalonamiento durante un mes sin que nadie la leyera. **Medir siempre por EVENTOS** (`tp1_filled` / `entry_order_filled`), nunca agrupando cierres de `PnL.csv` por proximidad temporal: eso dio 12% cuando el valor real era 38%.
+5. 🆕 **Check de ejecución diseñada**: contar fills `tp1/tp2/tp3` en `execution_ledger`. Si en N cierres hay 0 fills de TP, algo está roto aguas arriba — fue la señal que gritó el bug del escalonamiento durante un mes sin que nadie la leyera. **Medir siempre por EVENTOS** (`tp1_filled` / `entry_order_filled`), nunca agrupando cierres de `PnL.csv` por proximidad temporal: eso dio 12% cuando el valor real era 38%. Y los eventos del bot también subcontaban: el 02/10 el exchange mostró 66 fills de TP donde el bot había registrado 41. **La fuente de verdad es el estado de la orden en el exchange.**
 7. 🆕 **Tests anclados a fechas fijas caducan en silencio** (25/08): `test_price_pull_partial_candles` usaba el 23/07 y empezó a fallar al pasar los 30 días de `SIGNAL_HISTORY_DAYS` — la purga borraba las velas del fixture. Falló días sin que hubiera regresión, justo en los tests que cubren el bug de velas parciales. Cualquier test que dependa de una ventana de retención debe anclarse al presente.
 6. 🆕 **Entradas que expiran sin llenar** (10/08, barato y de alto valor): contar `entry_order_canceled_or_expired` con `reason=protection_timeout` por par. Un par que acumula timeouts **no está mudo por señal, está mudo por precio** — su orden PostOnly se coloca donde no puede llenar. Fue el síntoma del bug de tick size y se confundió con selectividad de filtros durante un mes.
 
@@ -692,7 +733,7 @@ Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferenc
 2b. ~~**El parity llenaba los TP con un simple toque**~~ → ✅ **CORREGIDO 25/08** (`cc36b90`). Ver "Bug 25/08".
 2d. ~~**El reparto de tramos estaba hardcodeado 40/40/20**~~ → ✅ **CORREGIDO 31/08** (`cf61157`). Ver "Bug 31/08". Era además la razón de que los A/B de distribución fueran no-op silenciosos.
 2e. ℹ️ **`time_exit_bars` NO es un hueco de paridad** (verificado 31/08): está deliberadamente desactivado en los tres motores — *"producción no la implementa"*. Es un parámetro inerte en `best_prod.json`. No perder tiempo con él otra vez.
-2c. 🔴 **Gap de realización de TP, sin causa identificada (abierto).** El sim da 50-55% de posiciones que tocan TP; en vivo es **38%** (15 `tp1_filled` sobre 39 entradas desde el 28/07). Ya descartados por medición: el modelo de fill (57→55%) y el BE armado con el cierre en vez de intrabarra (55→50%). **Mientras siga abierto, todo A/B de salidas conserva un sesgo optimista de ~12-15 puntos.** Próximos sospechosos a medir: (a) la latencia de 50 s entre que se confirma un tramo y se somete el siguiente, que el sim no modela; (b) el trailing stop del live, que puede cerrar antes de TP y en el sim se actualiza sólo una vez por vela; (c) que el sim abre más posiciones que el live y el mix es distinto.
+2c. 🔴 **Gap de realización de TP, sin causa identificada (abierto).** El sim da 50-55% de posiciones que tocan TP; en vivo es **38%** (15 `tp1_filled` sobre 39 entradas desde el 28/07). *(⚠️ Corrección 02/10: contado en el exchange es **45%** — 46 de 103 posiciones del 28/07 al 30/09; el bot no veía 25 de 66 fills. El gap se achica a ~5-10 puntos.)* Ya descartados por medición: el modelo de fill (57→55%) y el BE armado con el cierre en vez de intrabarra (55→50%). **Mientras siga abierto, todo A/B de salidas conserva un sesgo optimista** (~5-10 puntos con el 45% real). Próximos sospechosos a medir: (a) la latencia de 50 s entre que se confirma un tramo y se somete el siguiente, que el sim no modela; (b) el trailing stop del live, que puede cerrar antes de TP y en el sim se actualiza sólo una vez por vela; (c) que el sim abre más posiciones que el live y el mix es distinto.
 3. 🐛 **`--entry_hours_utc` no tiene efecto en `--live_parity`** — se acepta el flag y se ignora en silencio. Para medir el gate hubo que particionar los trades por hora de entrada a mano. Arreglar o al menos hacer que falle ruidosamente.
 4. **`--live_parity` sin `--symbols` usa BTC-USDT por defecto** (que ni está en el portfolio) y reporta 0 trades sin avisar. Fácil de malinterpretar como "no hay señales".
 
@@ -714,6 +755,7 @@ Las gotchas detectadas y validadas están en `~/.claude/projects/-Users-will-Doc
 - `backtest_tick_size_poisoning.md` — el tick por defecto (0.01) que envenenaba el backtest y descolocaba las órdenes en prod
 - `execution_cost_notes.md` — TPs LIMIT maker, y el escalonamiento que no escalonaba
 - `parity_sim_realization_gap.md` — cuándo el sim sobrestima y por qué mandar el real
+- `tp_state_ids_float.md` — ids float en los CSV, la fila pisada por `df.loc[len(df)]`, y los fills de TP contados en el exchange (66, no 41)
 
 ### ✅ Verificación 03/08 — los 4 fixes de la semana pasada FUNCIONAN
 
@@ -764,9 +806,11 @@ Las horas que el gate bloqueaba fueron las buenas. Muestra chica (n=6), pero con
 
 🔴 **Lo que queda abierto y es el hallazgo más sólido: TP3 nunca llena.** **0 fills en 39 entradas** desde el 28/07 (tp1 15, tp2 8, tp3 **0**). Está a 3,84%-7,04% según el par (ETH y ONDO en 7,04%) en una estrategia de velas de 5m. El tercer tramo es el **34% de cada posición** y jamás captura: siempre termina colgado del stop. No depende del modelo de fill ni del gap de paridad — es geometría.
 
+> ⚠️ **Corrección 02/10 — esto era falso.** El 0 venía de la telemetría del bot, que no podía confirmar un TP3: al llenar deja la posición en cero y la confirmación por reducción fallaba. En el exchange, TP3 llenó **3 veces** del 28/07 al 30/09 (LINK 15/08, XMR 22/08, LINK 23/08). Sigue siendo raro (3 de 103 posiciones), así que la geometría lejana es real, pero "jamás captura" no.
+
 **La geometría del problema, para tenerla escrita** (ejemplo APT): `be_trigger` **+0,4%**, TP1 **+1,44%**, `sl_pct` **−1,5%**. Entre +0,4% y +1,44% hay **un punto entero de zona muerta** donde el BE ya está armado pero no hay TP: cualquier retroceso cierra plano. La firma en los datos: de 52 posiciones que nunca tocaron TP1, 15 perdieron −10,00 mientras 26 ganaron apenas +6,84.
 
-⚠️ **Gotcha de medición, no repetirlo**: la tasa de TP en vivo se mide contando **eventos** (`tp1_filled` vs `entry_order_filled`), no agrupando cierres de `PnL.csv` por proximidad temporal. Agrupar con una ventana de 90 min dio 12% —cifra errónea que casi motiva un cambio de parámetros— porque parte en dos las posiciones cuyos tramos se separan horas (XMR: TP1 15:21, TP2 22:58). El número correcto es **38%**.
+⚠️ **Gotcha de medición, no repetirlo**: la tasa de TP en vivo se mide contando **eventos** (`tp1_filled` vs `entry_order_filled`), no agrupando cierres de `PnL.csv` por proximidad temporal. Agrupar con una ventana de 90 min dio 12% —cifra errónea que casi motiva un cambio de parámetros— porque parte en dos las posiciones cuyos tramos se separan horas (XMR: TP1 15:21, TP2 22:58). El número correcto era **38%** con los eventos del bot; contado en el exchange es **45%** (corrección 02/10).
 
 ### 🆕 La geometría TP1/SL — el diagnóstico que destapó DYDX (25/08)
 
@@ -1100,7 +1144,7 @@ PnL por mes aislado de AVAX, params nuevos (desplegados el 19/09) contra los vie
 
 🎯 **Lo importante: acercar los tramos —la corrección que sugería el diagnóstico— es de lo peor que se puede hacer.** Post-hoc sobre el holdout (informativo, ninguno había pasado la selección): comprimido +4,03 · (0,6 1,2 1,8) +4,60 · (0,7 1,3 2,0) +6,39 · **(0,4 0,8 1,2) −2,25**. La dirección que paga es **alejar**, igual que en el barrido de `tp1_factor`, y por el mismo mecanismo: **el runner que cobra el trailing vale más que el tramo cobrado temprano**.
 
-**Conclusión operativa**: el ladder de hecho funciona como *"un TP + trailing"*. Que TP3 esté a 1,92%-5,76% contra un MFE mediano de 1,23% es raro de leer, pero **no es un defecto a parchear** — es la forma que tomó un sistema donde el trailing es quien captura. Séptimo A/B global rechazado, con la misma lección.
+**Conclusión operativa**: el ladder de hecho funciona como *"un TP + trailing"*. Que TP3 esté a 1,92%-5,76% contra un MFE mediano de 1,23% es raro de leer, pero **no es un defecto a parchear** — es la forma que tomó un sistema donde el trailing es quien captura. *(Según el exchange, TP3 llenó 3 veces en 103 posiciones —corrección 02/10—, así que la descripción se mantiene.)* Séptimo A/B global rechazado, con la misma lección.
 
 ### 📅 PnL simulado mes a mes — 19/09: el edge está en mar-jul y se apagó en ago-sep
 
@@ -1218,7 +1262,7 @@ Los tres mejores cierres de la semana salieron por trailing tras dispararlo: **C
 | `be_stop` | 5 | +0,024 |
 | `stop_loss` | 3 | −0,560 |
 
-**El trailing es el que cobra; el BE protege sin aportar; el stop completo sigue siendo el sumidero** (63% de los cierres a 30d). Realización de TP1: 44% en 7d, 33% en 30d — en línea con el 38-40% histórico. **TP2 no llenó ni una vez en 14 días** y TP3 sigue en 0.
+**El trailing es el que cobra; el BE protege sin aportar; el stop completo sigue siendo el sumidero** (63% de los cierres a 30d). Realización de TP1: 44% en 7d, 33% en 30d — en línea con el 38-40% histórico. **TP2 no llenó ni una vez en 14 días** y TP3 sigue en 0. *(⚠️ Medido con la telemetría del bot, que subcontaba; ver "Bug 01-02/10". Lo de TP2 lo confirma el exchange: 0 fills de TP2 en septiembre.)*
 
 #### 🔧 AVAX y XMR re-optimizados (`3daa85c`) — con holdout fuera de muestra
 
