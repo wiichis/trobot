@@ -773,6 +773,27 @@ Tabla completa en `archivos/candidatos/validacion/resumen.csv`. Los 15 siguen en
 - ⇒ **Se descartan** la salida a horizonte fijo y el horizonte por lado como palancas de edge. Lo único abierto es **identificar el régimen ANTES** (el edge aparece en meses de tendencia): medir si la señal rinde distinto alineada con la tendencia de BTC / del mercado, sin filtrar nada todavía. El filtro ADX 1h es el intento vivo de eso (veredicto a 20-25 cierres).
 - ⚠️ **Corrige "La paradoja del edge"** y la sección "Revisión semanal 31/08 — la SEÑAL tiene edge": la paradoja se resuelve porque **no había edge persistente que el sistema estuviera desperdiciando**.
 
+### 🔬 02/10 — régimen de mercado y laboratorio de familias de estrategia
+
+**Régimen de mercado (propuesta #3) — descartado.** `scripts/regimen_mercado.py`: índice equiponderado de 25 pares; la señal actual alineada con la tendencia de 72 h del mercado (métrica fijada de antemano) rinde +0,085% más con stop+trailing (t=+0,67), pero sin stop rinde −0,22% menos (t=−1,10), y por mes gana en 7 de 11. Con 24 h, 6 de 11. **No hay un régimen de mercado en el que la señal actual gane de forma confiable.**
+
+**Laboratorio de familias (propuesta #4) — primer barrido, sin optimizar.** `scripts/lab_estrategias.py`: 6 familias clásicas con params fijados de antemano, velas 1 h, señal al cierre y entrada en la apertura siguiente, costos taker 16 bps por vuelta, 25 pares, nov-25 → sep-26, ~22.700 trades. Régimen de mercado "tendencia/rango" según |retorno 72 h del índice| contra su mediana de 30 días.
+
+| familia | bruto/trade | t bruto | neto taker | meses + |
+|---|---|---|---|---|
+| **F5 momentum entre pares** (largo top-3 / corto bottom-3 por retorno 72 h, 24 h) | **+0,28%** | **+2,0** | +0,12% | 6/10 |
+| F1 breakout 48 h + trailing 2×ATR | +0,11% | +1,6 | −0,05% | 6/12 |
+| F2 momentum de serie (signo 72 h, 24 h) | +0,05% | +0,8 | −0,12% | 4/11 |
+| F4 reversión Bollinger | −0,06% | −1,5 | −0,22% | 2/12 |
+| F3 reversión RSI | −0,21% | −2,0 | −0,37% | 5/11 |
+| F6 reversión entre pares | −0,00% | −0,0 | −0,16% | 3/10 |
+
+- **La reversión a la media pierde incluso en bruto** en estas monedas a 1 h: descartada como familia.
+- **Las familias de momentum tienen un edge bruto chico que los costos se comen** a 1-24 h. El horizonte corto con taker no da.
+- **F5 (momentum entre pares) es la única positiva neta**, en las dos mitades (+0,03% dic-may, +0,23% may-sep) y la sostiene la pata larga (+0,38% contra −0,13% de la corta): los que más subieron siguen subiendo. No es significativa todavía (t neto +0,9).
+- La partición tendencia/rango **no muestra un "switch" claro**: F5 rinde más en rango (+0,22%) que en tendencia (+0,02%), al revés de lo intuitivo; F1 igual.
+- **Próximo paso propuesto**: F5 a horizonte largo (mirada 7 días, mantener 3-7 días, rebalanceo semanal) para que los costos pesen menos; variante sólo-largos; más pares (top 50 por volumen, requiere bajar más historia). Variantes fijadas de antemano y mitad de la historia reservada para validar.
+
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
 
 Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferencias entre lo que prod ejecuta y lo que el backtest simula, y **hacen que los A/B midan algo distinto de lo que se cree**.
