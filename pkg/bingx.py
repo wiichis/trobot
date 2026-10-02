@@ -17,14 +17,14 @@ def get_sign(api_secret, payload):
 
 
 #Enviar Requerimiento
-def send_request(methed, path, urlpa, payload):
+def send_request(methed, path, urlpa, payload, timeout=None):
     url = "%s%s?%s&signature=%s" % (APIURL, path, urlpa, get_sign(SECRETKEY, urlpa))
     #print(url)
 
     headers = {
         'X-BX-APIKEY': APIKEY,
     }
-    response = requests.request(methed, url, headers=headers, data=payload)
+    response = requests.request(methed, url, headers=headers, data=payload, timeout=timeout)
     return response.text
 
 
@@ -134,6 +134,23 @@ def perpetual_swap_positions(symbol):
     }
     paramsStr = praseParam(paramsMap)
     return send_request(methed, path, paramsStr, payload)
+
+
+#Consultar UNA orden por id (también las ya cerradas).
+#Respuesta verificada el 02/10/2026: data.order.status = FILLED | CANCELLED (doble L) |
+#NEW | PARTIALLY_FILLED, con executedQty y avgPrice como texto; el historial llega al
+#menos a 7 semanas atrás. Lleva timeout porque se llama dentro del snapshot de órdenes.
+def query_order(symbol, order_id, timeout=10):
+    payload = {}
+    path = '/openApi/swap/v2/trade/order'
+    methed = "GET"
+    paramsMap = {
+        "orderId": order_id,
+        "symbol": symbol,
+        "timestamp": int(time.time() * 1000),
+    }
+    paramsStr = praseParam(paramsMap)
+    return send_request(methed, path, paramsStr, payload, timeout=timeout)
 
 
 #Consultar Ordenes Pendientes

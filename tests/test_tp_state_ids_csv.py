@@ -66,6 +66,9 @@ def test_transiciones_atribuye_el_fill_tras_el_ciclo_csv(
 
     _seed()
     tps.upsert_tp_state("CFX-USDT", "LONG", tp_stage="none", tp_mode="partial_limit_tp")
+    # Este test mide el match de ids tras el CSV; la confirmación por exchange tiene
+    # sus propios tests (test_tp_confirmacion_exchange.py).
+    monkeypatch.setattr(mb, "get_tp_fill_confirmation_mode", lambda: "inferred")
     monkeypatch.setattr(mb, "total_positions",
                         lambda _s: ("ONDO-USDT", "SHORT", 0.43, 57.0, 0.0))  # 86 -> 57
     prev_df = make_orders_df([{"symbol": "ONDO-USDT", "orderId": int(OID), "type": "LIMIT",

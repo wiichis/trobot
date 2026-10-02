@@ -81,6 +81,16 @@ def _aislar_rutas_absolutas_del_repo(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(le, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(le, "_DISPATCHER", None)
 
+    # `query_order` consulta el exchange real dentro del job de transiciones (modo
+    # exchange_state). Ningún test debe llegar a la red: por defecto responde como un
+    # error del exchange, y el código cae a la inferencia por posición. Los tests que
+    # la necesitan la reemplazan (exchange falso o respuesta grabada).
+    import pkg.bingx as bx
+    monkeypatch.setattr(
+        bx, "query_order",
+        lambda *_a, **_k: json.dumps({"code": -1, "msg": "red bloqueada en tests", "data": {}}),
+    )
+
     monkeypatch.setattr(el, "DEFAULT_EXECUTION_LEDGER_PATH", archivos / "execution_ledger.csv")
     monkeypatch.setattr(tps, "TP_STAGE_STATE_CSV", archivos / "tp_stage_state.csv")
 

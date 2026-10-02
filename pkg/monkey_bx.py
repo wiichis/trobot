@@ -577,6 +577,44 @@ def _infer_tp_fill_from_position(symbol: str, position_side: str, state: dict, t
     return False, f"reduction_too_low:{reduction:.6f}<{min_expected:.6f}", current_qty, reduction
 
 
+# Estados reales de BingX (verificados el 02/10/2026 consultando órdenes cerradas).
+_ORDER_STATUS_OPEN = ("NEW", "PENDING", "PARTIALLY_FILLED")
+
+
+def _query_order_status(symbol: str, order_id: str):
+    """Estado de una orden en el exchange, o None si no se pudo saber.
+
+    Devuelve {'status', 'executed_qty', 'avg_price', 'update_time_ms'}. `status` sale
+    normalizado en mayúsculas, con CANCELED unificado a CANCELLED (BingX usa doble L).
+    None ante cualquier duda —error de red, code != 0, orden no encontrada, id que no
+    coincide— para que el llamador caiga a la inferencia por posición.
+    """
+    oid = _norm_order_id(order_id)
+    if not oid:
+        return None
+    try:
+        raw = pkg.bingx.query_order(symbol, oid)
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return None
+    if not isinstance(data, dict) or str(data.get("code")) != "0":
+        return None
+    order = (data.get("data") or {}).get("order") or {}
+    if _norm_order_id(order.get("orderId")) != oid:
+        return None
+    status = str(order.get("status") or "").strip().upper()
+    if not status:
+        return None
+    if status == "CANCELED":
+        status = "CANCELLED"
+    return {
+        "status": status,
+        "executed_qty": _safe_float_or_none(order.get("executedQty")),
+        "avg_price": _safe_float_or_none(order.get("avgPrice")),
+        "update_time_ms": order.get("updateTime"),
+    }
+
+
 def _infer_tp1_fill_from_position(symbol: str, position_side: str, state: dict):
     """Compat wrapper Patch 5B."""
     return _infer_tp_fill_from_position(symbol, position_side, state, tp_idx=1)
@@ -806,10 +844,9 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
         side_u = str(r.get('side', '')).upper()
         order_id_norm = _norm_order_id(r.get('orderId'))
 
-        # Patch 5C: TP LIMIT por etapas en modo partial_limit_tp (confirmacion inferida por reduccion de posicion).
+        # Patch 5C: TP LIMIT por etapas en modo partial_limit_tp.
         st_tp = get_tp_state(symbol_u, pside_u)
         tp_mode_state = str(st_tp.get("tp_mode", "")).lower()
-        tp_fill_mode_state = str(st_tp.get("tp_fill_confirmation_mode", "inferred")).lower()
         tp_idx_state = _infer_tp_idx_from_state_order_id(st_tp, order_id_norm)
         is_stage_limit_candidate = (
             otype == "LIMIT"
@@ -821,9 +858,63 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
             tp_idx = int(tp_idx_state)
             stage_name = _tp_stage_name(tp_idx)
             confirmed, confirm_reason, current_qty, reduction = _infer_tp_fill_from_position(symbol_u, pside_u, st_tp, tp_idx=tp_idx)
+            # La posición se lee igual con o sin exchange: dice si quedó en cero.
+            position_flat = confirm_reason == "position_unavailable"
             confirm_source = "inferred_pending_gone_plus_position_reduction"
-            if tp_fill_mode_state == "exchange_state":
-                confirm_source = "exchange_state_unavailable_fallback_inferred"
+            fill_price = None
+            fill_qty = _safe_float_or_none(st_tp.get(f"{stage_name}_qty"))
+            data_quality = "inferred"
+
+            # Modo exchange_state: el estado de la orden en el exchange DECIDE, y la
+            # inferencia por reducción de posición queda como respaldo si la consulta
+            # falla. Medido sobre las 157 órdenes TP del 28/07 al 30/09: 66 llenaron
+            # y la inferencia vio 41. Se perdieron los 3 TP3 (al llenar dejan la
+            # posición en cero, así que la reducción no se puede medir), 13 TP1 que
+            # llenaron justo antes de un stop, y 7 que llenaron con la posición viva
+            # pero con la base de cantidad desfasada (entrada llenada en varias veces):
+            # en esos el bot volvía a someter el mismo tramo.
+            ex = None
+            if get_tp_fill_confirmation_mode() == "exchange_state":
+                ex = _query_order_status(symbol_u, order_id_norm)
+                if ex is None:
+                    confirm_source = "exchange_state_unavailable_fallback_inferred"
+            ex_status = ex["status"] if ex else ""
+
+            if ex_status in _ORDER_STATUS_OPEN:
+                # Sigue viva en el exchange: el snapshot la perdió (respuesta vacía
+                # transitoria). No es un fill ni un fallo; reaparecerá en el próximo.
+                append_execution_ledger_event(
+                    f"{stage_name}_gone_but_open",
+                    data_quality="actual",
+                    source="exchange_order_status",
+                    ts_utc=ts,
+                    order_id=order_id_norm,
+                    symbol=symbol_u,
+                    side=side_u,
+                    position_side=pside_u,
+                    order_type=otype,
+                    partial_fill_status=ex_status.lower(),
+                    notes="pending_gone_falso|la orden sigue abierta en el exchange",
+                )
+                continue
+            if ex_status == "FILLED":
+                confirmed = True
+                confirm_source = "exchange_order_status"
+                confirm_reason = f"exchange_filled|{confirm_reason}"
+                fill_price = ex.get("avg_price")
+                fill_qty = ex.get("executed_qty") or fill_qty
+                data_quality = "actual"
+            elif ex_status:
+                # Terminal sin fill (CANCELLED, EXPIRED...): el exchange manda aunque la
+                # posición se haya reducido por otra vía.
+                confirmed = False
+                confirm_source = "exchange_order_status"
+                confirm_reason = f"exchange_{ex_status.lower()}|{confirm_reason}"
+                data_quality = "actual"
+                # La orden está muerta y sin fill: soltar el id para que reconcile no
+                # le atribuya después una reducción de posición ajena.
+                upsert_tp_state(symbol_u, pside_u, **{f"tp{tp_idx}_order_id": ""})
+
             if confirmed:
                 set_tp_filled(symbol_u, pside_u, tp_idx=tp_idx)
                 # Soltar el order_id ya atribuido, igual que _reconcile_stage_before_submit:
@@ -838,14 +929,15 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
                     side=side_u,
                     order_id=order_id_norm,
                     source=confirm_source,
-                    confirmation_mode="inferred" if tp_fill_mode_state == "exchange_state" else tp_fill_mode_state,
+                    confirmation_mode="exchange_state" if data_quality == "actual" else "inferred",
+                    fill_price=_safe_float_or_none(fill_price),
                     reduction_qty=_safe_float_or_none(reduction),
                     remaining_qty=_safe_float_or_none(current_qty),
                     tp_stage=str(st.get("tp_stage", "")),
                 )
                 append_execution_ledger_event(
                     f"{stage_name}_filled",
-                    data_quality="inferred",
+                    data_quality=data_quality,
                     source=f"pending_gone_limit_{stage_name}",
                     ts_utc=ts,
                     order_id=order_id_norm,
@@ -854,29 +946,34 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
                     position_side=pside_u,
                     order_type=otype,
                     submitted_price=_safe_float_or_none(st_tp.get(f"{stage_name}_price")),
-                    fill_qty=_safe_float_or_none(st_tp.get(f"{stage_name}_qty")),
+                    actual_fill_price=_safe_float_or_none(fill_price),
+                    fill_qty=_safe_float_or_none(fill_qty),
                     fill_time_utc=ts,
                     close_reason=stage_name,
-                    partial_fill_status="inferred",
+                    partial_fill_status="filled" if data_quality == "actual" else "inferred",
                     notes=f"{confirm_source}|{confirm_reason}",
                 )
+                # TP3 es el último tramo (su cantidad es todo lo que queda), así que su
+                # fill CIERRA la posición. Se registra aquí, antes que el SL watch: este
+                # job corre en el snapshot y el watch después, y el watch ve el cierre
+                # reciente (_recent_close_recorded) y no lo duplica como stop. Hasta el
+                # 02/10 los TP3 llenos quedaban registrados como trail/be/stop_loss.
+                # TP1/TP2 llenos con la posición en cero NO se registran como cierre:
+                # lo normal es que el resto haya salido por stop después del fill.
                 if tp_idx == 3:
                     try:
                         _record_trade_closed(symbol_u, pside_u, "tp3")
                     except Exception:
                         pass
-            elif confirm_reason == "position_unavailable":
+            elif position_flat:
                 # La posición ya no existe: la orden se fue con el cierre (SL, BE o
                 # trailing), que lo registra el SL watch. No es un fallo de TP ni hay
-                # nada que proteger. Medido 28/07-30/09: 103 de 157 desapariciones de
-                # TP LIMIT fueron así. Sólo al ledger: como tpN_failed habrían sido
-                # ~1,6 alertas de Telegram por día por cierres normales.
-                # OJO: un TP3 que se llena también deja la posición en cero, así que
-                # este camino NO distingue "TP3 lleno" de "cerró por stop". Para eso
-                # hace falta consultar el estado de la orden en el exchange.
+                # nada que proteger. Medido 28/07-30/09: 87 de las 103 órdenes que se
+                # fueron con la posición estaban CANCELLED en el exchange. Sólo al
+                # ledger: como tpN_failed serían ~1,6 alertas de Telegram por día.
                 append_execution_ledger_event(
                     f"{stage_name}_gone_position_flat",
-                    data_quality="inferred",
+                    data_quality=data_quality,
                     source=f"pending_gone_limit_{stage_name}",
                     ts_utc=ts,
                     order_id=order_id_norm,
@@ -892,11 +989,10 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
             else:
                 # Sin fallback a mercado en este camino, aunque `tp_legacy_fallback_on_error`
                 # esté activo. El job de colocación (50 s) re-somete el LIMIT del mismo
-                # tramo por su cuenta: lo hizo en 7 de 7 casos reales (10-43 s). Un
-                # TAKE_PROFIT_MARKET aquí sólo convertía un TP maker en taker y, ante un
-                # snapshot vacío transitorio (orden todavía viva), cubría el tramo dos
-                # veces. El fallback sigue activo donde tiene sentido: cuando el SUBMIT
-                # del LIMIT es rechazado (colocando_TK_SL).
+                # tramo por su cuenta. Un TAKE_PROFIT_MARKET aquí sólo convertía un TP
+                # maker en taker y, ante un snapshot vacío transitorio (orden todavía
+                # viva), cubría el tramo dos veces. El fallback sigue activo donde tiene
+                # sentido: cuando el SUBMIT del LIMIT es rechazado (colocando_TK_SL).
                 _emit_tp_failed(
                     tp_idx=tp_idx,
                     symbol=symbol_u,
@@ -904,7 +1000,7 @@ def _log_pending_order_transitions(prev_df: pd.DataFrame, curr_df: pd.DataFrame)
                     reason=f"{stage_name}_confirmation_failed",
                     detail=f"{confirm_source}|{confirm_reason}|el LIMIT se re-somete en el próximo ciclo",
                     order_id=order_id_norm,
-                    data_quality="inferred",
+                    data_quality=data_quality,
                     source=f"pending_gone_limit_{stage_name}",
                     tp_price=st_tp.get(f"{stage_name}_price"),
                     tp_qty=st_tp.get(f"{stage_name}_qty"),

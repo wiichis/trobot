@@ -24,6 +24,7 @@ class ExchangeFalso:
         self.cancel_calls = []
         self.posts = []
         self.cancel_ocupado = set()   # órdenes vivas que el exchange no deja cancelar
+        self.cerradas = {}            # órdenes que salieron del book, con su estado final
         self._seq = 2103070000000000000
 
     # ── estado ──
@@ -54,6 +55,7 @@ class ExchangeFalso:
         o = self.orders.pop(oid)
         p = self.pos[o["positionSide"]]
         p["qty"] = round(p["qty"] - o["origQty"], 8)
+        self.cerradas[oid] = dict(o, status="FILLED", executedQty=o["origQty"])
 
     def stops(self):
         return {k: o for k, o in self.orders.items() if o["type"] == "STOP_MARKET"}
@@ -103,11 +105,34 @@ class ExchangeFalso:
         if o is None:
             # Ya llenó o expiró. El código exacto no importa: sólo code == 0 es éxito.
             return json.dumps({"code": 80018, "msg": "order not exist", "data": {}})
+        self.cerradas[oid] = dict(o, status="CANCELLED")
         return json.dumps({"code": 0, "msg": "", "data": {"order": {
             "symbol": symbol, "orderId": o["orderId"], "side": o["side"],
             "positionSide": o["positionSide"], "type": o["type"],
             "origQty": f"{o['origQty']}", "executedQty": f"{o['executedQty']}",
             "status": "CANCELLED"}}})
+
+    def query_order(self, symbol, order_id, timeout=10):
+        """GET /openApi/swap/v2/trade/order. Forma verificada contra BingX el 02/10/2026:
+        status FILLED | CANCELLED (doble L) | NEW | PARTIALLY_FILLED, cantidades y precios
+        como texto, orderId como entero."""
+        oid = str(order_id)
+        if oid in self.orders:
+            o = self.orders[oid]
+            status = "PARTIALLY_FILLED" if o["executedQty"] else "NEW"
+        elif oid in self.cerradas:
+            o = self.cerradas[oid]
+            status = o["status"]
+        else:
+            return json.dumps({"code": 80016, "msg": "order not exist", "data": {}})
+        lleno = status == "FILLED"
+        return json.dumps({"code": 0, "msg": "", "data": {"order": {
+            "symbol": o["symbol"], "orderId": o["orderId"], "side": o["side"],
+            "positionSide": o["positionSide"], "type": o["type"],
+            "origQty": f"{o['origQty']}", "price": f"{o['price']}",
+            "executedQty": f"{o['executedQty']}",
+            "avgPrice": f"{o['price']}" if lleno else "0.0000",
+            "status": status, "time": o["time"], "updateTime": o["time"]}}})
 
     def perpetual_swap_positions(self, symbol):
         data = [{
@@ -129,7 +154,7 @@ def montar(base, monkeypatch, spy, *, symbol, params, indicadores, precio_entrad
 
     ex = ExchangeFalso(symbol, precio_entrada)
     for name in ("query_pending_orders", "post_order", "cancel_order",
-                 "perpetual_swap_positions", "last_price_trading_par"):
+                 "perpetual_swap_positions", "last_price_trading_par", "query_order"):
         monkeypatch.setattr(mb.pkg.bingx, name, getattr(ex, name))
     best = base / "best_prod.json"
     best.write_text(json.dumps([{"symbol": symbol, "params": params}]))
