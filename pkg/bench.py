@@ -145,3 +145,18 @@ def vencio_en_banca(desde, hoy=None) -> bool:
     """¿Lleva más de DIAS_MAX_EN_BANCA días en banca? (sólo aplica si no puede activarse)."""
     hoy = _a_fecha(hoy) if hoy is not None else date.today()
     return (hoy - _a_fecha(desde)).days > DIAS_MAX_EN_BANCA
+
+
+def habilitar_en_indicadores(symbols: Iterable[str]) -> None:
+    """Deja que `indicadores._calc_symbol` genere señales para pares fuera de best_prod.json.
+
+    `_calc_symbol` apaga las señales de todo par que no esté en `TRADE_SYMBOLS`, que se
+    fija al importar el módulo desde best_prod.json. Los pares en banca y los candidatos no
+    están ahí, así que sin esto su simulación da 0 trades en silencio. SÓLO para scripts
+    de simulación: el bot nunca debe llamarla.
+    """
+    from . import indicadores as ind
+    extra = {str(s).upper().strip() for s in symbols if str(s).strip()}
+    if ind.TRADE_SYMBOLS:
+        ind.TRADE_SYMBOLS = sorted(set(ind.TRADE_SYMBOLS) | extra)
+

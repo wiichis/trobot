@@ -13,6 +13,10 @@ mitad de la suma de los meses positivos. A un par nuevo no hay paramset "actual"
 el cual compararlo, así que la vara es absoluta.
 
 El par se simula solo, con peso 0,20 (el tamaño por trade del live).
+
+Uso (por grupos, para que cada corrida entre en el límite de tiempo):
+    python3 scripts/candidatos_validar.py --solo UNI,SUI     # valida y guarda res_<cand>.json
+    python3 scripts/candidatos_validar.py --resumen          # junta todo en resumen.csv
 """
 from __future__ import annotations
 
@@ -61,7 +65,9 @@ def _datos_truncados(fin):
 def _correr(args):
     best_path, data, dias, nombre = args
     from pkg import backtesting as bt
+    from pkg.bench import habilitar_en_indicadores
     sym = json.loads(Path(best_path).read_text())[0]["symbol"]
+    habilitar_en_indicadores([sym])   # sin esto el candidato da 0 trades: no está en best_prod.json
     r = bt.run_live_parity_portfolio([sym], data, CAPITAL, None, best_path=best_path,
                                      lookback_days=dias, return_trades=True)
     pos = {}
@@ -91,12 +97,37 @@ def veredicto(res):
     return all(checks.values()), checks, round(concentracion, 2)
 
 
+def resumen():
+    filas = []
+    for f in sorted(VAL.glob("res_*.json")):
+        res = json.loads(f.read_text())
+        ok, checks, conc = veredicto(res)
+        filas.append({"candidato": f.stem[4:], "pasa": ok, **{k: v["pnl"] for k, v in res.items()},
+                      "n120": res["w120"]["n"], "por_trade_120": res["w120"]["por_trade_pct"],
+                      "concentracion": conc, "falla": ", ".join(k for k, v in checks.items() if not v)})
+    df = pd.DataFrame(filas)
+    df.to_csv(VAL / "resumen.csv", index=False)
+    pd.set_option("display.width", 300)
+    print(df.to_string(index=False))
+
+
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--solo", default="", help="bases separadas por coma (UNI,SUI); vacío = todas")
+    ap.add_argument("--resumen", action="store_true")
+    args = ap.parse_args()
+    if args.resumen:
+        return resumen()
+    solo = {b.strip().upper() for b in args.solo.split(",") if b.strip()}
     fin = pd.to_datetime(pd.read_csv(DIR / "velas_candidatos.csv", usecols=["date"])["date"], utc=True).max()
     rutas = _datos_truncados(fin)
     ventanas = _ventanas(fin)
     trabajos, cands = [], []
     for f in sorted(SWEEPS.glob("best_*_s*.json")):
+        base = f.stem[5:].rsplit("_s", 1)[0].upper()
+        if solo and base not in solo:
+            continue
         data = json.loads(f.read_text())
         data = data if isinstance(data, list) else data.get("pairs", [])
         if not data:
@@ -114,16 +145,10 @@ def main():
         for clave, r in ex.map(_correr, trabajos):
             c, nombre = clave.split("|")
             resultados.setdefault(c, {})[nombre] = r
-    filas = []
-    for c, res in sorted(resultados.items()):
-        ok, checks, conc = veredicto(res)
-        filas.append({"candidato": c[5:], "pasa": ok, **{k: res[k]["pnl"] for k in ventanas},
-                      "n120": res["w120"]["n"], "por_trade_120": res["w120"]["por_trade_pct"],
-                      "concentracion": conc, "falla": ", ".join(k for k, v in checks.items() if not v)})
-    df = pd.DataFrame(filas)
-    df.to_csv(VAL / "resumen.csv", index=False)
-    pd.set_option("display.width", 300)
-    print(df.to_string(index=False))
+    for c, res in resultados.items():
+        (VAL / f"res_{c[5:]}.json").write_text(json.dumps(res, indent=1), encoding="utf-8")
+        ok, checks, _ = veredicto(res)
+        print(c[5:], "PASA" if ok else "no pasa", {k: v["pnl"] for k, v in res.items()})
 
 
 if __name__ == "__main__":

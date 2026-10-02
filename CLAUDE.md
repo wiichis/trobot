@@ -724,6 +724,21 @@ Las órdenes PostOnly que expiran son las mejores (+0,60% a 4 h), pero porque el
 
 **Candidatos** (15, en observación): UNI, SUI, ARB, ENA, WLD, TAO, QNT, 1000PEPE (nunca probados) y LTC, SOL, NEAR, AAVE, XRP, ZEC, HYPE (descartados antes de los fixes de tick y fill, así que aquel veredicto no vale). Historia: `scripts/candidatos_velas.py` une los mensuales de Binance USDT-M (dic-25 → ago-26, en `archivos/candidatos/binance/`) con el API de BingX desde el 17/08; en el solape el close difiere 1-5 bps de mediana (p99 5-17): **Binance sirve como proxy**. Serie en `archivos/candidatos/velas_candidatos.csv`, reglas de contrato agregadas a las dos tablas `SYMBOL_TRADING_RULES` (idénticas, 29 pares).
 
+### ❌ Candidatos 02/10: 0 de 45 pasan — y el sweep no tenía test fuera de muestra
+
+**Resultado.** 15 candidatos × 3 semillas × 500 trials (150d, `--conservative_limit_fills`, filtro `adx_only`), validados con `scripts/candidatos_validar.py` (parity con la config viva, par solo con peso 0,20): **ninguno pasa** (4 ventanas recientes positivas + 2 de falsación + ≥15 trades + ≥4/6 meses + ningún mes >50%). Los más cercanos:
+- **ZEC s101**: +2,36/+2,03/+5,97/+1,55 recientes, hold1 +1,07, **hold2 −6,17**, 19 trades, concentración 62%.
+- **QNT s303**: +14,4/+11,5/+11,2/+7,3 recientes y **−30,1 / −13,2** en las falsaciones: sobreajuste de manual.
+Tabla completa en `archivos/candidatos/validacion/resumen.csv`. Los 15 siguen en observación (la banca les baja velas).
+
+**🔴 El hallazgo de fondo: el sweep elige en su propio "test".** `Backtester.run` (línea ~2648, *"no operamos en train"*) sólo abre trades a partir de `train_ratio`; el 66% previo es precalentamiento. El ranking (calmar) se calcula sobre esos ~51 días finales, así que **lo que el sweep llama test es el período de selección**. Los 45 ganadores dan positivo ahí (45/45); el parity, sobre casi el mismo período (60d), sólo 14/45.
+- ⚠️ **Corrige la nota del 19/09** ("con `train_ratio 0.66` sólo la ventana de 30d es limpia"): es al revés. **30d y 60d están enteras dentro del tramo de selección** — son las más contaminadas. Lo único fuera de muestra son las ventanas de falsación y la parte de 90/120d anterior a los últimos ~51 días. Explica el patrón repetido de "gana 30/60d y se cae a 90/120d y en hold" (QNT, HYPE, AVAX s202).
+- **El motor del sweep no genera las mismas señales que el live**: sobre el mismo período el parity abre ~1,6× más posiciones por día (mediana 17 en 60d contra 9 en 52d). El sweep optimiza otra variante de la estrategia. Ya pasó con el filtro de régimen (corregido el 01/10); éste es más profundo.
+- **La validación con parity + falsación es lo que funciona**: es lo que frenó estos 45. Mientras el sweep no cambie, ninguna re-optimización se aplica sin ella.
+- **Propuesta pendiente**: optimizar directamente sobre el parity (el modelo del live), eligiendo en un tramo de entrenamiento y midiendo en uno posterior que no participa. Una corrida de parity de un par cuesta ~5 s: 500 trials ≈ 7 min por semilla.
+
+**Dos bugs de los scripts de simulación, corregidos**: `indicadores._calc_symbol` apaga las señales de todo par fuera de `TRADE_SYMBOLS` (que sale de `best_prod.json` al importar). Sin `bench.habilitar_en_indicadores()`, **cada candidato y cada par en banca daban 0 trades en silencio** — `bench_shadow.py` lo tenía latente desde que AVAX/DYDX/ONDO salieron de `best_prod.json`. Y con ruta relativa, `--export_best` escribe **dentro** de `--out_dir`.
+
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
 
 Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferencias entre lo que prod ejecuta y lo que el backtest simula, y **hacen que los A/B midan algo distinto de lo que se cree**.
@@ -1300,7 +1315,7 @@ Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue 
 #### Notas de método que valen para el próximo sweep
 
 - **El holdout truncando `long.csv` es barato y decisivo.** `--data_template <csv_truncado>` + `--parity_days N` da una ventana que el sweep no pudo ver. Separó AVAX (3/3) de XMR (1/3) y mató a ETH (0/3), cosa que la cross-val reciente sola no hacía.
-- **Con `train_ratio 0.66` sobre 150d, las ventanas de 90 y 120d SOLAPAN el entrenamiento.** Sólo la de 30d es limpia. No leer los +57,9 de 90d como si fueran fuera de muestra.
+- ~~**Con `train_ratio 0.66` sobre 150d, las ventanas de 90 y 120d SOLAPAN el entrenamiento.** Sólo la de 30d es limpia.~~ ⚠️ **Falso (corregido 02/10)**: el sweep sólo opera y elige en el último 34%, así que **30d y 60d son las más contaminadas**. Ver "Candidatos 02/10".
 - El candidato aplicado de AVAX es el que **menos knobs mueve** (8) — coherente con la lección de DYDX del 25/08.
 
 ## Estado al cierre del 19/09

@@ -106,6 +106,8 @@ def main():
     best = json.loads(Path(args.best).read_text(encoding="utf-8"))
     activos = sorted({e["symbol"].upper() for e in best})
     banca = bench.load_bench(Path(args.bench))
+    # Los pares en banca no están en best_prod.json: sin esto su forward daría 0 trades.
+    bench.habilitar_en_indicadores([e["symbol"] for e in banca])
     velas = _velas([args.data, args.bench_data])
     fin = velas["date"].max()
     hoy = fin.date()

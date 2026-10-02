@@ -234,3 +234,11 @@ def test_sync_ya_completo_no_gasta_pedidos_de_relleno(tmp_path, monkeypatch):
     monkeypatch.setattr(px, '_fetch_bingx_candles', fake_fetch)
     px.sync_bench_candles(now_utc=AHORA)
     assert pedidos == [None]                         # sólo lo reciente
+
+
+def test_habilitar_en_indicadores_destraba_las_senales_de_un_par_fuera_de_best_prod(monkeypatch):
+    """Sin habilitarlo, _calc_symbol apaga las señales de todo par que no opera."""
+    import pkg.indicadores as ind
+    monkeypatch.setattr(ind, 'TRADE_SYMBOLS', ['BCH-USDT'])
+    bench.habilitar_en_indicadores(['uni-usdt'])
+    assert 'UNI-USDT' in ind.TRADE_SYMBOLS and 'BCH-USDT' in ind.TRADE_SYMBOLS
