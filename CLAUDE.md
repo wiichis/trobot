@@ -412,6 +412,33 @@ Tres eventos que convierten esta clase de bug en detectable en vez de arqueológ
 
 El emisor traga cualquier excepción: **observar no puede costar la persistencia del estado.**
 
+### 🐛 Bug 02/10 — fills parciales: el timeout cancelaba el STOP y el SL no seguía a la posición — CORREGIDO Y DESPLEGADO
+
+**1. El timeout de la cola de protección cancelaba la protección** (`55da99d`, desplegado 02/10 04:29 UTC). A los 20 ciclos (~17 min) se cancelaba `orderId.iloc[0]` del símbolo **sin mirar qué orden era**. Con la posición abierta era su STOP_MARKET. Caso ONDO 24/09: entrada SHORT 57,02 llena 22,99, crece a 34,03, TP1 llena y quedan 11,04 (4,65 USDT, ningún TP posible por notional). La fila vuelve a la cola, el contador llega a 20 y **cancela el stop en 09:53, 10:12, 10:32 y 10:51**, ~1 min sin stop cada vez, con aviso "⛔ Orden cancelada — No se ejecutó a tiempo" sobre una posición viva.
+- `_timeout_de_proteccion`: sólo cancela órdenes de **entrada** (el orderId guardado al enviarla, columna nueva `entry_order_id` de la cola, + cualquier LIMIT del lado que abre). **Lee la respuesta del cancel** (antes daba "cancelada" con sólo no lanzar excepción) y lee la posición después, distinguiendo sin posición / abierta / ilegible (`total_positions` devuelve lo mismo para "no hay" que para "no pude leer").
+- `_protegida_solo_con_sl`: con SL, sin TP posible por notional mínimo y sin remanente de entrada vivo, la posición cuenta como protegida y no llega al timeout.
+- ⚠️ `entry_order_id` se lee con `dtype=str`: con una sola fila sin id pandas lo devuelve como `2.1030450921587343e+18` y `_norm_order_id` no lo recupera.
+
+**2. El SL no seguía a la posición** (`e6f3e92`, desplegado 02/10 04:47 UTC). De 102 entradas desde el 01/08, **4 fills parciales reales** (17-40% en el primer fill; otras 6 eran redondeo al step anterior al 10/08). En las 4 el remanente **llenó en 4-9 min** y el STOP quedó con la cantidad del primer fill:
+
+| Caso | SL / posición | Qué pasó |
+|---|---|---|
+| BNB 07/09 | 0,01 / 0,05 | el SL disparó y cerró **sólo el 20%**; el 80% siguió con un stop nuevo más lejos (727,98 vs 740,77), −0,93 |
+| ONDO 19/08 | 23,55 / 112,99 | ~1 h con el 79% sin stop; el cierre por TP quedó registrado como `stop_loss` +1,01 |
+| AVAX 19/08 | 1,0 / 6,0 | ~2 h con el 83% sin stop |
+| ONDO 24/09 | 22,99 / 34,03 | ≤9 min, hasta que el trailing lo redimensionó |
+
+- `_ajustar_cantidad_sl`: si los STOP cubren menos que la posición, confirma contra el exchange y coloca uno nuevo **al mismo precio** con la cantidad completa, **antes** de cancelar el viejo (en Hedge mode un stop de cierre no abre la contraria; nunca queda sin stop). Actualiza el watch del SL. Sin `origQty` en el registro, o en 0, no toca nada. Corre en `colocando_TK_SL` y, como red de seguridad cada 5 min, en `unrealized_profit_positions`.
+- `_reanclar_base_del_ladder`: `tp1_submit_position_qty` sube con la posición mientras TP1 no llenó. Con la base en el primer fill, ONDO 24/09 medía una reducción de 11,95 < 13,79 y **el fill de TP1 nunca se confirmaba**.
+- La fila sigue en la cola **mientras viva el remanente de la entrada**, y al vencer el plazo con la posición abierta pasa por el camino normal. Antes, una vez colocados SL y TP, **nadie cancelaba nunca el remanente**.
+- De paso: la rama SHORT reescribía el watch del SL **cada ciclo con el precio del indicador**; con el stop movido por el BE quedaba sin `orderId` y `sync_cooldowns_from_sl_fills` lo descartaba.
+- ❌ **Se evaluó y descartó cancelar el remanente al detectar el fill parcial**: habría dejado 3 de 4 posiciones bajo el notional mínimo del TP (6-10 USDT con peso 0,13-0,20) —el caso degenerado del bug 1— y se apartaría del parity, que asume fill completo de la PostOnly.
+- ⚠️ **Sin verificar en vivo**: el nombre `origQty` del campo de cantidad en `openOrders` (no había órdenes abiertas al desplegar). Confirmarlo con el primer evento `stop_resized`.
+
+Eventos nuevos: `entry_remainder_canceled`, `protection_sl_only`, `stop_resized`, `stop_resize_failed` (CRITICAL). Tests: `tests/test_timeout_proteccion.py` y `tests/test_sl_sigue_a_la_posicion.py`, contra un exchange falso con la forma real de BingX (`tests/exchange_falso.py`) que deja correr el ciclo real de los CSV; con el código anterior fallan por las razones del bug (el de BNB deja 0,04 abiertos al disparar el stop).
+
+🔴 **Encontrado en el camino, abierto**: `tp_stage_state.csv` lee `tp1/2/3_order_id` sin `dtype` → float64 en prod → el job de transiciones **nunca atribuye un fill de TP**: desde el 28/07 los 32 `tp1_filled` y 9 `tp2_filled` vienen todos de `reconcile_before_submit`, y TP3 (que sólo confirma ese job) es inconfirmable. Pesa sobre "TP3 nunca llena". En curso en una sesión aparte; al arreglarlo, medir antes de desplegar porque activa el fallback de TP a mercado.
+
 ### ❌ P2 Timeframe 15m — CERRADO 03/07: sweep completo, RECHAZADO
 
 Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs costos. Falsificada:
