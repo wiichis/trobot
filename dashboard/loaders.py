@@ -17,13 +17,30 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ARCHIVOS = REPO_ROOT / "archivos"
 
 
+# Columnas con ids de BingX (~2,1e18). Sin dtype, una sola fila con el id vacío vuelve la
+# columna float64 y el id se muestra como 2.103045465791529e+18: es el mismo bug que tuvo
+# el bot en tp_stage_state.csv hasta el 02/10/2026. Se leen como texto; las columnas que
+# un CSV no tiene se ignoran.
+_ID_COLUMNS = (
+    "orderId", "order_id", "request_id", "entry_order_id",
+    "tp1_order_id", "tp2_order_id", "tp3_order_id",
+    "tranId", "tradeId",
+)
+
+
 def _safe_read(path: Path, **kwargs) -> pd.DataFrame:
     if not path.exists() or path.stat().st_size == 0:
         return pd.DataFrame()
+    dtype = {c: str for c in _ID_COLUMNS}
+    dtype.update(kwargs.pop("dtype", None) or {})
     try:
-        return pd.read_csv(path, low_memory=False, **kwargs)
+        df = pd.read_csv(path, low_memory=False, dtype=dtype, **kwargs)
     except Exception:
         return pd.DataFrame()
+    for c in _ID_COLUMNS:
+        if c in df.columns:
+            df[c] = df[c].fillna("")
+    return df
 
 
 @st.cache_data(ttl=60, show_spinner=False)

@@ -480,6 +480,8 @@ Estados reales de BingX: `FILLED`, `CANCELLED` (doble L), `NEW`; openOrders info
 
 Tests: `tests/test_tp_state_ids_csv.py`, `tests/test_order_ids_csv.py` y `tests/test_tp_confirmacion_exchange.py`. `query_order` queda bloqueada por defecto en `conftest` (ningún test sale a la red) y el exchange falso la responde con la forma real.
 
+**Dashboard** (local, no afecta a prod): `_safe_read` lee las columnas de ids como texto (`order_id`, `orderId`, `tpN_order_id`, `request_id`, `tranId`, `tradeId`...). De paso, la tabla "Posiciones activas" de En vivo pedía columnas que `tp_stage_state.csv` no tiene y mostraba sólo símbolo y lado, **incluidas las posiciones ya cerradas**. Ahora filtra `tp_stage != none`, muestra etapa, precios, ids y stop protector, y agrega la tabla de `sl_watch`. Verificado renderizando las páginas con `streamlit.testing.v1.AppTest` contra los CSV de prod (`.venv-dashboard`; no hay pytest ahí).
+
 ### ❌ P2 Timeframe 15m — CERRADO 03/07: sweep completo, RECHAZADO
 
 Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs costos. Falsificada:

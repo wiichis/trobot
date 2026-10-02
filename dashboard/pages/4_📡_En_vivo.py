@@ -29,19 +29,26 @@ st.subheader("Posiciones activas")
 tp_stage = loaders.load_tp_stage()
 sl_watch = loaders.load_sl_watch()
 
-if tp_stage.empty and sl_watch.empty:
+# tp_stage_state.csv guarda una fila por par/lado aunque la posición ya haya cerrado: al
+# abrir la siguiente se resetea a tp_stage=none. Activas = filas con etapa distinta de
+# none. (Antes la tabla pedía columnas que el archivo no tiene —entry_price, stage, tp1,
+# sl...— y terminaba mostrando sólo símbolo y lado, incluidas las posiciones cerradas.)
+activas = pd.DataFrame()
+if not tp_stage.empty and "tp_stage" in tp_stage.columns:
+    activas = tp_stage[tp_stage["tp_stage"].astype(str).str.strip().str.lower().ne("none")]
+
+if activas.empty and sl_watch.empty:
     st.info("No hay posiciones activas detectadas.")
 else:
-    # Usamos tp_stage_state como fuente principal
-    if not tp_stage.empty:
-        cols_interes = [c for c in ["symbol", "position_side", "entry_price", "stage",
-                                     "tp1", "tp2", "tp3", "sl", "last_update"]
-                        if c in tp_stage.columns]
-        if cols_interes:
-            st.dataframe(tp_stage[cols_interes], use_container_width=True, hide_index=True)
-        else:
-            st.dataframe(tp_stage, use_container_width=True, hide_index=True)
-    elif not sl_watch.empty:
+    if not activas.empty:
+        cols_interes = [c for c in ["symbol", "position_side", "tp_stage", "break_even_state",
+                                     "tp1_price", "tp1_order_id", "tp2_price", "tp2_order_id",
+                                     "tp3_price", "tp3_order_id", "protective_stop",
+                                     "stage_since_utc"]
+                        if c in activas.columns]
+        st.dataframe(activas[cols_interes], use_container_width=True, hide_index=True)
+    if not sl_watch.empty:
+        st.caption("Stops vigilados (sl_watch.csv)")
         st.dataframe(sl_watch, use_container_width=True, hide_index=True)
 
 st.markdown("---")
@@ -97,7 +104,7 @@ else:
     if "ts_utc" in df.columns:
         df["hora"] = df["ts_utc"].dt.strftime("%m-%d %H:%M")
     show_cols = [c for c in ["hora", "event_type", "symbol", "position_side",
-                             "order_type", "actual_fill_price", "stop_price",
+                             "order_type", "order_id", "actual_fill_price", "stop_price",
                              "fill_qty", "raw_msg"]
                  if c in df.columns]
     show = df[show_cols].sort_values("hora" if "hora" in show_cols else df.columns[0],
