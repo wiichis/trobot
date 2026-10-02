@@ -47,6 +47,8 @@ _CATEGORY_VISIBLE_FIELDS: Dict[str, Dict[str, str]] = {
     "tp3_failed": {"symbol": "Par", "position_side": "Lado", "reason": "Razón"},
     "stop_loss_hit": {"symbol": "Par", "position_side": "Lado", "stop_price": "Precio SL", "cooldown_min": "Cooldown"},
     "break_even_activated": {"symbol": "Par", "position_side": "Lado", "new_sl": "Nuevo SL"},
+    "entry_remainder_canceled": {"symbol": "Par", "position_side": "Lado", "qty": "Posición"},
+    "protection_sl_only": {"symbol": "Par", "position_side": "Lado", "detail": "Detalle"},
     "bot_started": {"symbols_count": "Pares activos", "symbols": "Pares"},
     "bot_stopped": {},
     "pnl_below_expectation": {"symbol": "Par", "reason": "Razón", "detail": "Detalle"},

@@ -1614,14 +1614,278 @@ def _bootstrap_position_queue(df_posiciones: pd.DataFrame, df_ordenes: pd.DataFr
         if sl_exists and tp_exists:
             continue
 
-        new_rows.append({'symbol': symbol, 'tipo': position_side, 'counter': 0})
+        new_rows.append({'symbol': symbol, 'tipo': position_side, 'counter': 0, 'entry_order_id': ''})
 
     if not new_rows:
         return df_posiciones
 
-    bootstrap_df = pd.DataFrame(new_rows, columns=['symbol', 'tipo', 'counter'])
+    bootstrap_df = pd.DataFrame(new_rows, columns=_POSITION_QUEUE_COLS)
     print(f"Arranque en frio: se agregaron {len(bootstrap_df)} posiciones abiertas a la cola de proteccion.")
     return pd.concat([df_posiciones, bootstrap_df], ignore_index=True)
+
+
+# ── Cola de protección y timeout de la entrada ──────────────────────────────────
+_POSITION_QUEUE_COLS = ['symbol', 'tipo', 'counter', 'entry_order_id']
+# Ciclos de colocando_TK_SL (~50 s) antes de dar la entrada por vencida (~17 min).
+PROTECTION_TIMEOUT_CYCLES = 20
+
+
+def _load_position_queue() -> pd.DataFrame:
+    """Lee la cola de protección (`position_id_register.csv`).
+
+    `entry_order_id` se lee como TEXTO. Un orderId de BingX (~2,1e18) que pasa por
+    float pierde los últimos dígitos y `_norm_order_id` ya no lo recupera
+    ('2.1030450921587343e+18'). Basta UNA fila sin id —el arranque en frío las agrega
+    así— para que pandas convierta la columna entera a float.
+    """
+    try:
+        df = pd.read_csv('./archivos/position_id_register.csv', dtype={'entry_order_id': str})
+    except FileNotFoundError:
+        df = pd.DataFrame(columns=_POSITION_QUEUE_COLS)
+    if 'counter' not in df.columns:
+        df['counter'] = 0
+    if 'entry_order_id' not in df.columns:
+        df['entry_order_id'] = ''
+    df['entry_order_id'] = df['entry_order_id'].apply(_norm_order_id)
+    return df
+
+
+def _position_open_side(position_side: str) -> str:
+    pside = str(position_side or "").upper().strip()
+    return "BUY" if pside == "LONG" else "SELL"
+
+
+def _entry_orders_in_register(symbol_orders: pd.DataFrame, position_side: str) -> list:
+    """orderIds de órdenes de ENTRADA pendientes: LIMIT del lado que ABRE la posición.
+
+    Es lo único que el timeout de protección puede cancelar. Un STOP_MARKET, o un
+    LIMIT del lado que cierra (los TP), es la protección de una posición que ya existe.
+    """
+    if symbol_orders is None or symbol_orders.empty:
+        return []
+    df = _normalize_orders_df(symbol_orders)
+    otype = df['type'].astype(str).str.upper().str.strip()
+    side = df['side']
+    ps = df['positionSide']
+    abre = ((side == 'BUY') & (ps == 'LONG')) | ((side == 'SELL') & (ps == 'SHORT'))
+    pside = str(position_side or '').upper().strip()
+    if pside in ('LONG', 'SHORT'):
+        # En Hedge mode BingX siempre informa positionSide; si viniera vacío, que
+        # decida el side.
+        sin_ps = ps.isin(['', 'NAN', 'NONE'])
+        abre = (abre & (ps == pside)) | (sin_ps & (side == _position_open_side(pside)))
+    ids = [_norm_order_id(x) for x in df.loc[(otype == 'LIMIT') & abre, 'orderId']]
+    return [x for x in ids if x]
+
+
+def _cancel_order_checked(symbol: str, order_id) -> tuple:
+    """Cancela y LEE la respuesta: (ok, detalle).
+
+    `pkg.bingx.cancel_order` devuelve el texto del exchange. Darlo por cancelado sin
+    leerlo es lo que hacía avisar "Orden cancelada" aunque el exchange la rechazara.
+    """
+    oid = _norm_order_id(order_id)
+    if not oid:
+        return False, "order_id_vacio"
+    try:
+        resp = pkg.bingx.cancel_order(symbol, oid)
+    except Exception as e:
+        return False, f"excepcion:{e}"
+    ok, err = _validate_order_response(resp)
+    return ok, ('' if ok else str(err))
+
+
+def _estado_posicion(symbol: str, position_side: str):
+    """('abierta', qty) | ('sin_posicion', 0.0) | ('ilegible', None).
+
+    `total_positions` devuelve lo mismo cuando no hay posición que cuando no pudo leer
+    (JSON roto, code != 0 por rate limit). Para decidir si una entrada "no se
+    ejecutó" hay que distinguirlos: confundirlos avisa "Orden cancelada" sobre una
+    posición viva.
+    """
+    try:
+        raw = pkg.bingx.perpetual_swap_positions(symbol)
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return 'ilegible', None
+    if not isinstance(data, dict) or data.get('code') not in (0, '0'):
+        return 'ilegible', None
+    rows = data.get('data') or []
+    if isinstance(rows, dict):
+        rows = [rows]
+    pside = str(position_side or '').upper().strip()
+    if pside not in ('LONG', 'SHORT'):
+        pside = ''   # un `tipo` vacío vuelve del CSV como NaN → 'NAN': no filtrar por lado
+    qty = 0.0
+    for p in rows:
+        if not isinstance(p, dict):
+            continue
+        if pside and str(p.get('positionSide', '')).upper().strip() != pside:
+            continue
+        qty += abs(_safe_float(p.get('positionAmt'), 0.0))
+    return ('abierta', qty) if qty > 0 else ('sin_posicion', 0.0)
+
+
+def _timeout_de_proteccion(symbol: str, position_side: str, entry_order_id, symbol_orders, sl_exists: bool) -> str:
+    """Vence el plazo de la cola de protección. Devuelve 'retirar' o 'seguir'.
+
+    El plazo es el de la ENTRADA: una LIMIT PostOnly que no llenó en ~17 min se
+    cancela (se mantuvo así tras el A/B del 24/09). Antes se cancelaba la PRIMERA orden
+    del símbolo en el registro, sin mirar cuál era: con la posición abierta, esa orden
+    era su STOP_MARKET. ONDO 24/09 quedó sin stop ~1 min en cada uno de los 4 timeouts
+    (09:53, 10:12, 10:32, 10:51), y cada vez se avisó "Orden cancelada — No se ejecutó
+    a tiempo" sobre una posición viva.
+
+    Ahora sólo se cancelan órdenes de ENTRADA: el id guardado al enviarla y cualquier
+    LIMIT del lado que abre. El SL y los TP no se tocan nunca.
+
+    - sin posición: la entrada no llenó → aviso de siempre y se retira de la cola.
+    - posición abierta: llenó (parcial o total) → sin "Orden cancelada". Se retira de
+      la cola si ya tiene SL; si no, sigue para que este mismo ciclo lo coloque.
+    - posición ilegible: no se afirma nada y se reintenta en el próximo plazo.
+    """
+    symbol_u = str(symbol).upper()
+    pside = str(position_side or '').upper().strip()
+    if pside not in ('LONG', 'SHORT'):
+        pside = ''
+    pair_name = symbol_u.replace('-USDT', '')
+
+    listadas = _entry_orders_in_register(symbol_orders, pside)
+    candidatas = []
+    for oid in [_norm_order_id(entry_order_id)] + listadas:
+        if oid and oid not in candidatas:
+            candidatas.append(oid)
+
+    canceladas, fallidas_listadas = [], []
+    for oid in candidatas:
+        ok, detalle = _cancel_order_checked(symbol_u, oid)
+        if ok:
+            canceladas.append(oid)
+        elif oid in listadas:
+            # Sigue figurando como pendiente y el exchange no la canceló: no afirmar
+            # que expiró ni soltar la fila mientras pueda seguir llenando.
+            fallidas_listadas.append(oid)
+            print(f"Timeout de proteccion: no se pudo cancelar la entrada {oid} de {symbol_u}: {detalle}")
+
+    # Se lee DESPUÉS de cancelar: un fill que entre durante la cancelación cuenta.
+    estado, qty = _estado_posicion(symbol_u, pside)
+    entry_oid = canceladas[0] if canceladas else (candidatas[0] if candidatas else '')
+
+    if estado == 'sin_posicion':
+        if fallidas_listadas:
+            return 'seguir'
+        canceled = bool(canceladas)
+        emoji = "⛔" if canceled else "⏳"
+        status = "cancelada" if canceled else "expirada"
+        msg = f"{emoji} *{pair_name}* — Orden {status}\n_No se ejecutó a tiempo_"
+        print(msg)
+        try:
+            pkg.monkey_bx.bot_send_text(msg)
+        except Exception:
+            pass
+        emit_lifecycle_event(
+            "entry_order_canceled_or_expired",
+            "WARN",
+            symbol=symbol_u,
+            position_side=pside,
+            order_id=entry_oid,
+            reason="protection_timeout",
+            source="colocando_TK_SL_counter",
+            detail=str(msg)[:220],
+        )
+        append_execution_ledger_event(
+            "entry_order_canceled_or_expired",
+            data_quality="actual" if canceled else "inferred",
+            source="protection_timeout_counter",
+            order_id=entry_oid,
+            symbol=symbol_u,
+            position_side=pside,
+            cancel_reason="protection_timeout",
+            notes=str(msg)[:220],
+        )
+        return 'retirar'
+
+    if estado == 'abierta':
+        if canceladas:
+            print(f"Timeout de proteccion: {symbol_u} {pside} abierta ({qty}); "
+                  f"cancelado el remanente de la entrada {entry_oid}. SL y TP intactos.")
+            emit_lifecycle_event(
+                "entry_remainder_canceled",
+                "INFO",
+                symbol=symbol_u,
+                position_side=pside,
+                qty=qty,
+                order_id=entry_oid,
+                reason="protection_timeout",
+                source="colocando_TK_SL_counter",
+            )
+            append_execution_ledger_event(
+                "entry_remainder_canceled",
+                data_quality="actual",
+                source="protection_timeout_counter",
+                order_id=entry_oid,
+                symbol=symbol_u,
+                position_side=pside,
+                fill_qty=qty,
+                cancel_reason="protection_timeout",
+                partial_fill_status="partial",
+            )
+        if fallidas_listadas or not sl_exists:
+            return 'seguir'
+        return 'retirar'
+
+    emit_lifecycle_event(
+        "execution_quality_warning",
+        "WARN",
+        symbol=symbol_u,
+        position_side=pside,
+        reason="protection_timeout_position_unreadable",
+        detail=f"entradas_canceladas={','.join(canceladas) or 'ninguna'}",
+        source="colocando_TK_SL_counter",
+    )
+    return 'seguir'
+
+
+def _protegida_solo_con_sl(symbol: str, position_side: str, position_qty, price_ref) -> bool:
+    """Con SL puesto y sin TP POSIBLE, la posición está todo lo protegida que puede estar.
+
+    Si lo que queda no alcanza el notional mínimo de cierre, ningún TP entra al
+    exchange (ONDO 24/09, tras TP1: 11,04 × 0,4209 = 4,65 USDT contra 7). La fila
+    seguía en la cola, el contador llegaba al timeout y el timeout cancelaba el stop.
+
+    Sólo vale si la posición ya no puede crecer: con un remanente de entrada vivo, el
+    próximo fill puede volver posible el TP (AVAX 19/08: 1,0 → 6,0 en 7 min).
+    """
+    qty = _safe_float(position_qty, 0.0)
+    px = _safe_float(price_ref, 0.0)
+    min_notional = max(0.0, _safe_float(get_tp_min_close_notional_usdt(), 0.0))
+    if qty <= 0 or px <= 0 or min_notional <= 0 or (qty * px) >= min_notional:
+        return False
+    df_ord = _load_orders_register_df()
+    if _entry_orders_in_register(df_ord[df_ord['symbol'] == str(symbol).upper()], position_side):
+        return False
+    if _should_emit_tp_skip(symbol, position_side, 0, "protection_sl_only"):
+        emit_lifecycle_event(
+            "protection_sl_only",
+            "INFO",
+            symbol=str(symbol).upper(),
+            position_side=str(position_side).upper(),
+            qty=qty,
+            reason="tp_below_min_close_notional",
+            detail=f"notional={qty * px:.2f} < min={min_notional:.2f}",
+            source="colocando_TK_SL",
+        )
+        append_execution_ledger_event(
+            "protection_sl_only",
+            data_quality="inferred",
+            source="colocando_TK_SL",
+            symbol=str(symbol).upper(),
+            position_side=str(position_side).upper(),
+            submit_qty=qty,
+            submitted_price=px,
+            notes=f"tp_below_min_close_notional notional={qty * px:.2f} min={min_notional:.2f}",
+        )
+    return True
 
 # --- Retry helper for robust order posting ---
 def _post_with_retry(
@@ -3007,10 +3271,7 @@ def colocando_ordenes():
     active_cooldowns = _load_active_cooldowns()
     now = datetime.utcnow()
 
-    try:
-        df_positions = pd.read_csv('./archivos/position_id_register.csv')
-    except FileNotFoundError:
-        df_positions = pd.DataFrame(columns=['symbol','tipo','counter'])
+    df_positions = _load_position_queue()
 
     # ── Position sizing: equal weight por par ──
     # Exposición total objetivo: 200% del capital (futuros con apalancamiento)
@@ -3234,7 +3495,10 @@ def colocando_ordenes():
         nueva_fila = pd.DataFrame({
             'symbol': [currency],
             'tipo': [position_side],
-            'counter': [0]
+            'counter': [0],
+            # Lo único que recuerda la orden de entrada tras el primer fill (entry_watch
+            # se consume al ver la posición): el timeout cancela ESTA orden, no otra.
+            'entry_order_id': [_norm_order_id(entry_details.get('order_id'))],
         })
         df_positions = pd.concat([df_positions, nueva_fila], ignore_index=True)
 
@@ -3410,13 +3674,7 @@ def sync_cooldowns_from_sl_fills():
 
 def colocando_TK_SL():
     # Obteniendo posiciones sin SL o TP (arranque en frío tolerante)
-    try:
-        df_posiciones = pd.read_csv('./archivos/position_id_register.csv')
-    except FileNotFoundError:
-        df_posiciones = pd.DataFrame(columns=['symbol','tipo','counter'])
-    # Asegurarse de que exista la columna 'counter'
-    if 'counter' not in df_posiciones.columns:
-        df_posiciones['counter'] = 0
+    df_posiciones = _load_position_queue()
     if not df_posiciones.empty:
         df_posiciones['counter'] += 1
 
@@ -3463,60 +3721,22 @@ def colocando_TK_SL():
             df_posiciones.drop(index, inplace=True)
             continue
 
-        # Verificar si se debe cancelar la orden después de cierto tiempo
-        if counter >= 20:
+        # Plazo de la entrada vencido: cancelar SÓLO la orden de entrada (ver
+        # _timeout_de_proteccion). La protección de una posición abierta no se toca.
+        if counter >= PROTECTION_TIMEOUT_CYCLES:
             try:
-                mask = (df_ordenes['symbol'] == symbol) if 'symbol' in df_ordenes.columns else pd.Series([], dtype=bool)
-                pair_name = symbol.replace('-USDT', '')
-                orderId = None
-                canceled = False
-                if mask.any():
-                    df_sym = df_ordenes.loc[mask]
-                    if 'orderId' in df_sym.columns and not df_sym['orderId'].isna().all():
-                        orderId = df_sym['orderId'].iloc[0]
-                        try:
-                            pkg.bingx.cancel_order(symbol, orderId)
-                            canceled = True
-                        except Exception as ce:
-                            print(f"Error al cancelar la orden para {symbol}: {ce}")
-                emoji = "⛔" if canceled else "⏳"
-                status = "cancelada" if canceled else "expirada"
-                msg = f"{emoji} *{pair_name}* — Orden {status}\n_No se ejecutó a tiempo_"
-                # Retirar la posición de la cola de protección en cualquier caso
-                df_posiciones.drop(index, inplace=True)
-                df_posiciones.to_csv('./archivos/position_id_register.csv', index=False)
-                print(msg)
-                try:
-                    pkg.monkey_bx.bot_send_text(msg)
-                except Exception:
-                    pass
-                emit_lifecycle_event(
-                    "entry_order_canceled_or_expired",
-                    "WARN",
-                    symbol=str(symbol).upper(),
-                    reason="protection_timeout",
-                    source="colocando_TK_SL_counter",
-                    detail=str(msg)[:220],
-                )
-                append_execution_ledger_event(
-                    "entry_order_canceled_or_expired",
-                    data_quality="inferred",
-                    source="protection_timeout_counter",
-                    order_id=_norm_order_id(orderId),
-                    symbol=str(symbol).upper(),
-                    cancel_reason="protection_timeout",
-                    notes=str(msg)[:220],
-                )
-                continue  # Evita múltiples mensajes y cancelaciones para la misma orden
+                accion = _timeout_de_proteccion(
+                    symbol, position_side_hint, row.get('entry_order_id'), symbol_orders, sl_exists)
             except Exception as e:
                 print(f"Error al manejar timeout para {symbol}: {e}")
-                # Aun con error, sacar de la cola para no ciclar
-                try:
-                    df_posiciones.drop(index, inplace=True)
-                    df_posiciones.to_csv('./archivos/position_id_register.csv', index=False)
-                except Exception:
-                    pass
+                accion = 'retirar'  # sacar de la cola para no ciclar
+            if accion == 'retirar':
+                df_posiciones.drop(index, inplace=True)
+                df_posiciones.to_csv('./archivos/position_id_register.csv', index=False)
                 continue
+            # 'seguir': la posición necesita protección (o no se pudo leer). El plazo
+            # vuelve a empezar y este mismo ciclo intenta colocar lo que falte.
+            df_posiciones.at[index, 'counter'] = 0
 
         # Obteniendo el valor de las posiciones reales
         try:
@@ -3963,8 +4183,11 @@ def colocando_TK_SL():
                         else:
                             placed_all_tps = False
 
-                # Si SL existe y todos los TP están listos, retirar de la cola
-                if exito_sl and placed_all_tps:
+                # Si SL existe y todos los TP están listos, retirar de la cola. También
+                # con SL y ningún TP posible (el resto no llega al notional mínimo).
+                if exito_sl and (placed_all_tps or (
+                        tp_mode_effective == "partial_limit_tp"
+                        and _protegida_solo_con_sl(symbol, "LONG", pos_qty, stage_price_ref))):
                     df_posiciones.drop(index, inplace=True)
 
                 # Fallbacks adicionales: garantizar al menos una protección.
@@ -4335,7 +4558,9 @@ def colocando_TK_SL():
                         else:
                             placed_all_tps = False
 
-                if exito_sl and placed_all_tps:
+                if exito_sl and (placed_all_tps or (
+                        tp_mode_effective == "partial_limit_tp"
+                        and _protegida_solo_con_sl(symbol, "SHORT", pos_qty, stage_price_ref))):
                     df_posiciones.drop(index, inplace=True)
 
                 # Fallbacks adicionales: garantizar al menos una protección.

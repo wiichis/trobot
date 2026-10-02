@@ -315,6 +315,8 @@ class TelegramAlerter:
         "entry_order_submitted": "Orden enviada",
         "entry_order_filled": "Orden ejecutada",
         "entry_order_canceled_or_expired": "Orden expirada",
+        "entry_remainder_canceled": "Remanente de entrada cancelado",
+        "protection_sl_only": "Protegida sólo con SL",
         "take_profit_hit": "TP alcanzado",
         "stop_loss_hit": "SL alcanzado",
         "tp1_submitted": "TP1 enviado",
