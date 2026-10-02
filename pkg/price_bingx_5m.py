@@ -24,7 +24,7 @@ BENCH_CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m_bench.csv"
 BENCH_HISTORY_DAYS = 400
 BENCH_FETCH_LIMIT = 36            # 3 h: cubre un ciclo atrasado y corrige la vela parcial
 BENCH_MAX_REQUESTS_PER_RUN = 40   # ~10-15 s por hora; el backfill se hace de a poco para no demorar el trading
-BENCH_BACKFILL_DAYS = 45          # lo que da el API de BingX hacia atrás
+BENCH_BACKFILL_DAYS = 44          # el API de BingX da ~45 días: un día de margen para no pedir el borde cada hora
 
 # Máximo de días que mantiene el archivo corto usado para señales.
 SIGNAL_HISTORY_DAYS = 30
@@ -620,26 +620,43 @@ def sync_bench_candles(now_utc: Optional[datetime] = None) -> int:
                 nuevos.append(chunk)
                 recientes[symbol] = chunk["date"].min()
             time.sleep(0.2)
-        # Pasada 2: rellenar hacia atrás los huecos, con lo que sobre del presupuesto.
-        for symbol, earliest_known in recientes.items():
-            if requests_left <= 0:
-                break
-            sdf = df[df["symbol"] == symbol]
-            last = sdf["date"].max() if not sdf.empty else None
-            target = (last if last is not None else now_ts - pd.Timedelta(days=BENCH_BACKFILL_DAYS))
-            while earliest_known > target and requests_left > 0:
-                end_ms = int((earliest_known - pd.Timedelta(minutes=5)).timestamp() * 1000)
+        def _rellenar(symbol, desde_fecha, hasta_fecha):
+            """Camina hacia atrás desde `desde_fecha` hasta `hasta_fecha`, de a 1000 velas."""
+            nonlocal requests_left
+            while desde_fecha > hasta_fecha and requests_left > 0:
+                end_ms = int((desde_fecha - pd.Timedelta(minutes=5)).timestamp() * 1000)
                 try:
                     back = pd.DataFrame(_fetch_bingx_candles(symbol, 1000, end_time_ms=end_ms))
                     requests_left -= 1
                 except Exception as exc:
                     log.warning("bench: backfill de %s cortado: %s", symbol, exc)
-                    break
-                if back.empty or back["date"].min() >= earliest_known:
-                    break
+                    return
+                if back.empty or back["date"].min() >= desde_fecha:
+                    return
                 nuevos.append(back)
-                earliest_known = back["date"].min()
+                desde_fecha = back["date"].min()
                 time.sleep(0.2)
+
+        objetivo = now_ts - pd.Timedelta(days=BENCH_BACKFILL_DAYS)
+        # Pasada 2: hueco HACIA ADELANTE, entre la última vela guardada y las recientes (el
+        # bot estuvo parado más de lo que cubre BENCH_FETCH_LIMIT). Va antes que la
+        # profundidad: un hueco reciente le importa a la simulación forward; la historia vieja no.
+        for symbol, earliest_known in recientes.items():
+            if requests_left <= 0:
+                break
+            sdf = df[df["symbol"] == symbol]
+            last = sdf["date"].max() if not sdf.empty else None
+            _rellenar(symbol, earliest_known, last if last is not None else objetivo)
+        # Pasada 3: PROFUNDIDAD. Antes sólo existía el hueco hacia adelante, así que un par
+        # que ya tenía velas recientes nunca completaba su historia: el 02/10 sólo 4 de 18
+        # llegaban a los 45 días. Ahora sigue hacia atrás desde la vela más vieja guardada.
+        for symbol in recientes:
+            if requests_left <= 0:
+                break
+            sdf = df[df["symbol"] == symbol]
+            if sdf.empty:
+                continue
+            _rellenar(symbol, sdf["date"].min(), objetivo)
 
         if nuevos:
             df = pd.concat([df] + nuevos, ignore_index=True)

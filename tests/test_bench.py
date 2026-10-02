@@ -191,3 +191,46 @@ def test_sync_prioriza_lo_reciente_de_todos_sobre_el_relleno(tmp_path, monkeypat
     ultimas = df.groupby('symbol')['date'].max()
     assert set(ultimas.index) == set(syms)            # todos tienen lo reciente
     assert (ultimas == AHORA).all()
+
+
+def test_sync_completa_la_historia_de_un_par_que_ya_tiene_velas_recientes(tmp_path, monkeypatch):
+    """Caso real del 02/10: con velas recientes guardadas, el relleno nunca miraba hacia atrás."""
+    bp = _escribir(tmp_path, [{'symbol': 'ENA-USDT', 'estado': 'observacion'}])
+    monkeypatch.setattr(bench, 'BENCH_PATH', bp)
+    monkeypatch.setattr(px, 'BENCH_CSV_PATH', tmp_path / 'bench.csv')
+    monkeypatch.setattr(px, 'currencies_list', lambda: [])
+    monkeypatch.setattr(px.time, 'sleep', lambda *_: None)
+    pd.DataFrame(_velas('ENA-USDT', AHORA - pd.Timedelta(minutes=5), 200)).to_csv(tmp_path / 'bench.csv', index=False)
+    pedidos = []
+
+    def fake_fetch(symbol, limit, end_time_ms=None):
+        pedidos.append(end_time_ms)
+        fin = AHORA if end_time_ms is None else pd.Timestamp(end_time_ms, unit='ms', tz='UTC')
+        return _velas(symbol, fin, limit)
+
+    monkeypatch.setattr(px, '_fetch_bingx_candles', fake_fetch)
+    px.sync_bench_candles(now_utc=AHORA)
+    df = pd.read_csv(tmp_path / 'bench.csv')
+    df['date'] = pd.to_datetime(df['date'], utc=True)
+    assert df['date'].min() <= AHORA - pd.Timedelta(days=px.BENCH_BACKFILL_DAYS)
+    assert df['date'].max() == AHORA
+    # contiguo: ninguna vela faltante entre la más vieja y la más nueva
+    assert (df['date'].diff().dropna() == pd.Timedelta(minutes=5)).all()
+
+
+def test_sync_ya_completo_no_gasta_pedidos_de_relleno(tmp_path, monkeypatch):
+    bp = _escribir(tmp_path, [{'symbol': 'ENA-USDT', 'estado': 'observacion'}])
+    monkeypatch.setattr(bench, 'BENCH_PATH', bp)
+    monkeypatch.setattr(px, 'BENCH_CSV_PATH', tmp_path / 'bench.csv')
+    monkeypatch.setattr(px, 'currencies_list', lambda: [])
+    n = px.BENCH_BACKFILL_DAYS * 288 + 10
+    pd.DataFrame(_velas('ENA-USDT', AHORA - pd.Timedelta(minutes=5), n)).to_csv(tmp_path / 'bench.csv', index=False)
+    pedidos = []
+
+    def fake_fetch(symbol, limit, end_time_ms=None):
+        pedidos.append(end_time_ms)
+        return _velas(symbol, AHORA, limit)
+
+    monkeypatch.setattr(px, '_fetch_bingx_candles', fake_fetch)
+    px.sync_bench_candles(now_utc=AHORA)
+    assert pedidos == [None]                         # sólo lo reciente
