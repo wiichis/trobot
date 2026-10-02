@@ -815,6 +815,16 @@ Tabla completa en `archivos/candidatos/validacion/resumen.csv`. Los 15 siguen en
 - **V3 es la única consistente**: igual en las dos mitades, 6 de 10 meses, ningún mes domina (31%), la carga la pata larga (+0,91% contra +0,02%). **No cumple** el criterio (t 1,3) y es la mejor de 4: el riesgo de que sea suerte es real.
 - ⇒ **Ninguna estrategia del laboratorio tiene edge demostrado todavía.** El paso honesto para V3 no es más backtest (cada variante extra aumenta la chance de falso positivo) sino **probarla hacia adelante, sin dinero**, varias semanas.
 
+### 📄 Prueba SIN DINERO del momentum entre pares (V3) — desde el 02/10
+
+`pkg/paper_momentum.py` (config y criterios en `pkg/paper_momentum.json`, tests en `tests/test_paper_momentum.py`), desplegado el 02/10 22:10 UTC (`c334bde`). Cada **72 h** cierra el libro anterior y arma uno nuevo: **largo los 5 pares con mayor retorno en 168 h, corto los 5 con menor**, sobre 39 pares, con velas de 1 h **cerradas** de BingX. **No manda órdenes.**
+- Job horario del bot (:05) que decide con el **estado en disco** (`archivos/paper/momentum_estado.json`): un job "cada 3 días" de `schedule` se reinicia con cada restart y no correría nunca.
+- Nunca levanta excepción. Aviso `paper_momentum_rebalanceo` en cada rebalanceo.
+- Resultados: `archivos/paper/momentum_libro.csv` (patas abiertas) y `momentum_trades.csv` (cerradas, bruto y neto con 16 bps por vuelta).
+- **Evaluación**: `python3 scripts/paper_momentum_reporte.py` tras bajar `archivos/paper/` de prod.
+- **Criterios fijados antes de empezar** (referencia de backtest: +0,46% neto por pata, t 1,3), revisión a los **15 rebalanceos (~45 días)**: éxito = neto medio por pata ≥ +0,20% y ≥ 60% de rebalanceos positivos → proponer piloto con dinero chico; fracaso = neto medio ≤ 0 → descartar V3; intermedio → extender a 30 rebalanceos.
+- ⚠️ El universo incluye monedas muy volátiles (PUMP, FARTCOIN, NIGHT…): el primer libro compra pares que subieron 30-138% en 7 días. Es parte de lo que la prueba tiene que medir.
+
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
 
 Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferencias entre lo que prod ejecuta y lo que el backtest simula, y **hacen que los A/B midan algo distinto de lo que se cree**.
