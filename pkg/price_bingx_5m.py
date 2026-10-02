@@ -21,7 +21,7 @@ CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m.csv"
 BENCH_CSV_PATH = BASE_DIR / "archivos" / "cripto_price_5m_bench.csv"
 BENCH_HISTORY_DAYS = 400
 BENCH_FETCH_LIMIT = 36            # 3 h: cubre un ciclo atrasado y corrige la vela parcial
-BENCH_MAX_REQUESTS_PER_RUN = 25   # el backfill se hace de a poco para no demorar el trading
+BENCH_MAX_REQUESTS_PER_RUN = 40   # ~10-15 s por hora; el backfill se hace de a poco para no demorar el trading
 BENCH_BACKFILL_DAYS = 45          # lo que da el API de BingX hacia atrás
 
 # Máximo de días que mantiene el archivo corto usado para señales.
@@ -602,23 +602,30 @@ def sync_bench_candles(now_utc: Optional[datetime] = None) -> int:
 
         nuevos = []
         requests_left = BENCH_MAX_REQUESTS_PER_RUN
+        # Pasada 1: lo más reciente de TODOS los pares (corrige además la vela que quedó en
+        # formación la vez anterior). Va primero para que el relleno histórico de un par
+        # nunca deje sin velas nuevas a otro: el 02/10 la primera corrida gastó todo el
+        # presupuesto en 1000PEPE y AAVE y AVAX/DYDX/ONDO —los que se simulan— no recibieron nada.
+        recientes = {}
         for symbol in symbols:
             if requests_left <= 0:
                 break
-            sdf = df[df["symbol"] == symbol]
-            last = sdf["date"].max() if not sdf.empty else None
-            # 1) lo más reciente (corrige la vela que quedó en formación la vez anterior)
             try:
                 chunk = pd.DataFrame(_fetch_bingx_candles(symbol, BENCH_FETCH_LIMIT))
                 requests_left -= 1
             except Exception as exc:
                 log.warning("bench: no se pudieron bajar velas de %s: %s", symbol, exc)
                 continue
-            if chunk.empty:
-                continue
-            nuevos.append(chunk)
-            # 2) rellenar hacia atrás si hay hueco, de a un pedido por vez
-            earliest_known = chunk["date"].min()
+            if not chunk.empty:
+                nuevos.append(chunk)
+                recientes[symbol] = chunk["date"].min()
+            time.sleep(0.2)
+        # Pasada 2: rellenar hacia atrás los huecos, con lo que sobre del presupuesto.
+        for symbol, earliest_known in recientes.items():
+            if requests_left <= 0:
+                break
+            sdf = df[df["symbol"] == symbol]
+            last = sdf["date"].max() if not sdf.empty else None
             target = (last if last is not None else now_ts - pd.Timedelta(days=BENCH_BACKFILL_DAYS))
             while earliest_known > target and requests_left > 0:
                 end_ms = int((earliest_known - pd.Timedelta(minutes=5)).timestamp() * 1000)
@@ -633,7 +640,6 @@ def sync_bench_candles(now_utc: Optional[datetime] = None) -> int:
                 nuevos.append(back)
                 earliest_known = back["date"].min()
                 time.sleep(0.2)
-            time.sleep(0.2)
 
         if nuevos:
             df = pd.concat([df] + nuevos, ignore_index=True)

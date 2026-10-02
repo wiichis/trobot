@@ -168,3 +168,26 @@ def test_la_purga_del_long_preserva_la_banca(entorno, monkeypatch):
                        for s in ('BCH-USDT', 'AVAX-USDT', 'DOT-USDT')])
     out = px._ensure_long_history(df, AHORA)
     assert set(out.symbol) == {'BCH-USDT', 'AVAX-USDT'}   # DOT retirado sí se depura
+
+
+def test_sync_prioriza_lo_reciente_de_todos_sobre_el_relleno(tmp_path, monkeypatch):
+    """Caso real del 02/10: el relleno de los primeros pares agotó el presupuesto."""
+    syms = [f'P{i}-USDT' for i in range(6)]
+    bp = _escribir(tmp_path, [{'symbol': s, 'estado': 'banca'} for s in syms])
+    monkeypatch.setattr(bench, 'BENCH_PATH', bp)
+    monkeypatch.setattr(px, 'BENCH_CSV_PATH', tmp_path / 'bench.csv')
+    monkeypatch.setattr(px, 'currencies_list', lambda: [])
+    monkeypatch.setattr(px.time, 'sleep', lambda *_: None)
+    monkeypatch.setattr(px, 'BENCH_MAX_REQUESTS_PER_RUN', 8)
+
+    def fake_fetch(symbol, limit, end_time_ms=None):
+        fin = AHORA if end_time_ms is None else pd.Timestamp(end_time_ms, unit='ms', tz='UTC')
+        return _velas(symbol, fin, limit)
+
+    monkeypatch.setattr(px, '_fetch_bingx_candles', fake_fetch)
+    px.sync_bench_candles(now_utc=AHORA)
+    df = pd.read_csv(tmp_path / 'bench.csv')
+    df['date'] = pd.to_datetime(df['date'], utc=True)
+    ultimas = df.groupby('symbol')['date'].max()
+    assert set(ultimas.index) == set(syms)            # todos tienen lo reciente
+    assert (ultimas == AHORA).all()
