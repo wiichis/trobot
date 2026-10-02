@@ -85,14 +85,20 @@ def test_balance_invalido_no_rompe(bal):
     assert _peso_para_simbolo("ONDO-USDT", EQUAL, p, bal) == pytest.approx(0.13)
 
 
-def test_el_peso_de_ondo_en_produccion_deja_el_tramo_sobre_el_minimo():
-    """Guardia sobre el valor que se desplegó: si alguien lo baja más, este test avisa."""
+def test_los_pesos_en_produccion_dejan_el_tramo_sobre_el_minimo():
+    """Guardia sobre los valores desplegados: si alguien baja un peso de más, este test avisa.
+
+    Era específica de ONDO (0,13, el 20/09); desde el 02/10 ONDO está en la banca y todos
+    los activos llevan peso explícito, así que la guardia cubre a todos.
+    """
     import json, os
     from pkg.live_runtime_config import get_tp_min_close_notional_usdt
     from pkg.monkey_bx import _runtime_tp_splits
     ruta = os.path.join(os.path.dirname(os.path.dirname(__file__)), "pkg", "best_prod.json")
     params = {e["symbol"]: e["params"] for e in json.load(open(ruta))}
-    peso = params["ONDO-USDT"].get("peso")
-    assert peso is not None, "ONDO debería llevar override de peso"
-    tramo = BAL * peso * min(x for x in _runtime_tp_splits() if x > 0)
-    assert tramo >= get_tp_min_close_notional_usdt()
+    con_peso = {s: p["peso"] for s, p in params.items() if p.get("peso") is not None}
+    assert con_peso, "los activos deberían llevar override de peso"
+    minimo = get_tp_min_close_notional_usdt()
+    tramo_min = min(x for x in _runtime_tp_splits() if x > 0)
+    for sym, peso in con_peso.items():
+        assert BAL * peso * tramo_min >= minimo, sym

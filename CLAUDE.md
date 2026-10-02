@@ -28,8 +28,8 @@ Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USD
 
 ## Composición actual del portfolio
 
-**8 pares activos** (al 2026-10-02, MD5 `a9711a05`): APT, BCH, BNB, CFX, ETH, LINK, ONDO, XMR — con `peso` 0,20 explícito (ONDO 0,13), así el tamaño por trade no sube al pasar de 10 a 8 pares (el equal-weight daría 0,25).
-**En banca** (`pkg/bench.json`, no operan, se simulan hacia adelante): **AVAX** y **DYDX** desde el 02/10, más 15 candidatos en observación. Ver "Banca de pares". Rollback a 10 pares: md5 `68c049c1`.
+**7 pares activos** (al 2026-10-02, MD5 `0fd4f8bc`): APT, BCH, BNB, CFX, ETH, LINK, XMR — con `peso` 0,20 explícito, así el tamaño por trade no sube al pasar de 10 a 7 pares (el equal-weight daría 0,29).
+**En banca** (`pkg/bench.json`, no operan, se simulan hacia adelante): **AVAX**, **DYDX** y **ONDO** desde el 02/10, más 15 candidatos en observación. Ver "Banca de pares". Rollback a 10 pares: md5 `68c049c1`; a 8 (con ONDO): `a9711a05`.
 
 🔧 **AVAX y XMR RE-OPTIMIZADOS** (19/09, `3daa85c`) — validados con cross-val 4/4 **y holdout fuera de muestra**. Ver "Revisión 19/09". ⚠️ **AVAX sale del congelamiento**: la nota de abajo ("NO re-optimizar sus params") queda **derogada**.
 
@@ -650,7 +650,7 @@ Las órdenes PostOnly que expiran son las mejores (+0,60% a 4 h), pero porque el
   - banca → fuera: más de 60 días (dos ciclos mensuales) sin poder activarse.
 - **Revisión semanal**: `python3 scripts/bench_shadow.py --data <long.csv> --bench_data <bench.csv> --pnl <PnL.csv>` (bajar los tres de prod). **Sólo propone**; las transiciones las decide el usuario. Reporte en `archivos/bench/reportes/`.
 - **Re-optimización**: mensual y sólo de los pares en banca, con el protocolo completo y `--htf_mode adx_only`.
-- 🔔 **Primera corrida (01/10) propone también ONDO**: sim −0,23/−0,17/−0,82/−1,08 y real +3,78/−0,91/−0,70/−0,07. Pendiente de decisión.
+- **Primera corrida (01/10) propuso también ONDO** (sim −0,23/−0,17/−0,82/−1,08, real +3,78/−0,91/−0,70/−0,07): **movido a banca el 02/10** con el OK del usuario.
 
 **Candidatos** (15, en observación): UNI, SUI, ARB, ENA, WLD, TAO, QNT, 1000PEPE (nunca probados) y LTC, SOL, NEAR, AAVE, XRP, ZEC, HYPE (descartados antes de los fixes de tick y fill, así que aquel veredicto no vale). Historia: `scripts/candidatos_velas.py` une los mensuales de Binance USDT-M (dic-25 → ago-26, en `archivos/candidatos/binance/`) con el API de BingX desde el 17/08; en el solape el close difiere 1-5 bps de mediana (p99 5-17): **Binance sirve como proxy**. Serie en `archivos/candidatos/velas_candidatos.csv`, reglas de contrato agregadas a las dos tablas `SYMBOL_TRADING_RULES` (idénticas, 29 pares).
 
@@ -1252,7 +1252,7 @@ Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue 
 | `htf_filter_enabled` + `htf_adx_min` | **`true` / 18,0 sobre 1h** | **20/09 — EN PRUEBA, juzgar por 20-25 cierres** |
 | `peso` de ONDO | **0,13** (era 0,20) | 20/09 |
 | `peso` del resto | **0,20 explícito** | 02/10 — con 8 pares el equal-weight subiría a 0,25 |
-| pares activos | **8** (AVAX y DYDX a banca) | 02/10 |
+| pares activos | **7** (AVAX, DYDX y ONDO a banca) | 02/10 |
 
 **Los 13 bugs corregidos**, todos de ejecución, datos o medición — **ninguno de parámetros**:
 
