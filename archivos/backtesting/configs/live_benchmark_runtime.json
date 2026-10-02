@@ -55,5 +55,9 @@
     "after_min": 30,
     "buffer_pct": 0.0025,
     "min_improve_pct": 0.0005
+  },
+  "entries": {
+    "enabled": false,
+    "_comment": "Entradas nuevas PAUSADAS el 02/10/2026 por decisión del usuario. La estrategia actual (fresh-cross 5m) no tiene edge medido: a horizonte fijo, ~0 por señal en 10 meses y −0,6% fuera de muestra en septiembre (scripts/edge_horizonte.py); optimizar params empeora el resultado fuera de muestra (scripts/optimizar_parity.py). El bot sigue gestionando las posiciones abiertas y bajando velas. Reanudar = enabled:true + restart, sin deploy."
   }
 }

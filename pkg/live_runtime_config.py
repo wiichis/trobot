@@ -41,6 +41,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "session": {
         "entry_hours_utc": [6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 19, 21, 22],
     },
+    # Interruptor de entradas NUEVAS (02/10/2026). False = el bot no abre posiciones,
+    # pero sigue gestionando las abiertas (SL, TP, break-even, trailing) y bajando velas.
+    "entries": {
+        "enabled": True,
+    },
     "side_mode": "both",
     "entry_style_overrides": {},
     "long_filter_overrides": {},
@@ -241,6 +246,24 @@ def get_allowed_entry_hours_utc() -> Tuple[int, ...]:
     cfg = get_live_runtime_config()
     session = cfg.get("session") if isinstance(cfg.get("session"), dict) else {}
     return _normalize_hours(session.get("entry_hours_utc"))
+
+
+def are_entries_enabled() -> bool:
+    """¿El bot puede abrir posiciones nuevas? (interruptor del 02/10/2026)
+
+    Sólo corta ENTRADAS: la gestión de las posiciones abiertas no lo consulta. Se usa para
+    dejar de operar una estrategia sin edge medido sin tocar params ni pares. Ante un valor
+    raro devuelve True (el comportamiento de siempre), salvo los "apagados" explícitos.
+    """
+    cfg = get_live_runtime_config().get("entries")
+    if not isinstance(cfg, dict):
+        return True
+    val = cfg.get("enabled", True)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() not in ("false", "0", "no", "off")
+    return bool(val)
 
 
 def is_entry_hour_allowed_utc(ts: Optional[datetime] = None) -> bool:

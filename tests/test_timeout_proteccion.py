@@ -360,6 +360,9 @@ def test_replay_ondo_desde_la_entrada(ondo, monkeypatch):
     ex = ondo.ex
     ex.price[SYM] = 0.4281
     monkeypatch.setattr(mb.pkg.price_bingx_5m, "currencies_list", lambda: [SYM])
+    # El replay necesita que se abra la posición, independientemente del interruptor de
+    # entradas de la config viva (pausado desde el 02/10).
+    monkeypatch.setattr(mb, "are_entries_enabled", lambda: True)
     monkeypatch.setattr(mb.pkg.indicadores, "ema_alert", lambda _c: (0.4281, "Alerta de SHORT"))
     monkeypatch.setattr(mb, "total_monkey", lambda: 185.0)
 

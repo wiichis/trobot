@@ -16,6 +16,7 @@ from .live_runtime_config import (
     get_post_sl_cooldown_bars,
     get_ratchet_config,
     ratchet_buffer_pct,
+    are_entries_enabled,
     is_entry_hour_allowed_utc,
     get_entry_mode,
     get_entry_limit_offset_bps,
@@ -3570,8 +3571,31 @@ def obteniendo_ordenes_pendientes():
     return orders
 
 
+_ENTRADAS_PAUSADAS_AVISADO = False
+
+
+def _avisar_entradas_pausadas() -> None:
+    """Un solo aviso por proceso: el job corre cada 5 min y no queremos 288 alertas al día."""
+    global _ENTRADAS_PAUSADAS_AVISADO
+    if _ENTRADAS_PAUSADAS_AVISADO:
+        return
+    _ENTRADAS_PAUSADAS_AVISADO = True
+    try:
+        emit_lifecycle_event(
+            "entries_paused",
+            "WARN",
+            detail=("entradas nuevas pausadas por config (entries.enabled=false); "
+                    "las posiciones abiertas se siguen gestionando"),
+        )
+    except Exception:
+        pass
+
+
 def colocando_ordenes():
     pkg.monkey_bx.obteniendo_ordenes_pendientes()
+    if not are_entries_enabled():
+        _avisar_entradas_pausadas()
+        return
     if not is_entry_hour_allowed_utc():
         return
     currencies = pkg.price_bingx_5m.currencies_list()
