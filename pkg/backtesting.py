@@ -297,7 +297,7 @@ def _build_simple_argv(cfg: Dict[str, object]) -> list:
                   'ema_fast','ema_slow','rsi_buy','rsi_sell','adx_min',
                   'min_atr_pct','max_atr_pct','be_trigger','cooldown','logic',
                   'tp_r_multiples','be_mode','be_offset','entry_hours_utc',
-                  'entry_tf','htf_tf','htf_ema_fast','htf_ema_slow','htf_adx_min','htf_adx_period']:
+                  'entry_tf','htf_tf','htf_ema_fast','htf_ema_slow','htf_adx_min','htf_adx_period','htf_mode']:
             if k in sp and sp[k] is not None:
                 add('--' + k, sp[k])
         if sp.get('htf_filter_enabled'):
@@ -921,6 +921,7 @@ def _run_portfolio_from_best(best_path: str, args, funding_map: Dict[str, List[T
             htf_ema_slow=_as_int(params.get('htf_ema_slow', args.htf_ema_slow), args.htf_ema_slow),
             htf_adx_min=_as_float(params.get('htf_adx_min', args.htf_adx_min), args.htf_adx_min),
             htf_adx_period=_as_int(params.get('htf_adx_period', args.htf_adx_period), args.htf_adx_period),
+            htf_mode=str(params.get('htf_mode', args.htf_mode)),
             use_r_multiple_tps=_as_bool(params.get('use_r_multiple_tps', args.use_r_multiple_tps), args.use_r_multiple_tps),
             tp_r_multiples=params.get('tp_r_multiples', args.tp_r_multiples),
             be_mode=str(params.get('be_mode', args.be_mode)),
@@ -1756,6 +1757,7 @@ class Backtester:
                  htf_ema_slow: int = 200,
                  htf_adx_min: float = 20.0,
                  htf_adx_period: int = 14,
+                 htf_mode: str = 'ema_adx',
                  enable_long_entries: bool = True,
                  enable_short_entries: bool = True,
                  long_adx_min: Optional[float] = None,
@@ -1837,6 +1839,11 @@ class Backtester:
         self.htf_ema_slow = int(htf_ema_slow)
         self.htf_adx_min = float(htf_adx_min)
         self.htf_adx_period = max(2, int(htf_adx_period))
+        # 'adx_only' = el filtro del live (htf_mode en el runtime config, 20/09): sólo
+        # exige ADX HTF >= mínimo, sin dirección de EMAs. 'ema_adx' = el original.
+        self.htf_mode = str(htf_mode or 'ema_adx').strip().lower()
+        if self.htf_mode not in ('ema_adx', 'adx_only'):
+            self.htf_mode = 'ema_adx'
         self.enable_long_entries = bool(enable_long_entries)
         self.enable_short_entries = bool(enable_short_entries)
         try:
@@ -2307,10 +2314,17 @@ class Backtester:
                 htf_adx = float(row.get('htf_adx', np.nan))
             except Exception:
                 return None
-            if math.isnan(htf_ema_f) or math.isnan(htf_ema_s) or math.isnan(htf_adx):
-                return None
-            htf_long_ok = (htf_ema_f > htf_ema_s) and (htf_adx >= self.htf_adx_min)
-            htf_short_ok = (htf_ema_f < htf_ema_s) and (htf_adx >= self.htf_adx_min)
+            if self.htf_mode == 'adx_only':
+                # Igual que indicadores.py con htf_mode='adx_only': ADX NaN bloquea
+                # (fail-closed), las EMAs HTF no participan.
+                if math.isnan(htf_adx):
+                    return None
+                htf_long_ok = htf_short_ok = htf_adx >= self.htf_adx_min
+            else:
+                if math.isnan(htf_ema_f) or math.isnan(htf_ema_s) or math.isnan(htf_adx):
+                    return None
+                htf_long_ok = (htf_ema_f > htf_ema_s) and (htf_adx >= self.htf_adx_min)
+                htf_short_ok = (htf_ema_f < htf_ema_s) and (htf_adx >= self.htf_adx_min)
         # Price action: cierre fuera de hh/ll
         long_break = (row['close'] > row['hh']) if not math.isnan(row['hh']) else False
         short_break = (row['close'] < row['ll']) if not math.isnan(row['ll']) else False
@@ -3855,6 +3869,7 @@ def run_job(job):
             htf_ema_slow=_as_int(p.get('htf_ema_slow', 200), 200),
             htf_adx_min=_as_float(p.get('htf_adx_min', 20.0), 20.0),
             htf_adx_period=_as_int(p.get('htf_adx_period', 14), 14),
+            htf_mode=str(p.get('htf_mode', 'ema_adx')),
             use_r_multiple_tps=_as_bool(p.get('use_r_multiple_tps', False), False),
             tp_r_multiples=p.get('tp_r_multiples', TP_R_MULTIPLES_DEFAULT),
             be_mode=str(p.get('be_mode', 'price_trigger')),
@@ -3934,6 +3949,8 @@ def main():
     parser.add_argument('--htf_ema_slow', type=int, default=200, help='EMA lenta para filtro HTF.')
     parser.add_argument('--htf_adx_min', type=float, default=20.0, help='ADX minimo en HTF para habilitar entradas.')
     parser.add_argument('--htf_adx_period', type=int, default=14, help='Periodo de ADX en HTF.')
+    parser.add_argument('--htf_mode', type=str, default='ema_adx', choices=['ema_adx', 'adx_only'],
+                        help="Modo del filtro HTF: 'ema_adx' (dirección EMA + ADX) o 'adx_only' (sólo ADX, el del live desde el 20/09).")
     parser.add_argument('--use_r_multiple_tps', action='store_true', help='Usa ladder de take profits por multiplos de R (ej. 1R,2R,3R).')
     parser.add_argument('--tp_r_multiples', type=str, default='1,2,3', help='Multiplicadores R para TP cuando --use_r_multiple_tps (CSV, ejemplo: 1,2,3).')
     parser.add_argument('--be_mode', type=str, default='price_trigger', choices=['price_trigger', 'after_tp1'], help="Modo de breakeven: 'price_trigger' por avance de precio o 'after_tp1' luego de TP1.")
@@ -4110,6 +4127,7 @@ def main():
                 htf_ema_slow=args.htf_ema_slow,
                 htf_adx_min=args.htf_adx_min,
                 htf_adx_period=args.htf_adx_period,
+                htf_mode=args.htf_mode,
                 use_r_multiple_tps=args.use_r_multiple_tps,
                 tp_r_multiples=args.tp_r_multiples,
                 be_mode=args.be_mode,
@@ -4686,6 +4704,7 @@ def main():
             'htf_ema_slow': args.htf_ema_slow,
             'htf_adx_min': args.htf_adx_min,
             'htf_adx_period': args.htf_adx_period,
+            'htf_mode': args.htf_mode,
             'use_r_multiple_tps': args.use_r_multiple_tps,
             'tp_r_multiples': args.tp_r_multiples,
             'be_mode': args.be_mode,
@@ -4737,6 +4756,7 @@ def main():
             htf_ema_slow=p['htf_ema_slow'],
             htf_adx_min=p['htf_adx_min'],
             htf_adx_period=p['htf_adx_period'],
+            htf_mode=p.get('htf_mode', getattr(args, 'htf_mode', 'ema_adx')),
             use_r_multiple_tps=p['use_r_multiple_tps'],
             tp_r_multiples=p['tp_r_multiples'],
             be_mode=p['be_mode'],
