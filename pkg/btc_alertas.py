@@ -97,6 +97,62 @@ def _mensajes(prev: Optional[Dict], e: Dict) -> Dict[str, str]:
     return campos
 
 
+def _fecha(iso: str) -> str:
+    return pd.Timestamp(iso).strftime("%d/%m/%Y")
+
+
+def _pct(x: float) -> str:
+    if round(abs(x), 1) == 0:
+        return "0,0%"
+    return ("+" if x > 0 else "-") + _n(abs(x), 1) + "%"
+
+
+def mensaje_md(prev: Optional[Dict], e: Dict) -> str:
+    """Mensaje de Telegram (Markdown) para un cambio de ventana o el estado al arrancar."""
+    lineas = []
+    media, cierre = _n(e["media100"]), _n(e["cierre"])
+    if prev is None or prev["tendencia"] != e["tendencia"]:
+        if prev is None:
+            lineas.append("*Estado actual*")
+        if e["tendencia"]:
+            lineas.append(f"🟢 *COMPRA* · tendencia alcista desde el {_fecha(e['tendencia_desde'])}")
+        else:
+            lineas.append(f"🔴 *VENTA* · tendencia bajista desde el {_fecha(e['tendencia_desde'])}")
+        lineas += ["",
+                   f"Cierre BTC     `{cierre}`",
+                   f"Referencia     `{media}` (media de 100 días)",
+                   f"Distancia      `{_pct((e['cierre'] / e['media100'] - 1) * 100)}`",
+                   f"RSI diario     `{_n(e['rsi'], 1)}`",
+                   ""]
+        if e["tendencia"]:
+            lineas.append(f"Sigue abierta mientras el cierre diario esté sobre `{media}`. "
+                          f"Si cierra debajo, pasa a 🔴 *VENTA*.")
+        else:
+            lineas.append(f"Sigue abierta mientras el cierre diario esté bajo `{media}`. "
+                          f"Si cierra encima, pasa a 🟢 *COMPRA*.")
+    caida_cambio = prev is not None and prev["caida"] != e["caida"]
+    if caida_cambio or (prev is None and e["caida"]):
+        if lineas:
+            lineas.append("")
+        if e["caida"]:
+            lineas.append(f"🟢 *COMPRA por caída fuerte* · RSI diario `{_n(e['rsi'], 1)}` (bajo 30)")
+            lineas.append("Se cierra cuando el RSI vuelva a 50.")
+        else:
+            lineas.append(f"⚪ Se cerró la ventana de compra por caída: el RSI volvió a `{_n(e['rsi'], 1)}`.")
+        if not (prev is None or prev["tendencia"] != e["tendencia"]):
+            lineas.append(f"Cierre BTC `{cierre}`")
+    lineas += ["", "_Señal de una regla medida en 2019-2026; no es una recomendación._"]
+    return "\n".join(lineas)
+
+
+def linea_md(e: Dict) -> str:
+    """Una línea (Markdown) con el estado del día, para el resumen diario de los bots."""
+    ventana = "🟢 COMPRA" if e["tendencia"] else "🔴 VENTA"
+    extra = " · 🟢 caída fuerte" if e["caida"] else ""
+    return (f"{ventana} desde el {_fecha(e['tendencia_desde'])} · referencia `{_n(e['media100'])}` · "
+            f"RSI `{_n(e['rsi'], 1)}`{extra}")
+
+
 def _emitir(**campos) -> None:
     try:
         from .lifecycle_events import emit_lifecycle_event
@@ -143,7 +199,7 @@ def run_btc_alertas(ahora: Optional[datetime] = None, fuentes: Optional[Dict[str
         pd.DataFrame([{**e, "aviso": " | ".join(campos.get(k, "") for k in ("ventana", "caida_fuerte")).strip(" |")}]) \
             .to_csv(f_log, mode="a", header=not f_log.exists(), index=False)
         if campos:
-            _emitir(**campos)
+            _emitir(**campos, mensaje_md=mensaje_md(prev, e))
         return campos
     except Exception as exc:   # nunca tirar el bot por la alerta
         log.warning("btc_alertas falló: %s", exc)

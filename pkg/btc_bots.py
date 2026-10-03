@@ -247,6 +247,76 @@ def _texto_capitales(cfg: Dict, estado: Dict, precio: float) -> str:
     return "\n".join(partes)
 
 
+def _signo(x: float, dec: int = 1) -> str:
+    if round(abs(x), dec) == 0:
+        return _n(0.0, dec)
+    return ("+" if x > 0 else "-") + _n(abs(x), dec)
+
+
+def tabla_md(cfg: Dict, estado: Dict, precio: float) -> str:
+    """Capital de cada bot en un bloque de ancho fijo (se alinea en Telegram)."""
+    filas = [f"{'Bot':<10}{'Capital':>8}{'Var.':>8}  Posición"]
+    total = inicial = 0.0
+    for k, b in cfg["bots"].items():
+        libro = estado["bots"].get(k)
+        if not libro:
+            continue
+        c = capital(libro, precio)
+        total += c
+        inicial += libro["capital_inicial"]
+        pos = "apagado" if libro["apagado"] else ("cobro" if libro["spot_qty"] else LADO[libro["lado"]])
+        var = _signo((c / libro["capital_inicial"] - 1) * 100) + "%"
+        filas.append(f"{k + ' ' + b.get('corto', b['nombre']):<10}{_n(c):>8}{var:>8}  {pos}")
+    if inicial:
+        filas.append(f"{'Total':<10}{_n(total):>8}{_signo((total / inicial - 1) * 100) + '%':>8}")
+    return "```\n" + "\n".join(filas) + "\n```"
+
+
+def _emoji_operacion(accion: str) -> str:
+    if accion.startswith("CORTE"):
+        return "🛑"
+    if accion.startswith("da vuelta"):
+        return "🔄"
+    if "contado" in accion:
+        return "⚖️"
+    if accion.startswith("abre LONG"):
+        return "🟢"
+    if accion.startswith("abre SHORT"):
+        return "🔴"
+    return "⚪"
+
+
+def _modo_md(modo: str) -> str:
+    return "_Simulación SIN DINERO_" if modo == "papel" else f"_Modo {modo}_"
+
+
+def mensaje_operaciones_md(cfg: Dict, estado: Dict, filas_ops: List[Dict], precio: float, neta: float, modo: str) -> str:
+    from .lifecycle_events import escapar_md
+    lineas = [_modo_md(modo)]
+    for f in filas_ops:
+        linea = f"{_emoji_operacion(f['accion'])} *{f['bot']} · {f['nombre']}* — {escapar_md(f['accion'])}"
+        if f["resultado_cerrada"] is not None:
+            linea += f"\n      resultado `{_signo(f['resultado_cerrada'], 2)} USDT`"
+        lineas.append(linea)
+    lineas += [f"Precio BTC `{_n(precio, 1)}`", "", tabla_md(cfg, estado, precio),
+               f"Posición neta en el perpetuo: `{_signo(neta, 4)} BTC`"]
+    return "\n".join(lineas)
+
+
+def mensaje_resumen_md(cfg: Dict, estado: Dict, precio: float, neta: float, modo: str,
+                       ventana: Optional[str], inicio: bool = False) -> str:
+    if inicio:
+        cap = _n(next(iter(estado["bots"].values()))["capital_inicial"]) if estado["bots"] else "0"
+        cabecera = [f"Arrancan los 4 bots · {_modo_md(modo)}",
+                    f"Cada uno con `{cap} USDT`. Avisan cuando operan y mandan un resumen diario."]
+    else:
+        cabecera = [f"{_modo_md(modo)} · BTC `{_n(precio, 1)}`"]
+    lineas = cabecera + ["", tabla_md(cfg, estado, precio), f"Posición neta en el perpetuo: `{_signo(neta, 4)} BTC`"]
+    if ventana:
+        lineas += ["", f"📈 Ventana BTC: {ventana}"]
+    return "\n".join(lineas)
+
+
 # ---------------------------------------------------------------- job
 
 def run_btc_bots(ahora: Optional[datetime] = None, fuentes: Optional[Dict[str, Callable]] = None) -> Optional[Dict]:
@@ -344,7 +414,8 @@ def run_btc_bots(ahora: Optional[datetime] = None, fuentes: Optional[Dict[str, C
         modo_txt = "SIN DINERO (papel)" if modo == "papel" else modo
         if nuevo:
             _emitir("btc_bots_inicio", "INFO", modo=modo_txt, precio_btc=_n(precio, 1),
-                    capital=_texto_capitales(cfg, estado, precio))
+                    capital=_texto_capitales(cfg, estado, precio),
+                    mensaje_md=mensaje_resumen_md(cfg, estado, precio, neta, modo, None, inicio=True))
         if ops:
             lineas = []
             for f in filas_ops:
@@ -353,20 +424,23 @@ def run_btc_bots(ahora: Optional[datetime] = None, fuentes: Optional[Dict[str, C
                     linea += f" | resultado {_n(f['resultado_cerrada'], 2)} USDT"
                 lineas.append(linea)
             _emitir("btc_bots_operaciones", "INFO", modo=modo_txt, operaciones="\n".join(lineas),
-                    posicion_neta=f"{_n(neta, 4)} BTC", capital=_texto_capitales(cfg, estado, precio))
+                    posicion_neta=f"{_n(neta, 4)} BTC", capital=_texto_capitales(cfg, estado, precio),
+                    mensaje_md=mensaje_operaciones_md(cfg, estado, filas_ops, precio, neta, modo))
         if not nuevo and estado.get("ultimo_resumen") != str(ahora.date()):
             estado["ultimo_resumen"] = str(ahora.date())
             _guardar_estado(f_estado, estado)
-            ventana = None
+            ventana = ventana_md = None
             try:
-                from .btc_alertas import leer_estado, texto_estado
+                from .btc_alertas import leer_estado, linea_md, texto_estado
                 ev = leer_estado()
-                ventana = texto_estado(ev) if ev else None
+                if ev:
+                    ventana, ventana_md = texto_estado(ev), linea_md(ev)
             except Exception:
                 pass
             _emitir("btc_bots_resumen", "INFO", modo=modo_txt, precio_btc=_n(precio, 1),
                     capital=_texto_capitales(cfg, estado, precio), posicion_neta=f"{_n(neta, 4)} BTC",
-                    ventana_btc=ventana)
+                    ventana_btc=ventana,
+                    mensaje_md=mensaje_resumen_md(cfg, estado, precio, neta, modo, ventana_md))
         return {"nuevo": nuevo, "operaciones": filas_ops, "posicion_neta_btc": neta, "total": foto["total"]}
     except Exception as exc:   # nunca tirar el bot por los bots de BTC
         log.warning("btc_bots falló: %s", exc)

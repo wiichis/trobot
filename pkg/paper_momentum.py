@@ -135,11 +135,32 @@ def run_paper_momentum(ahora: Optional[datetime] = None, fetch=None) -> Optional
         estado = {"rebalanceos": resumen["rebalanceo"], "ultimo": str(hora),
                   "proximo": str(hora + pd.Timedelta(hours=int(cfg["hold_h"])))}
         f_estado.write_text(json.dumps(estado, indent=1), encoding="utf-8")
+        resumen["proximo"] = estado["proximo"]
         _avisar(resumen, f_trades)
         return resumen
     except Exception as exc:   # nunca tirar el bot por la prueba sin dinero
         log.warning("paper_momentum falló: %s", exc)
         return None
+
+
+def _pct(x: float) -> str:
+    return (f"{x:+.2f}%").replace(".", ",")
+
+
+def mensaje_md(resumen: Dict, neto_cerradas: Optional[float], acumulado_pct: Optional[float]) -> str:
+    """Mensaje de Telegram (Markdown) de un rebalanceo."""
+    from .lifecycle_events import escapar_md
+    corto = lambda syms: escapar_md(", ".join(str(x).replace("-USDT", "") for x in syms)) or "—"
+    lineas = [f"_Prueba SIN DINERO · rebalanceo {resumen['rebalanceo']}_",
+              f"🟢 Largos: {corto(resumen['largos'])}",
+              f"🔴 Cortos: {corto(resumen['cortos'])}"]
+    if neto_cerradas is not None:
+        lineas.append(f"Patas que cerraron: `{_pct(neto_cerradas * 100)}` neto medio")
+    if acumulado_pct is not None:
+        lineas.append(f"Desde el inicio: `{_pct(acumulado_pct)}` neto medio por pata")
+    if resumen.get("proximo"):
+        lineas.append(f"Próximo rebalanceo: {pd.Timestamp(resumen['proximo']):%d/%m %H:%M} UTC")
+    return "\n".join(lineas)
 
 
 def _avisar(resumen: Dict, f_trades: Path) -> None:
@@ -158,6 +179,7 @@ def _avisar(resumen: Dict, f_trades: Path) -> None:
             neto_medio_acumulado_pct=acumulado,
             largos=",".join(resumen["largos"]), cortos=",".join(resumen["cortos"]),
             detalle="prueba SIN DINERO del momentum entre pares (V3); no se mandan órdenes",
+            mensaje_md=mensaje_md(resumen, nm, acumulado),
         )
     except Exception:
         pass

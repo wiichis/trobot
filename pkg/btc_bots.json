@@ -9,10 +9,10 @@
   "costo_spot_lado": 0.001,
   "corte_perdida": 0.30,
   "bots": {
-    "A": {"nombre": "tendencia lenta", "regla": "T1", "temporalidad": "1d", "solo_long": false, "exposicion": 1.0, "peso": 0.25},
-    "B": {"nombre": "tendencia rápida", "regla": "T3", "temporalidad": "4h", "solo_long": false, "exposicion": 1.0, "peso": 0.25},
-    "C": {"nombre": "cobro de funding", "regla": "carry", "exposicion": 0.5, "peso": 0.25},
-    "D": {"nombre": "compra de caídas", "regla": "R1", "temporalidad": "1d", "solo_long": true, "exposicion": 1.0, "peso": 0.25}
+    "A": {"nombre": "tendencia lenta", "corto": "lenta", "regla": "T1", "temporalidad": "1d", "solo_long": false, "exposicion": 1.0, "peso": 0.25},
+    "B": {"nombre": "tendencia rápida", "corto": "rápida", "regla": "T3", "temporalidad": "4h", "solo_long": false, "exposicion": 1.0, "peso": 0.25},
+    "C": {"nombre": "cobro de funding", "corto": "funding", "regla": "carry", "exposicion": 0.5, "peso": 0.25},
+    "D": {"nombre": "compra de caídas", "corto": "caídas", "regla": "R1", "temporalidad": "1d", "solo_long": true, "exposicion": 1.0, "peso": 0.25}
   },
   "criterios": {
     "corte": "un bot se apaga solo si su capital cae 30% bajo el inicial",

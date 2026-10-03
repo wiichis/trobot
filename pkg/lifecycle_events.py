@@ -33,7 +33,7 @@ def _fmt_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, float):
-        return f"{value:.6f}"
+        return f"{value:.6f}".rstrip("0").rstrip(".") or "0"
     return str(value).strip()
 
 
@@ -90,7 +90,20 @@ def _clean_pair(val: str) -> str:
     return str(val).replace("-USDT", "")
 
 
+def escapar_md(texto: Any) -> str:
+    """Escapa lo que el Markdown de Telegram interpretaría como formato (`_`, `*`, `` ` ``,
+    `[`). Sin esto, un valor como `sl_watch_stop_loss` abre una cursiva que no cierra y
+    Telegram rechaza el mensaje entero."""
+    t = str(texto)
+    for c in ("_", "*", "`", "["):
+        t = t.replace(c, "\\" + c)
+    return t
+
+
 def _build_body(fields: Dict[str, Any], category: str = "") -> str:
+    # Mensaje con diseño propio, ya armado en Markdown por quien lo emite.
+    if fields.get("mensaje_md"):
+        return str(fields["mensaje_md"])
     visible = _CATEGORY_VISIBLE_FIELDS.get(category)
     if visible is not None:
         # Formato limpio: solo campos relevantes
@@ -100,7 +113,7 @@ def _build_body(fields: Dict[str, Any], category: str = "") -> str:
             if value is None:
                 continue
             fmt = _clean_pair(_fmt_value(value)) if key == "symbol" else _fmt_value(value)
-            parts.append(f"{label}  `{fmt}`")
+            parts.append(f"{label}  `{fmt.replace('`', chr(39))}`")
         return "\n".join(parts)
 
     # Fallback genérico: ocultar campos técnicos
@@ -111,7 +124,7 @@ def _build_body(fields: Dict[str, Any], category: str = "") -> str:
         label = _FIELD_LABELS_GENERIC.get(key, key.replace("_", " ").capitalize())
         if label is None:
             continue
-        parts.append(f"▸ {label}: {_fmt_value(value)}")
+        parts.append(f"▸ {label}: {escapar_md(_fmt_value(value))}")
     body = "\n".join(parts)
     if len(body) > 1400:
         body = body[:1400] + "..."

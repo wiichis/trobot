@@ -69,7 +69,7 @@
   },
   "telegram": {
     "enabled": true,
-    "parse_mode": "",
+    "parse_mode": "Markdown",
     "chat_id_override": "",
     "send_timeout_sec": 12,
     "strategy_profile_name": "bingx_30m5m_rsi_liquid_utc_wo_13_18_20_both_exweak3",

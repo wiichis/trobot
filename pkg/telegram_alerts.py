@@ -117,6 +117,17 @@ def _read_credentials_from_file(repo_root: Path) -> Tuple[Optional[str], Optiona
     return token, chat_id
 
 
+def quitar_markdown(text: str) -> str:
+    """Texto plano legible a partir del Markdown de Telegram: sin `*`, `` ` `` ni `_` de
+    formato y sin las barras de escape (deja los `_` escapados como `_`)."""
+    marca = "\x00"
+    t = str(text).replace("\\_", marca)
+    t = t.replace("```", "").replace("`", "").replace("*", "").replace("_", "")
+    for c in ("[", "`", "*"):
+        t = t.replace("\\" + c, c)
+    return t.replace(marca, "_")
+
+
 def _msg_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -344,11 +355,33 @@ class TelegramAlerter:
         "btc_bots_operaciones": "Bots BTC: operaciones",
         "btc_bots_resumen": "Bots BTC: resumen diario",
         "btc_bots_modo_rechazado": "Bots BTC: modo rechazado",
+        "paper_momentum_rebalanceo": "Momentum entre monedas",
+        "entries_paused": "Entradas pausadas",
+        "tp_mode_changed": "Cambio de modo de TP",
+        "tp_state_cleared": "Estado de TP borrado",
+        "tp_state_row_recreated": "Estado de TP recreado",
+        "ratchet_activated": "Ratchet del stop",
+        "stop_update_failed": "No se pudo mover el stop",
+        "tick_size_implausible": "Tick sospechoso",
+        "htf_regime_fail_closed": "Filtro de régimen falló",
+        "htf_regime_recuperado": "Filtro de régimen recuperado",
+    }
+
+    # Emoji propio por categoría para los avisos informativos; WARN/CRITICAL conservan
+    # el de severidad para que una alarma no se confunda con un aviso de rutina.
+    _CATEGORY_EMOJI = {
+        "btc_ventana": "📈",
+        "btc_bots_inicio": "🤖",
+        "btc_bots_operaciones": "🤖",
+        "btc_bots_resumen": "📅",
+        "paper_momentum_rebalanceo": "📄",
     }
 
     def _build_header(self, *, severity: str, category: str, ts_utc: str) -> str:
         sev = str(severity).upper()
         emoji = self._SEVERITY_EMOJI.get(sev, "📌")
+        if sev == "INFO":
+            emoji = self._CATEGORY_EMOJI.get(category, emoji)
         label = self._CATEGORY_LABEL.get(category, category.replace("_", " ").title())
         return f"{emoji} *{label}*"
 
@@ -380,6 +413,11 @@ class TelegramAlerter:
         timeout = int(self.cfg.get("send_timeout_sec", 12))
         try:
             resp = requests.post(url, data=payload, timeout=timeout)
+            if not resp.ok and parse_mode and resp.status_code == 400:
+                # Telegram rechaza el texto si el formato no cierra (un `_` suelto en un
+                # valor, p. ej.). Antes que perder el aviso, va en texto limpio.
+                resp = requests.post(url, data={"chat_id": self.chat_id, "text": quitar_markdown(text)},
+                                     timeout=timeout)
         except Exception as exc:
             return TelegramSendResult(sent=False, detail=f"telegram_request_error:{exc}")
         if not resp.ok:
