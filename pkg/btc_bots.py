@@ -357,8 +357,16 @@ def run_btc_bots(ahora: Optional[datetime] = None, fuentes: Optional[Dict[str, C
         if not nuevo and estado.get("ultimo_resumen") != str(ahora.date()):
             estado["ultimo_resumen"] = str(ahora.date())
             _guardar_estado(f_estado, estado)
+            ventana = None
+            try:
+                from .btc_alertas import leer_estado, texto_estado
+                ev = leer_estado()
+                ventana = texto_estado(ev) if ev else None
+            except Exception:
+                pass
             _emitir("btc_bots_resumen", "INFO", modo=modo_txt, precio_btc=_n(precio, 1),
-                    capital=_texto_capitales(cfg, estado, precio), posicion_neta=f"{_n(neta, 4)} BTC")
+                    capital=_texto_capitales(cfg, estado, precio), posicion_neta=f"{_n(neta, 4)} BTC",
+                    ventana_btc=ventana)
         return {"nuevo": nuevo, "operaciones": filas_ops, "posicion_neta_btc": neta, "total": foto["total"]}
     except Exception as exc:   # nunca tirar el bot por los bots de BTC
         log.warning("btc_bots falló: %s", exc)

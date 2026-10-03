@@ -339,6 +339,11 @@ class TelegramAlerter:
         "monitoring_run_failed": "Monitoreo falló",
         "pnl_below_expectation": "PnL bajo",
         "edge_degrading": "Edge degradado",
+        "btc_ventana": "Ventana BTC",
+        "btc_bots_inicio": "Bots BTC: inicio",
+        "btc_bots_operaciones": "Bots BTC: operaciones",
+        "btc_bots_resumen": "Bots BTC: resumen diario",
+        "btc_bots_modo_rechazado": "Bots BTC: modo rechazado",
     }
 
     def _build_header(self, *, severity: str, category: str, ts_utc: str) -> str:

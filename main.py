@@ -7,6 +7,7 @@ import signal
 import pkg.price_bingx_5m
 import pkg.paper_momentum
 import pkg.btc_bots
+import pkg.btc_alertas
 import schedule
 import time
 import threading
@@ -157,6 +158,9 @@ if __name__ == '__main__':
     # Prueba SIN DINERO del momentum entre pares (pkg/paper_momentum.json). Chequea cada
     # hora contra su estado en disco; rebalancea cada 72 h. No manda órdenes.
     schedule.every().hour.at(":05").do(pkg.paper_momentum.run_paper_momentum)
+    # Alerta de ventana de compra/venta de BTC (pkg/btc_alertas.py): avisa cuando cambia.
+    # Va antes que los bots para que su resumen diario lea el estado del día.
+    schedule.every().hour.at(":02").do(pkg.btc_alertas.run_btc_alertas)
     # Cuatro bots sobre BTC con libros virtuales (pkg/btc_bots.json). Cada hora; cada bot
     # decide una vez por vela cerrada (diaria o de 4 h). En modo papel no manda órdenes.
     schedule.every().hour.at(":02").do(pkg.btc_bots.run_btc_bots)

@@ -855,6 +855,12 @@ Correlaciones: A–D −0,43 y C ≈ 0 con todos. ⚠️ B y D salieron de elegi
 - Avisos: `btc_bots_inicio`, `btc_bots_operaciones` (uno por ciclo, Telegram silencia una categoría 15 min), `btc_bots_resumen` (diario), `btc_bots_modo_rechazado`.
 - Verificado al desplegar contra un cálculo independiente: A LONG (cierre 84.880 > media 100 de 70.559), B LONG (ruptura del máximo de 20 velas el 02/10 04:00), D fuera (RSI 64,8).
 
+**Alerta de ventana de compra/venta de BTC** (`pkg/btc_alertas.py`, desde el 03/10, pedida por el usuario para su holding): usa las reglas de A y D sobre la vela diaria cerrada y avisa por Telegram (`btc_ventana`) sólo cuando una ventana cambia; el estado del día va también en el resumen diario de los bots.
+- Tendencia: cierre sobre la media de 100 días = COMPRA, debajo = VENTA; el "precio de referencia" es la media. Seguida con un holding al contado 2019-2026: **+2.845% contra +2.193%, caída −39% contra −77%**, invertido 57% del tiempo, ~6 compras/año y sólo 24% salen bien. Gana en los años malos (2022 −21% contra −65%) y pierde en los alcistas (2020 +166% contra +302%).
+- Caída fuerte: RSI diario < 30 = COMPRA, se cierra al volver a 50 (28 veces en 2019-2026). El RSI alto **no** es señal de venta (shortear con RSI > 70 perdió −90%).
+- No hay "precio de compra recomendado" aparte del umbral: esperar un precio mejor deja pasar los movimientos (lo mostraron las entradas PostOnly que expiraban) y elegir el momento de la compra semanal no mejora nada.
+- Al arrancar (03/10): COMPRA desde el 19/08, cierre 84.480 contra media 70.761, RSI 62,9.
+
 **Para pasar a dinero real falta** (el modo `real` hoy se rechaza):
 1. Mandar la orden neta al perpetuo y conciliar el fill con los libros.
 2. La pata de contado de C (API spot + transferencia entre cuentas). Sin eso C quedaría con un short desnudo: no habilitar C en real antes.

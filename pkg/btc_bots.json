@@ -2,6 +2,7 @@
   "_comentario": "Cuatro bots sobre BTC con libros virtuales y una sola posición neta en el exchange (02/10/2026). Reglas en pkg/btc_reglas.py; simulación histórica en scripts/btc_cuatro_bots.py. modo 'papel' = SIN DINERO: no manda órdenes. El modo 'real' todavía no está implementado y se rechaza.",
   "enabled": true,
   "modo": "papel",
+  "alerta_ventana": true,
   "symbol": "BTC-USDT",
   "capital_total": 186.0,
   "costo_lado": 0.0007,
