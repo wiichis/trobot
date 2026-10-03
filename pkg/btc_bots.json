@@ -1,0 +1,21 @@
+{
+  "_comentario": "Cuatro bots sobre BTC con libros virtuales y una sola posición neta en el exchange (02/10/2026). Reglas en pkg/btc_reglas.py; simulación histórica en scripts/btc_cuatro_bots.py. modo 'papel' = SIN DINERO: no manda órdenes. El modo 'real' todavía no está implementado y se rechaza.",
+  "enabled": true,
+  "modo": "papel",
+  "symbol": "BTC-USDT",
+  "capital_total": 186.0,
+  "costo_lado": 0.0007,
+  "costo_spot_lado": 0.001,
+  "corte_perdida": 0.30,
+  "bots": {
+    "A": {"nombre": "tendencia lenta", "regla": "T1", "temporalidad": "1d", "solo_long": false, "exposicion": 1.0, "peso": 0.25},
+    "B": {"nombre": "tendencia rápida", "regla": "T3", "temporalidad": "4h", "solo_long": false, "exposicion": 1.0, "peso": 0.25},
+    "C": {"nombre": "cobro de funding", "regla": "carry", "exposicion": 0.5, "peso": 0.25},
+    "D": {"nombre": "compra de caídas", "regla": "R1", "temporalidad": "1d", "solo_long": true, "exposicion": 1.0, "peso": 0.25}
+  },
+  "criterios": {
+    "corte": "un bot se apaga solo si su capital cae 30% bajo el inicial",
+    "evaluacion": "12 meses desde el arranque con dinero; no se mueve capital entre bots antes",
+    "papel": "2 semanas sin dinero para verificar la ejecución (no para validar la ganancia)"
+  }
+}

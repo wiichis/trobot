@@ -6,6 +6,7 @@ import atexit
 import signal
 import pkg.price_bingx_5m
 import pkg.paper_momentum
+import pkg.btc_bots
 import schedule
 import time
 import threading
@@ -156,6 +157,9 @@ if __name__ == '__main__':
     # Prueba SIN DINERO del momentum entre pares (pkg/paper_momentum.json). Chequea cada
     # hora contra su estado en disco; rebalancea cada 72 h. No manda órdenes.
     schedule.every().hour.at(":05").do(pkg.paper_momentum.run_paper_momentum)
+    # Cuatro bots sobre BTC con libros virtuales (pkg/btc_bots.json). Cada hora; cada bot
+    # decide una vez por vela cerrada (diaria o de 4 h). En modo papel no manda órdenes.
+    schedule.every().hour.at(":02").do(pkg.btc_bots.run_btc_bots)
 
     # Colocar órdenes 2 minutos después de cada cierre de vela 5‑min (ahora en minutos 03, 08, ..., 58)
     for minute in range(3, 60, 5):

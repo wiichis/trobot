@@ -28,6 +28,7 @@ Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USD
 
 ## Composición actual del portfolio
 
+🤖 **Cuatro bots sobre BTC SIN DINERO desde el 03/10** (`pkg/btc_bots.py`): tendencia diaria, tendencia de 4 h, cobro de funding y compra de caídas, 25% del capital cada uno, con libros virtuales y una posición neta. Ver "Cuatro bots sobre BTC".
 ⏸️ **ENTRADAS PAUSADAS desde el 02/10 21:09 UTC** (`entries.enabled: false`, `bd7fd79`): la estrategia no tiene edge medido; el bot sólo gestiona posiciones abiertas. Reanudar = `true` + restart.
 **7 pares activos** (al 2026-10-02, MD5 `0fd4f8bc`): APT, BCH, BNB, CFX, ETH, LINK, XMR — con `peso` 0,20 explícito, así el tamaño por trade no sube al pasar de 10 a 7 pares (el equal-weight daría 0,29).
 **En banca** (`pkg/bench.json`, no operan, se simulan hacia adelante): **AVAX**, **DYDX** y **ONDO** desde el 02/10, más 15 candidatos en observación. Ver "Banca de pares". Rollback a 10 pares: md5 `68c049c1`; a 8 (con ONDO): `a9711a05`.
@@ -824,6 +825,40 @@ Tabla completa en `archivos/candidatos/validacion/resumen.csv`. Los 15 siguen en
 - **Evaluación**: `python3 scripts/paper_momentum_reporte.py` tras bajar `archivos/paper/` de prod.
 - **Criterios fijados antes de empezar** (referencia de backtest: +0,46% neto por pata, t 1,3), revisión a los **15 rebalanceos (~45 días)**: éxito = neto medio por pata ≥ +0,20% y ≥ 60% de rebalanceos positivos → proponer piloto con dinero chico; fracaso = neto medio ≤ 0 → descartar V3; intermedio → extender a 30 rebalanceos.
 - ⚠️ El universo incluye monedas muy volátiles (PUMP, FARTCOIN, NIGHT…): el primer libro compra pares que subieron 30-138% en 7 días. Es parte de lo que la prueba tiene que medir.
+
+### 🤖 Cuatro bots sobre BTC — desde el 03/10, SIN DINERO
+
+**Por qué**: la estrategia de 5 min no tiene edge y el momentum entre pares es débil. El usuario ya hace holding de BTC (compra mensual) y quiere que la infra genere un % operando **sólo BTC**.
+
+**Lo que se descartó en el camino** (02/10, todo con reglas fijadas antes de mirar):
+- **Elegir el momento de la compra semanal** (`scripts/btc_compras_semanales.py`, velas diarias spot 2017-2026): media de 200 días, distancia al máximo, RSI semanal y "esperar caída del 20%" quedan a ±1-3% de la compra fija y cambian de signo por mitades. Con el mismo depósito, "comprar más" sólo se hace con lo ahorrado antes.
+- **Operar BTC por horas** (`scripts/btc_lab_temporalidades.py`, 4 reglas × long/short y sólo-long × 1d/4h/1h, perpetuo 1h 2020-2026 y **funding real**): todas las long/short de 1h pierden 72-98%; **la EMA 20/50 en 4h, que con 10 meses daba +59%, pierde −47% en 6 años**; 15m pierde todo por costos. Las sólo-long ganan siempre menos que el holding.
+- El funding real de BTC fue 17% (2020) y 31% (2021) anual para los longs: el supuesto de 0,01%/8 h (11%) era bajo.
+
+**Los cuatro bots** (`pkg/btc_reglas.py` es la fuente única de las reglas para el live y la simulación; resultados idénticos byte a byte al moverlas):
+
+| bot | regla | sim feb-20 → sep-26 (anual / caída) |
+|---|---|---|
+| A tendencia lenta | diario, precio vs media 100, long/short | +16% / −60%, positivo todos los años (2024-25 +4/+5%) |
+| B tendencia rápida | 4 h, Donchian 20/10, long/short | +11% / −73% (2021 −54%, 2025 −37%) |
+| C cobro de funding | BTC contado + short del perpetuo, mitad del capital en cada pata | +6% / −1% (2026 ~1%) |
+| D compra de caídas | diario, RSI 14 < 30 compra, sale en 50, sin shorts | +11% / −25%, 15 operaciones en 6,7 años |
+| **cartera 25% c/u** | | **+11% / −38%**, 2025 −11% |
+
+Correlaciones: A–D −0,43 y C ≈ 0 con todos. ⚠️ B y D salieron de elegir entre 24 combinaciones: su historia puede estar inflada por esa selección.
+
+**Diseño** (`scripts/btc_cuatro_bots.py` simula; `pkg/btc_bots.py` opera):
+- **Una sola cuenta** (decisión del usuario): cada bot lleva su libro virtual y al exchange iría la SUMA de sus posiciones en el perpetuo. En Hedge mode BingX tiene una sola posición LONG y una SHORT por símbolo, así que sin netear las posiciones de los bots se mezclarían.
+- Job horario a las :02. Cada bot decide **una vez por vela cerrada** de su temporalidad, con la posición que da la regla en la última vela cerrada; el estado en disco (`archivos/btc_bots/estado.json`) evita decidir dos veces la misma vela. Con 500 velas la regla decide igual que con toda la historia (0 diferencias en ~20.000 decisiones, 2017-2026).
+- Precio vivo del perpetuo, 0,07% por lado (taker + slippage, igual que la sim); C paga 0,1% en el contado. Funding con la tasa y el precio de referencia de BingX, procesado ANTES de decidir.
+- Corte: un bot que pierde 30% de su capital cierra y se apaga. Evaluación a 12 meses del arranque con dinero; no se mueve capital entre bots.
+- Avisos: `btc_bots_inicio`, `btc_bots_operaciones` (uno por ciclo, Telegram silencia una categoría 15 min), `btc_bots_resumen` (diario), `btc_bots_modo_rechazado`.
+- Verificado al desplegar contra un cálculo independiente: A LONG (cierre 84.880 > media 100 de 70.559), B LONG (ruptura del máximo de 20 velas el 02/10 04:00), D fuera (RSI 64,8).
+
+**Para pasar a dinero real falta** (el modo `real` hoy se rechaza):
+1. Mandar la orden neta al perpetuo y conciliar el fill con los libros.
+2. La pata de contado de C (API spot + transferencia entre cuentas). Sin eso C quedaría con un short desnudo: no habilitar C en real antes.
+3. **Auditar que el bot de 5 min no toque la posición de BTC**: `obteniendo_ordenes_pendientes` lee todas las órdenes abiertas sin filtrar símbolo, y `resultado_PnL`/reportes leen todo el income.
 
 ### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
 
