@@ -48,7 +48,26 @@ def test_no_salta_con_posicion_en_el_estado_de_tp(env):
     _, _, tp = env
     lm.skip_indicators(PAUSADAS)
     tp.write_text("symbol,tp_stage\nBNB-USDT,tp1_live\n")
-    assert lm.skip_indicators(PAUSADAS) is False
+    assert lm.skip_indicators(PAUSADAS, lambda s: True) is False        # el exchange dice abierta
+    assert lm.skip_indicators(PAUSADAS, lambda s: None) is False        # no se pudo leer: no se arriesga
+
+
+def test_fila_huerfana_se_descarta_solo_si_el_exchange_confirma_plano(env):
+    _, _, tp = env
+    tp.write_text("symbol,tp_stage\nBNB-USDT,tp2_live\nCFX-USDT,none\n")
+    lm.skip_indicators(PAUSADAS, lambda s: False)                       # primer ciclo
+    assert lm.skip_indicators(PAUSADAS, lambda s: False) is True
+
+
+def test_lectura_estricta_de_posicion(monkeypatch):
+    import types, sys
+    def fake(resp):
+        m = types.ModuleType("pkg.bingx"); m.perpetual_swap_positions = lambda s: resp
+        monkeypatch.setitem(sys.modules, "pkg.bingx", m); monkeypatch.setattr(__import__("pkg"), "bingx", m, raising=False)
+    fake(json.dumps({"code": 0, "data": []})); assert lm._posicion_abierta("X-USDT") is False
+    fake(json.dumps({"code": 0, "data": [{"positionAmt": "-0.5"}]})); assert lm._posicion_abierta("X-USDT") is True
+    fake(json.dumps({"code": 100413, "msg": "Null apiKey"})); assert lm._posicion_abierta("X-USDT") is None   # error de auth != plana
+    fake("no es json"); assert lm._posicion_abierta("X-USDT") is None
 
 
 def test_al_volver_a_estar_activo_reinicia_el_contador(env):
