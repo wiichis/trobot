@@ -1,0 +1,5 @@
+{
+  "_comentario": "Modo ligero (10/10/2026): con las entradas pausadas y sin posiciones ni órdenes, se salta el recálculo de indicadores (~2 s de CPU y ~330 MB de pico de RAM en un t3.micro con ~400 MB libres). NO toca el registro de órdenes ni la gestión de TP/SL. Apagar = enabled:false + restart.",
+  "enabled": true,
+  "max_saltos_seguidos": 11
+}

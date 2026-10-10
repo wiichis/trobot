@@ -351,6 +351,7 @@ class TelegramAlerter:
         "pnl_below_expectation": "PnL bajo",
         "edge_degrading": "Edge degradado",
         "btc_ventana": "Ventana BTC",
+        "funding_monitor": "Monitor de funding",
         "btc_bots_inicio": "Bots BTC: inicio",
         "btc_bots_operaciones": "Bots BTC: operaciones",
         "btc_bots_resumen": "Bots BTC: resumen diario",
@@ -371,6 +372,7 @@ class TelegramAlerter:
     # el de severidad para que una alarma no se confunda con un aviso de rutina.
     _CATEGORY_EMOJI = {
         "btc_ventana": "📈",
+        "funding_monitor": "💰",
         "btc_bots_inicio": "🤖",
         "btc_bots_operaciones": "🤖",
         "btc_bots_resumen": "📅",

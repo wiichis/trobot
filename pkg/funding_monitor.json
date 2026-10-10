@@ -1,0 +1,12 @@
+{
+  "_comentario": "Monitor del carry de funding (09/10/2026). NO opera: avisa cuando el funding de los mejores pares de BingX entra en el régimen donde el carry (long contado + short perpetuo) rindió ~17-20%/año en el historial (2019-2026). Estudio: scripts/funding_carry_lab.py y funding_carry_regimen.py.",
+  "enabled": true,
+  "lookback_dias": 30,
+  "n_pares": 10,
+  "universo": 100,
+  "min_volumen_usdt_24h": 2000000,
+  "min_volumen_spot_usdt_24h": 150000,
+  "umbral_alto": 0.20,
+  "umbral_salida": 0.15,
+  "umbral_medio": 0.10
+}

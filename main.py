@@ -8,6 +8,8 @@ import pkg.price_bingx_5m
 import pkg.paper_momentum
 import pkg.btc_bots
 import pkg.btc_alertas
+import pkg.funding_monitor
+import pkg.light_mode
 import schedule
 import time
 import threading
@@ -113,7 +115,10 @@ def monkey_result():
             pass
     
 def run_bingx():
-    pkg.indicadores.update_indicators() 
+    # Modo ligero (pkg/light_mode.py): sólo omite el recálculo de indicadores cuando el bot
+    # está ocioso. El registro de órdenes y sus transiciones (colocando_ordenes) corre siempre.
+    if not pkg.light_mode.skip_indicators():
+        pkg.indicadores.update_indicators()
     pkg.monkey_bx.colocando_ordenes()
 
     
@@ -164,6 +169,9 @@ if __name__ == '__main__':
     # Cuatro bots sobre BTC con libros virtuales (pkg/btc_bots.json). Cada hora; cada bot
     # decide una vez por vela cerrada (diaria o de 4 h). En modo papel no manda órdenes.
     schedule.every().hour.at(":02").do(pkg.btc_bots.run_btc_bots)
+    # Monitor del carry de funding (pkg/funding_monitor.py): no opera, avisa si el funding
+    # de los mejores pares entra al régimen alto. Mide una vez por día UTC.
+    schedule.every().hour.at(":07").do(pkg.funding_monitor.run_funding_monitor_async)
 
     # Colocar órdenes 2 minutos después de cada cierre de vela 5‑min (ahora en minutos 03, 08, ..., 58)
     for minute in range(3, 60, 5):
