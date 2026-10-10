@@ -10,6 +10,7 @@ import pkg.btc_bots
 import pkg.btc_alertas
 import pkg.funding_monitor
 import pkg.light_mode
+import pkg.daily_digest
 import schedule
 import time
 import threading
@@ -172,6 +173,9 @@ if __name__ == '__main__':
     # Monitor del carry de funding (pkg/funding_monitor.py): no opera, avisa si el funding
     # de los mejores pares entra al régimen alto. Mide una vez por día UTC.
     schedule.every().hour.at(":07").do(pkg.funding_monitor.run_funding_monitor_async)
+    # Resumen diario de BTC y bolsa de EE. UU. (pkg/daily_digest.py): un mensaje por día UTC
+    # a partir de hora_utc (12:00 UTC = 07:00 Lima). Hilo aparte; si una fuente cae, reintenta.
+    schedule.every().hour.at(":12").do(pkg.daily_digest.run_daily_digest_async)
 
     # Colocar órdenes 2 minutos después de cada cierre de vela 5‑min (ahora en minutos 03, 08, ..., 58)
     for minute in range(3, 60, 5):

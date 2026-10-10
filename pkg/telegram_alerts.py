@@ -352,6 +352,7 @@ class TelegramAlerter:
         "edge_degrading": "Edge degradado",
         "btc_ventana": "Ventana BTC",
         "funding_monitor": "Monitor de funding",
+        "daily_digest": "Resumen diario",
         "btc_bots_inicio": "Bots BTC: inicio",
         "btc_bots_operaciones": "Bots BTC: operaciones",
         "btc_bots_resumen": "Bots BTC: resumen diario",
@@ -373,6 +374,7 @@ class TelegramAlerter:
     _CATEGORY_EMOJI = {
         "btc_ventana": "📈",
         "funding_monitor": "💰",
+        "daily_digest": "📰",
         "btc_bots_inicio": "🤖",
         "btc_bots_operaciones": "🤖",
         "btc_bots_resumen": "📅",

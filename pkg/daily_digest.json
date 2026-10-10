@@ -1,0 +1,100 @@
+{
+  "_comentario": "Resumen diario de BTC y bolsa de EE. UU. por Telegram (10/10/2026). Sólo informa: titulares con enlace y cifras, sin recomendaciones. resumen_ia=true agrega una lectura de 3-4 líneas hecha por un modelo de Claude SOLO si ANTHROPIC_API_KEY está en el entorno del servicio (si no, se omite sin error).",
+  "enabled": true,
+  "hora_utc": 12,
+  "horas_max_noticias": 30,
+  "n_noticias_btc": 5,
+  "n_noticias_mercado": 5,
+  "resumen_ia": false,
+  "modelo_ia": "claude-haiku-5-5",
+  "fuentes_btc": [
+    [
+      "Cointelegraph",
+      "https://cointelegraph.com/rss"
+    ],
+    [
+      "The Block",
+      "https://www.theblock.co/rss.xml"
+    ],
+    [
+      "Decrypt",
+      "https://decrypt.co/feed"
+    ],
+    [
+      "CoinDesk",
+      "https://www.coindesk.com/arc/outboundfeeds/rss/"
+    ]
+  ],
+  "fuentes_mercado": [
+    [
+      "CNBC",
+      "https://www.cnbc.com/id/20910258/device/rss/rss.html"
+    ],
+    [
+      "CNBC",
+      "https://www.cnbc.com/id/10000664/device/rss/rss.html"
+    ],
+    [
+      "WSJ",
+      "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain"
+    ]
+  ],
+  "fuente_fed": [
+    "Fed",
+    "https://www.federalreserve.gov/feeds/press_all.xml"
+  ],
+  "palabras_btc": [
+    "bitcoin",
+    "btc",
+    "etf",
+    "saylor",
+    "strategy",
+    "miner",
+    "mining",
+    "halving",
+    "sec ",
+    "cftc",
+    "stablecoin",
+    "treasury",
+    "fed ",
+    "crypto market",
+    "tariff",
+    "liquidat",
+    "whale"
+  ],
+  "palabras_mercado": [
+    "s&p",
+    "dow ",
+    "nasdaq",
+    "stocks",
+    "wall street",
+    "fed ",
+    "fomc",
+    "powell",
+    "interest rate",
+    "rate cut",
+    "rate hike",
+    "inflation",
+    "payroll",
+    "jobs report",
+    "earnings",
+    "treasury",
+    "yields",
+    "oil",
+    "tariff",
+    "cpi",
+    "market"
+  ],
+  "palabras_fed": [
+    "fomc",
+    "interest rate",
+    "monetary",
+    "minutes",
+    "inflation",
+    "statement",
+    "powell",
+    "chair",
+    "employment",
+    "federal open market"
+  ]
+}
