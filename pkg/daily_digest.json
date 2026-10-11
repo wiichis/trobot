@@ -1,12 +1,12 @@
 {
-  "_comentario": "Resumen diario de BTC y bolsa de EE. UU. por Telegram (10/10/2026). Sólo informa: titulares con enlace y cifras, sin recomendaciones. resumen_ia=true agrega una lectura de 3-4 líneas hecha por un modelo de Claude SOLO si ANTHROPIC_API_KEY está en el entorno del servicio (si no, se omite sin error).",
+  "_comentario": "Resumen diario de BTC y bolsa de EE. UU. por Telegram (10/10/2026). 16:00 UTC = 11:00 Lima. Cifras, tendencia con tasas base históricas (pkg/btc_tasas_base.json) y titulares. resumen_ia agrega un análisis de Claude con sesgo para los próximos días SOLO si ANTHROPIC_API_KEY está en el entorno del servicio (/etc/default/trobot); sin clave se omite sin error. Modelo Sonnet 5.5 por costo (~0,5-1,3 USD/mes, tope 4000 tokens por llamada); para Opus 5.5 poner modelo_ia claude-opus-5-5 (~1-2,6 USD/mes). No es una recomendación.",
   "enabled": true,
-  "hora_utc": 12,
+  "hora_utc": 16,
   "horas_max_noticias": 30,
   "n_noticias_btc": 5,
   "n_noticias_mercado": 5,
-  "resumen_ia": false,
-  "modelo_ia": "claude-haiku-5-5",
+  "resumen_ia": true,
+  "modelo_ia": "claude-sonnet-5-5",
   "fuentes_btc": [
     [
       "Cointelegraph",
@@ -96,5 +96,7 @@
     "chair",
     "employment",
     "federal open market"
-  ]
+  ],
+  "esfuerzo_ia": "medium",
+  "max_tokens_ia": 4000
 }

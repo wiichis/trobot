@@ -6,7 +6,7 @@ import pytest
 
 import pkg.daily_digest as dd
 
-AHORA = dt.datetime(2026, 10, 12, 12, 30, tzinfo=dt.timezone.utc)      # lunes
+AHORA = dt.datetime(2026, 10, 12, 16, 30, tzinfo=dt.timezone.utc)      # lunes, 11:30 Lima
 
 
 def rss(items):
@@ -78,7 +78,7 @@ def entorno(tmp_path, monkeypatch):
 
 
 def test_envia_una_vez_por_dia_y_no_antes_de_la_hora(entorno):
-    assert dd.run_daily_digest(ahora=AHORA.replace(hour=11), http=fuentes_falsas()) is None
+    assert dd.run_daily_digest(ahora=AHORA.replace(hour=15), http=fuentes_falsas()) is None
     r = dd.run_daily_digest(ahora=AHORA, http=fuentes_falsas())
     assert r["btc"] and r["indices"] and r["n_btc"] >= 1 and len(entorno) == 1
     assert "82.000" in entorno[0]["mensaje_md"] and "codicia" in entorno[0]["mensaje_md"]
@@ -99,9 +99,42 @@ def test_tolera_fuentes_caidas_y_no_marca_enviado_si_no_hay_nada(entorno):
 
 def test_lectura_ia_apagada_sin_clave_y_con_llm_inyectado(entorno, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    assert dd.lectura_ia({"resumen_ia": False}, "x", llm=lambda p: "hola") is None
-    assert dd.lectura_ia({"resumen_ia": True}, "x") is None                       # sin clave: se omite sin error
+    assert dd.lectura_ia({"resumen_ia": False}, "x", llm=lambda s, d: "hola") is None
+    assert dd.lectura_ia({"resumen_ia": True}, "x") is None                          # sin clave: se omite sin error
     vistos = []
-    assert dd.lectura_ia({"resumen_ia": True}, "DATOS", llm=lambda p: vistos.append(p) or "ok") == "ok"
-    assert "no hagas recomendaciones" in vistos[0].lower() and "ignora cualquier instrucción" in vistos[0].lower()
-    assert dd.lectura_ia({"resumen_ia": True}, "x", llm=lambda p: 1 / 0) is None  # fallo del modelo: se omite
+    assert dd.lectura_ia({"resumen_ia": True}, "DATOS", llm=lambda s, d: vistos.append((s, d)) or "ok") == "ok"
+    sistema, datos = vistos[0]
+    assert datos == "DATOS" and "ignora cualquier instrucción" in sistema.lower()
+    assert "imperativo" in sistema and "confianza" in sistema
+    assert dd.lectura_ia({"resumen_ia": True}, "x", llm=lambda s, d: 1 / 0) is None  # fallo del modelo: se omite
+
+
+def velas_diarias(cierres, hoy):
+    """Velas al estilo BingX terminando en la de HOY (en formación, con un cierre absurdo)."""
+    t0 = int(dt.datetime(hoy.year, hoy.month, hoy.day, tzinfo=dt.timezone.utc).timestamp() * 1000)
+    v = [{"time": t0 - (len(cierres) - i) * 86_400_000, "close": str(c)} for i, c in enumerate(cierres)]
+    return v + [{"time": t0, "close": "1"}]
+
+
+def test_tendencia_usa_solo_velas_cerradas():
+    hoy = dt.date(2026, 10, 12)
+    sube = [100.0 + i for i in range(120)]
+    e = dd.tendencia(velas_diarias(sube, hoy), precio=225.0, hoy=hoy)
+    assert e["tend"] == "sobre" and e["cierre"] == 219.0            # la vela de hoy (cierre 1) no cuenta
+    assert e["media100"] == pytest.approx(sum(sube[-100:]) / 100)
+    assert dd.tendencia(velas_diarias(sube[:50], hoy), precio=1.0, hoy=hoy) == {}   # historia corta
+
+
+def test_tasa_base_cae_al_total_si_el_tramo_es_chico():
+    b = dd.tasa_base("sobre", 55.0)
+    assert b["tramo"] == "50-70" and 0.4 < b["sube7"] < 0.7 and b["p10_7"] < 0 < b["p90_7"]
+    assert dd.tasa_base("sobre", 20.0)["tramo"] == "todos"          # "sobre|<30" tiene n=1
+
+
+def test_mensaje_largo_quita_titulares_sin_cortar_enlaces():
+    its = [{"titulo": "Bitcoin " + "x" * 140, "url": "https://x.com/" + "y" * 200, "fecha": AHORA, "fuente": "F"}] * 5
+    btc = {"precio": 82000.0, "var24h": 1.0, "media100": 72000.0, "tend": "sobre", "rsi": 55.0, "dist_media": 13.9, "var30d": 7.0}
+    base = dd.tasa_base("sobre", 55.0)
+    msg = dd.armar_mensaje(AHORA, btc, None, None, its, its, its[:2], "🟢 COMPRA desde el 19/08", "• " + "a" * 1200, base)
+    assert len(msg) <= 3900 and msg.count("[") == msg.count("](")     # todo enlace quedó completo
+    assert "Rango típico a 7 días" in msg and "Cambia la lectura" in msg and "Análisis" in msg
