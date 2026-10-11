@@ -127,8 +127,8 @@ def test_tendencia_usa_solo_velas_cerradas():
 
 def test_tasa_base_cae_al_total_si_el_tramo_es_chico():
     b = dd.tasa_base("sobre", 55.0)
-    assert b["tramo"] == "50-70" and 0.4 < b["sube7"] < 0.7 and b["p10_7"] < 0 < b["p90_7"]
-    assert dd.tasa_base("sobre", 20.0)["tramo"] == "todos"          # "sobre|<30" tiene n=1
+    assert b["tramo_rsi14"] == "50-70" and "RSI" in b["estado"] and 0.4 < b["sube7"] < 0.7 and b["p10_7"] < 0 < b["p90_7"]
+    assert dd.tasa_base("sobre", 20.0)["tramo_rsi14"] == "todos"          # "sobre|<30" tiene n=1
 
 
 def test_mensaje_largo_quita_titulares_sin_cortar_enlaces():

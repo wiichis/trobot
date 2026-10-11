@@ -147,7 +147,10 @@ def tasa_base(tend: str, rsi_v: float) -> Optional[Dict]:
         fila = t["por_estado"].get(f"{tend}|{tramo}")
         if not fila or fila["n"] < 60:
             fila, tramo = t["por_tendencia"][tend], "todos"
-        return {**fila, "tramo": tramo, "periodo": t["periodo"]}
+        estado = f"precio {tend} la media de 100 días y RSI 14 diario en el tramo {tramo}" if tramo != "todos" \
+            else f"precio {tend} la media de 100 días (cualquier RSI)"
+        return {**fila, "tramo_rsi14": tramo, "estado": estado, "periodo": t["periodo"],
+                "lectura": "sube7 = fracción de veces que BTC subió 7 días después; p10_7/p90_7 = rango típico"}
     except Exception as exc:
         log.warning("digest: tasas base no disponibles (%s)", exc)
         return None
