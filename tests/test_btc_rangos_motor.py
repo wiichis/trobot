@@ -195,3 +195,23 @@ def test_regimen_compra_usa_solo_dias_cerrados():
     assert not reg.loc[ultimo + pd.Timedelta(hours=22)]  # el día todavía no cerró
     assert reg.loc[ultimo + pd.Timedelta(hours=23)]      # la vela de las 23:00 cierra el día
     assert not reg.loc[ultimo - pd.Timedelta(hours=1)]
+
+
+def test_sin_cierre_forzado_el_slot_espera_y_la_ganancia_compra_btc():
+    m = motor(slots="A", salida="S1_2", ganancia="G1", cierre_forzado=False, dca=lambda k: 0.0)
+    paso(m, 0, 100, 100, 100, 100, senal=True)
+    paso(m, 1, 100, 100, 100, 100)                 # entra slot 1 a 100
+    m.vela(pd.Timestamp("2024-02-03 00:00"), 90, 90, 90, 90, False, np.nan)   # cierre mensual
+    mes = m.meses[-1]
+    s = m.slots[0]
+    assert s.abierto and s.activo, "no se atrapa: sigue esperando"
+    assert mes["n_atrapadas"] == 0 and mes["atrapadas_costo"] == 0
+    assert mes["latente"] == pytest.approx(10 * s.qty)
+    assert m.holding_btc == 0 and m.bench_btc == 0
+    m.vela(pd.Timestamp("2024-02-03 01:00"), 100, 103, 100, 102, False, np.nan)  # sale en el TP 102
+    assert not s.abierto
+    g = m.operaciones[-1]["ganancia"]
+    assert m.usdt_para_holding == pytest.approx(g)  # G1: todo va a BTC en el próximo cierre
+    m.vela(pd.Timestamp("2024-03-03 00:00"), 110, 110, 110, 110, False, np.nan)
+    assert m.holding_btc == pytest.approx(g / 110, abs=1e-6)  # qty al step de 1e-6
+    assert m.capital_bot_nominal() == pytest.approx(200)

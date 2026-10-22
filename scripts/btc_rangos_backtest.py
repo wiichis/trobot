@@ -33,6 +33,18 @@ señal real tiene en ellas. Cierre diario: spot diario de Binance (`archivos/btc
 desde 2017, así la media está calentada en 2021) y, después de su último día, días completos
 armados con las velas 1 h. Salidas en `archivos/btc_rangos/backtest_v02/`.
 
+v0.3 (`--sin_cierre`, 22/10/2026, fijado antes de correr): el bot opera sólo con sus 200 USDT
+y su ganancia compra BTC; no toca el DCA del usuario ni su holding.
+- Motor con `cierre_forzado=False`: un slot atrapado espera, sin plazo, a venderse con ganancia;
+  no hay reposición. Destino de la ganancia G1 (100 % a BTC, comprado en cada cierre mensual).
+- DCA = 0: el DCA del usuario es igual con o sin bot y queda fuera. Benchmark A = guardar los
+  200 USDT; B = comprar 200 USDT de BTC el primer día.
+- extra_a_pct = BTC del bot (holding comprado con ganancias + BTC en slots + USDT / precio)
+  contra 200 USDT / precio, en % del capital del bot.
+- Neto del mes = ganancia realizada − variación de la pérdida latente de los slots abiertos.
+- Mismas 200 combinaciones, períodos, placebo y criterios. Sin filtro de régimen.
+  Salidas en `archivos/btc_rangos/backtest_v03/`.
+
 Uso: python3 scripts/btc_rangos_backtest.py [--procesos 8]
 """
 from __future__ import annotations
@@ -76,6 +88,9 @@ META_MES = 0.01
 
 _V = _IND = _REG = None
 _SEN: dict = {}
+CIERRE_FORZADO = True
+BASE_ESC = "fijo400"
+BASE_G = "G4"
 
 
 def cierre_diario(v1h: pd.DataFrame) -> pd.Series:
@@ -89,8 +104,15 @@ def cierre_diario(v1h: pd.DataFrame) -> pd.Series:
     return pd.concat([d, extra[extra.index > d.index[-1]]]).sort_index()
 
 
-def _init(regimen: bool = False):
+def _modo(sin_cierre: bool):
+    global CIERRE_FORZADO, BASE_ESC, BASE_G, ESCENARIOS
+    if sin_cierre:
+        CIERRE_FORZADO, BASE_ESC, BASE_G, ESCENARIOS = False, "fijo0", "G1", ["fijo0"]
+
+
+def _init(regimen: bool = False, sin_cierre: bool = False):
     global _V, _IND, _REG
+    _modo(sin_cierre)
     _V = pd.read_csv(REPO / "archivos/btc_rangos/velas_1h.csv", parse_dates=["date"], index_col="date")
     _IND = rr.indicadores(_V)
     _REG = rr.regimen_compra(cierre_diario(_V), _V.index) if regimen else None
@@ -115,7 +137,8 @@ def metricas(r) -> dict:
     m = r.motor
     pat = r.patrimonio_btc
     meses = pd.DataFrame(m.meses)
-    meses["neto"] = meses["realizado"] - meses["atrapadas_costo"]
+    lat = meses["latente"].fillna(0.0)
+    meses["neto"] = meses["realizado"] - meses["atrapadas_costo"] - lat.diff().fillna(lat)
     meses["neto_pct"] = meses["neto"] / meses["capital_inicio"]
     meses["anio"] = meses["ciclo"].str[:4]
     anual = meses.groupby("anio")["neto"].sum()
@@ -144,6 +167,7 @@ def metricas(r) -> dict:
         "winrate_pct": len(ops) / entradas * 100 if entradas else np.nan,
         "ciclos_mes": len(ops) / n_meses if n_meses else 0.0,
         "atrapadas": int(meses["n_atrapadas"].sum()),
+        "latente_final": float(meses["latente"].fillna(0.0).iloc[-1]),
         "comisiones": m.comisiones,
         "neto_anual": json.dumps({k: round(v, 2) for k, v in anual.items()}),
     }
@@ -151,7 +175,8 @@ def metricas(r) -> dict:
 
 def correr(args) -> dict:
     (slots, esc), entrada, filtro, salida, ganancia, escenario, periodo, intrabar, placebo = args
-    cfg = mm.Config(slots=slots, escalon=esc or 0.02, salida=salida, ganancia=ganancia, intrabar=intrabar)
+    cfg = mm.Config(slots=slots, escalon=esc or 0.02, salida=salida, ganancia=ganancia, intrabar=intrabar,
+                    cierre_forzado=CIERRE_FORZADO)
     sen = _SEN[(entrada, filtro)]
     if placebo is not None:
         en_periodo = (sen.index >= periodo[0]) & (sen.index < periodo[1])
@@ -181,12 +206,12 @@ def puntaje(df: pd.DataFrame, col: str = "extra_a_pct") -> pd.Series:
 def resumen_por_combo(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["combo"] = df.apply(clave, axis=1)
-    base = df[df["escenario"] == "fijo400"].set_index("combo")
+    base = df[df["escenario"] == BASE_ESC].set_index("combo")
     out = pd.DataFrame({"puntaje_a": puntaje(df), "puntaje_b": puntaje(df, "extra_b_pct")})
     cols = ["realizado", "atrapadas_costo", "neto_total", "neto_mensual_medio_pct", "meses_en_meta_pct",
             "peor_mes_pct", "anios_pos", "anios", "concentracion", "entradas", "cierres", "ciclos_mes",
             "atrapadas", "comisiones", "neto_anual", "extra_a_pct"]
-    out = out.join(base[cols].add_suffix("_dca400"))
+    out = out.join(base[cols].add_suffix("_base"))
     return out.sort_values("puntaje_a", ascending=False)
 
 
@@ -194,15 +219,19 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--procesos", type=int, default=8)
     ap.add_argument("--regimen", action="store_true", help="v0.2: sólo abrir slots en ventana COMPRA")
+    ap.add_argument("--sin_cierre", action="store_true", help="v0.3: capital fijo, sin cierre forzado, G1")
     args = ap.parse_args()
     global OUT
+    _modo(args.sin_cierre)
     if args.regimen:
         OUT = OUT.parent / "backtest_v02"
+    if args.sin_cierre:
+        OUT = OUT.parent / ("backtest_v03" + ("_regimen" if args.regimen else ""))
     OUT.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
-    with Pool(args.procesos, initializer=_init, initargs=(args.regimen,)) as pool:
+    with Pool(args.procesos, initializer=_init, initargs=(args.regimen, args.sin_cierre)) as pool:
         # 1) Selección
-        tareas = [(s, e, f, sa, "G4", esc, SEL, True, None)
+        tareas = [(s, e, f, sa, BASE_G, esc, SEL, True, None)
                   for s, e, f, sa, esc in itertools.product(SLOTS, ENTRADAS, FILTROS, SALIDAS, ESCENARIOS)]
         print(f"Selección: {len(tareas)} corridas…", flush=True)
         sel = pd.DataFrame(pool.map(correr, tareas, chunksize=4))
@@ -210,8 +239,8 @@ def main() -> None:
         rs = resumen_por_combo(sel)
         rs.to_csv(OUT / "seleccion_ranking.csv")
         print(f"  {time.time() - t0:.0f} s. Combinaciones con puntaje A > 0: {(rs['puntaje_a'] > 0).sum()} de {len(rs)}")
-        print(rs.head(10)[["puntaje_a", "puntaje_b", "neto_mensual_medio_pct_dca400", "atrapadas_dca400",
-                           "cierres_dca400", "anios_pos_dca400"]].round(3).to_string())
+        print(rs.head(10)[["puntaje_a", "puntaje_b", "neto_mensual_medio_pct_base", "atrapadas_base",
+                           "cierres_base", "anios_pos_base"]].round(3).to_string())
 
         finalistas = rs.head(5).index.tolist()
         combos = {}
@@ -223,13 +252,13 @@ def main() -> None:
         for c in finalistas:
             s, e, f, sa = combos[c]
             for esc in ESCENARIOS:
-                tareas.append((s, e, f, sa, "G4", esc, VAL, True, None))
-                tareas.append((s, e, f, sa, "G4", esc, VAL, False, None))
-                for g in ("G1", "G2", "G3"):
+                tareas.append((s, e, f, sa, BASE_G, esc, VAL, True, None))
+                tareas.append((s, e, f, sa, BASE_G, esc, VAL, False, None))
+                for g in [x for x in ("G1", "G2", "G3", "G4") if x != BASE_G]:
                     tareas.append((s, e, f, sa, g, esc, VAL, True, None))
             for k in range(N_PLACEBO):
-                tareas.append((s, e, f, sa, "G4", "fijo400", VAL, True, k))
-                tareas.append((s, e, f, sa, "G4", "fijo400", SEL, True, k))
+                tareas.append((s, e, f, sa, BASE_G, BASE_ESC, VAL, True, k))
+                tareas.append((s, e, f, sa, BASE_G, BASE_ESC, SEL, True, k))
         print(f"Validación + placebo + sensibilidad: {len(tareas)} corridas…", flush=True)
         val = pd.DataFrame(pool.map(correr, tareas, chunksize=4))
     val["combo"] = val.apply(clave, axis=1)
@@ -238,30 +267,30 @@ def main() -> None:
     filas = []
     for c in finalistas:
         v = val[(val["combo"] == c)]
-        real = v[v["placebo"].isna() & v["intrabar"] & (v["ganancia"] == "G4")]
+        real = v[v["placebo"].isna() & v["intrabar"] & (v["ganancia"] == BASE_G)]
         rv = resumen_por_combo(real.drop(columns="combo")).iloc[0]
-        plac_val = v[v["placebo"].notna() & (v["escenario"] == "fijo400")]
+        plac_val = v[v["placebo"].notna() & (v["escenario"] == BASE_ESC)]
         p90 = plac_val["extra_a_pct"].quantile(0.9) if len(plac_val) else np.nan
-        real400 = real[real["escenario"] == "fijo400"].iloc[0]
+        real400 = real[real["escenario"] == BASE_ESC].iloc[0]
         sens = resumen_por_combo(v[v["placebo"].isna() & ~v["intrabar"]].drop(columns="combo")).iloc[0]["puntaje_a"]
         gs = {}
-        for g in ("G1", "G2", "G3"):
+        for g in [x for x in ("G1", "G2", "G3", "G4") if x != BASE_G]:
             vg = v[v["placebo"].isna() & v["intrabar"] & (v["ganancia"] == g)]
             gs[f"puntaje_{g}"] = resumen_por_combo(vg.drop(columns="combo")).iloc[0]["puntaje_a"]
         pasa = {
             "c1_extra_pos": rv["puntaje_a"] > 0,
-            "c2_mayoria_anios": rv["anios_pos_dca400"] > rv["anios_dca400"] / 2,
+            "c2_mayoria_anios": rv["anios_pos_base"] > rv["anios_base"] / 2,
             "c3_gana_placebo": real400["extra_a_pct"] > p90,
-            "c4_concentracion": (rv["concentracion_dca400"] <= 0.5) if pd.notna(rv["concentracion_dca400"]) else False,
+            "c4_concentracion": (rv["concentracion_base"] <= 0.5) if pd.notna(rv["concentracion_base"]) else False,
         }
         filas.append({"combo": c, "puntaje_sel": rs.loc[c, "puntaje_a"], "puntaje_val_a": rv["puntaje_a"],
-                      "puntaje_val_b": rv["puntaje_b"], "val_extra_a_dca400": real400["extra_a_pct"],
+                      "puntaje_val_b": rv["puntaje_b"], "val_extra_a_base": real400["extra_a_pct"],
                       "placebo_p50": plac_val["extra_a_pct"].median(), "placebo_p90": p90,
                       "puntaje_val_sin_intrabar": sens, **gs, "puntaje_G4": rv["puntaje_a"],
-                      "neto_anual_dca400": rv["neto_anual_dca400"], "meses_en_meta_pct": rv["meses_en_meta_pct_dca400"],
-                      "peor_mes_pct": rv["peor_mes_pct_dca400"], "ciclos_mes": rv["ciclos_mes_dca400"],
-                      "atrapadas": rv["atrapadas_dca400"], "comisiones": rv["comisiones_dca400"],
-                      "concentracion": rv["concentracion_dca400"], **pasa, "viable": all(pasa.values())})
+                      "neto_anual_base": rv["neto_anual_base"], "meses_en_meta_pct": rv["meses_en_meta_pct_base"],
+                      "peor_mes_pct": rv["peor_mes_pct_base"], "ciclos_mes": rv["ciclos_mes_base"],
+                      "atrapadas": rv["atrapadas_base"], "comisiones": rv["comisiones_base"],
+                      "concentracion": rv["concentracion_base"], **pasa, "viable": all(pasa.values())})
     fin = pd.DataFrame(filas)
     fin.to_csv(OUT / "finalistas.csv", index=False)
     pd.set_option("display.width", 250)

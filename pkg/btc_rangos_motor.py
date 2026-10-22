@@ -37,6 +37,12 @@ mínima no entra.
 Destino de la ganancia realizada (G): una parte se reinvierte, repartida en partes iguales
 entre los 3 slots (sube su nominal), y el resto se reserva en USDT para comprar BTC de
 holding en el próximo cierre mensual.
+
+v0.3 (`cierre_forzado=False`, 22/10/2026): el capital del bot es fijo y no toca el DCA. En el
+cierre mensual NO se atrapa nada: un slot abierto espera, sin plazo, a poder venderse con
+ganancia. El cierre sólo compra BTC de holding con la ganancia reservada y registra la
+pérdida latente de los slots abiertos (`latente` = Σ (entrada − precio) × cantidad), que es lo
+que reemplaza al costo de atrapadas para calcular el neto del mes.
 """
 from __future__ import annotations
 
@@ -70,6 +76,7 @@ class Config:
     capital: float = 200.0
     n_slots: int = 3
     intrabar: bool = True
+    cierre_forzado: bool = True  # False = v0.3: los slots atrapados esperan, sin reposición
     comision: float = COMISION
     slippage: float = SLIPPAGE
     min_orden: float = MIN_ORDEN_USDT
@@ -123,7 +130,7 @@ class Motor:
     # --- contabilidad -------------------------------------------------------------
     def _nuevo_mes(self):
         self.mes = {"realizado": 0.0, "atrapadas_costo": 0.0, "n_atrapadas": 0, "ciclos": 0, "entradas": 0,
-                    "comisiones": 0.0, "capital_inicio": self.capital_bot_nominal()}
+                    "comisiones": 0.0, "capital_inicio": self.capital_bot_nominal(), "latente": 0.0}
 
     def capital_bot_nominal(self) -> float:
         return sum(s.nominal for s in self.slots)
@@ -166,7 +173,9 @@ class Motor:
     def cierre_mensual(self, t: pd.Timestamp, precio: float):
         self.n_cierres += 1
         for s in self.slots:
-            if s.abierto:
+            if s.abierto and not self.cfg.cierre_forzado:
+                self.mes["latente"] += (s.entrada - precio) * s.qty
+            elif s.abierto:
                 self.mes["atrapadas_costo"] += (s.entrada - precio) * s.qty
                 self.mes["n_atrapadas"] += 1
                 self.holding_btc += s.qty
@@ -310,7 +319,9 @@ class Motor:
         """Cierra la contabilidad del último ciclo al final de la simulación: marca el costo
         de las atrapadas a `precio` sin mover el estado (no hay DCA ni compra de holding)."""
         for s in self.slots:
-            if s.abierto:
+            if s.abierto and not self.cfg.cierre_forzado:
+                self.mes["latente"] += (s.entrada - precio) * s.qty
+            elif s.abierto:
                 self.mes["atrapadas_costo"] += (s.entrada - precio) * s.qty
                 self.mes["n_atrapadas"] += 1
         self.mes.update({"ciclo": self.ciclo, "cierre": t, "precio_cierre": precio, "dca": 0.0, "repuesto": 0.0,

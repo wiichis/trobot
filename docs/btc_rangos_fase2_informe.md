@@ -119,3 +119,42 @@ En las 5, 2026 es negativo (entre −13,5 y −31 USDT). Ninguna le gana al benc
 - Sin filtro, 123 de 200 combinaciones fueron positivas contra A en validación, pero por ~0,1 % de BTC (unos pocos USDT), no había forma de saber cuáles de antemano, y todas pierden contra B.
 
 **Conclusión**: el problema no es cuándo se compra sino la estructura. La ganancia por ciclo es chica y la atrapada se lleva la caída entera. Ningún filtro de entrada probado lo cambia.
+
+---
+
+## v0.3 — sólo el capital del bot, sin cierre forzado (22/10/2026): pasa justo, pero no le gana a comprar BTC directamente
+
+**Planteo del usuario**: el holding no se toca; el bot opera sólo con sus 200 USDT y su ganancia ayuda a comprar BTC nuevo.
+
+**Regla, fijada antes de correr**:
+- El capital es fijo y no hay reposición desde el DCA.
+- Un slot atrapado espera, sin plazo, a poder venderse con ganancia.
+- Toda la ganancia compra BTC en cada cierre mensual (G1).
+- El DCA queda fuera de la cuenta, porque es igual con o sin bot.
+- Las mismas 200 combinaciones, períodos, placebo y criterios, sin filtro de régimen.
+- Comando: `python3 scripts/btc_rangos_backtest.py --sin_cierre`; salidas en `archivos/btc_rangos/backtest_v03/`.
+
+**Resultado formal**: **1 de 5 finalistas pasa los 4 criterios**: B 1,5 % · E1 2 % · S1 3 %, quinta en la selección.
+- Pasa el placebo por poco: +60,8 % contra un p90 de 58,4 %.
+- Es la tercera variante probada en el día, así que un aprobado ajustado tiene mucha chance de ser azar.
+
+**Contra la alternativa obvia, pierde en los dos períodos**. Valor final de los 200 USDT:
+
+| período | precio BTC | bot v0.3 | guardar 200 USDT (A) | comprar 200 USDT en BTC el día 1 (B) |
+|---|---|---|---|---|
+| 2021-2023 | 32.176 → 44.947 | 261 | 200 | **279** |
+| 2024-2026 | 44.947 → 84.518 | 322 | 200 | **376** |
+
+Las otras 4 finalistas también pierden contra B en la validación (entre −21 % y −39 %).
+
+**Como fuente de ingreso es muy irregular**: el ingreso llega cuando BTC sube, que es cuando el holding ya está ganando, y se corta cuando baja.
+
+| | 2021 | 2022 | 2023 | 2024 | 2025 | 2026 |
+|---|---|---|---|---|---|---|
+| ganancia realizada (USDT) | 130 | **0** | **0** | 115 | 50 | **0** |
+
+- Racha más larga sin ingreso: **25 meses** (dic-21 → dic-23). La racha actual es de 11 meses (nov-25 → sep-26).
+- Pérdida latente máxima: 149 de 200 USDT. Hubo slots atrapados hasta 237 días, y algunos de 2021 seguían atrapados a fines de 2023.
+- El ingreso medio es de 3,6-5 USDT por mes, pero concentrado en las fases alcistas.
+
+**Por qué gana contra A y pierde contra B**: le gana a guardar USDT porque pasa parte del tiempo comprado en BTC (slots atrapados y BTC comprado con ganancias) en un período alcista. El placebo, entrando al azar, saca +35 % de mediana por la misma razón. Pero está menos tiempo expuesto que quien simplemente compra BTC, y vender cada subida de +3 % le hace perder los tramos grandes.
