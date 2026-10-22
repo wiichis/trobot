@@ -12,6 +12,9 @@ Señales (al cierre de la vela t; el motor ejecuta en la apertura de t+1):
   E2  close < banda inferior de Bollinger(20, 2) y RSI(14) < 35.
   E3  close <= mínimo de los lows de los últimos N días × 1,01, N = 7 o 14.
   F   filtro: bloquea la entrada si ADX(14) > 25 y DI− > DI+ (tendencia bajista fuerte).
+  R   régimen (v0.2, 22/10/2026): sólo se abren slots si el último cierre DIARIO completo
+      está sobre su media simple de 100 días. Es la ventana COMPRA de `pkg/btc_alertas.py`
+      (regla T1 de `pkg/btc_reglas.py`). Lo abierto se sigue gestionando igual.
 
 Parámetros fijados el 22/10/2026 a partir de la especificación, sin optimizar.
 """
@@ -27,6 +30,7 @@ BB_N, BB_K = 20, 2.0
 E2_RSI_MAX = 35.0
 E3_MARGEN = 0.01
 F_ADX_MIN = 25.0
+N_REGIMEN = 100
 
 ENTRADAS = {
     "E1_2": {"tipo": "E1", "caida": 0.02},
@@ -101,3 +105,14 @@ def senal_entrada(h: pd.DataFrame, ind: pd.DataFrame, entrada: str, filtro: bool
         bajista_fuerte = (ind["adx"] > F_ADX_MIN) & (ind["di_m"] > ind["di_p"])
         s = s & ~bajista_fuerte
     return s.fillna(False).astype(bool)
+
+
+def regimen_compra(cierre_diario: pd.Series, index_1h: pd.DatetimeIndex) -> pd.Series:
+    """True en las velas 1 h cuyo último día CERRADO tiene close > media de 100 días.
+
+    `cierre_diario` va indexado por la fecha de apertura del día (00:00 UTC). La vela 1 h que
+    abre en t cierra en t + 1 h; en ese momento el último día completo es floor(t + 1 h) − 1 d,
+    así que la vela de las 23:00 ya ve el día que termina con ella y ninguna ve el futuro."""
+    ok = cierre_diario > cierre_diario.rolling(N_REGIMEN).mean()
+    dia = (index_1h + pd.Timedelta(hours=1)).floor("D") - pd.Timedelta(days=1)
+    return pd.Series(ok.reindex(dia).fillna(False).to_numpy(dtype=bool), index=index_1h)

@@ -183,3 +183,15 @@ def test_simular_extremo_a_extremo_y_benchmarks():
     assert all(op["ganancia"] >= -1e-9 for op in r.motor.operaciones)
     # el patrimonio cuadra: USDT iniciales + DCA = lo invertido; nada se crea de la nada
     assert r.patrimonio_btc > 0
+
+
+def test_regimen_compra_usa_solo_dias_cerrados():
+    dias = pd.date_range("2024-01-01", periods=101, freq="D")
+    cierre = pd.Series(100.0, index=dias)
+    cierre.iloc[-1] = 200.0                       # el día 101 (10/04) cierra sobre la media
+    idx = pd.date_range(dias[-1] - pd.Timedelta(hours=2), dias[-1] + pd.Timedelta(hours=25), freq="h")
+    reg = rr.regimen_compra(cierre, idx)
+    ultimo = dias[-1]
+    assert not reg.loc[ultimo + pd.Timedelta(hours=22)]  # el día todavía no cerró
+    assert reg.loc[ultimo + pd.Timedelta(hours=23)]      # la vela de las 23:00 cierra el día
+    assert not reg.loc[ultimo - pd.Timedelta(hours=1)]

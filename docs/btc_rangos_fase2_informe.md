@@ -83,3 +83,39 @@ Ninguna dimensión salva el resultado (puntaje mediano por dimensión, en % de B
 - **Subcuentas**: el API las soporta (hoy hay 0).
 - **Resultados completos**: `archivos/btc_rangos/backtest/` (no versionado).
 - **El motor y las reglas**: sirven para probar una v0.2 en minutos.
+
+---
+
+## v0.2 — sólo abrir slots en la ventana COMPRA (22/10/2026): tampoco es viable
+
+**Regla, fijada antes de correr**:
+- No se abre ningún slot si el último cierre diario completo está bajo su media de 100 días. Es la ventana COMPRA de `pkg/btc_alertas.py`, con la misma condición.
+- Los slots ya abiertos se gestionan igual.
+- Se repiten las mismas 200 combinaciones, períodos, criterios y placebo. El placebo también respeta el régimen.
+- Comando: `python3 scripts/btc_rangos_backtest.py --regimen`; salidas en `archivos/btc_rangos/backtest_v02/`.
+
+**Control**: el régimen calculado se activa en la vela 1 h que cierra el 19/08/2026, el día con el que arranca la tendencia de la alerta en vivo (`ventana_log.csv`). Hay además un test que verifica que nunca usa un día sin cerrar. El régimen permite comprar el 50 % del tiempo en la selección y el 56 % en la validación.
+
+**Validación de las 5 mejores**: **0 de 5 viables**. Ninguna cumple los cuatro criterios a la vez.
+
+| combinación | sel. | val. A | val. B | gana placebo | años + | viable |
+|---|---|---|---|---|---|---|
+| B 3 % · E1 3 % · S3 | +0,49 | +0,05 | −2,17 | ✅ | 1 de 3 | ❌ |
+| A · E2 · F · S1 3 % | +0,38 | −0,79 | −2,97 | ❌ | 2 de 3 | ❌ |
+| A · E1 2 % · S1 3 % | +0,29 | +0,75 | −1,50 | ❌ | 1 de 3, y un mes explica 2,6× el total | ❌ |
+| B 1,5 % · E1 3 % · F · S1 2 % | +0,17 | −0,12 | −2,33 | ✅ | 2 de 3 | ❌ |
+| B 1,5 % · E2 · F · S1 3 % | +0,14 | +0,17 | −2,05 | ❌ | 1 de 3 | ❌ |
+
+En las 5, 2026 es negativo (entre −13,5 y −31 USDT). Ninguna le gana al benchmark B.
+
+**Las 200 combinaciones en las dos versiones** (informativo, no se usó para elegir):
+
+| | selección: mejora en | validación: mejora en | validación: mediana v0.1 → v0.2 |
+|---|---|---|---|
+| filtro de régimen | 189 de 200 | **39 de 200** | +0,12 → −0,23 |
+
+- El filtro **ayuda donde se eligió** (2022, con la bajada de 2021-2022) y **empeora en 2024-2026**: bloquea compras de caídas en un mercado alcista, que eran las que rendían. Y la caída de 2026 empezó con el precio todavía sobre la media, así que igual dejó slots atrapados.
+- La correlación de rankings entre selección y validación es **−0,17** con filtro y **0,02** sin él. Lo que gana en un período no anticipa lo que gana en el otro: es la misma lección de `optimizar-params-no-sirve`.
+- Sin filtro, 123 de 200 combinaciones fueron positivas contra A en validación, pero por ~0,1 % de BTC (unos pocos USDT), no había forma de saber cuáles de antemano, y todas pierden contra B.
+
+**Conclusión**: el problema no es cuándo se compra sino la estructura. La ganancia por ciclo es chica y la atrapada se lleva la caída entera. Ningún filtro de entrada probado lo cambia.

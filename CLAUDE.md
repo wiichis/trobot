@@ -16,7 +16,7 @@ El bot de 5 min multi-par sobre perpetuos se archivó porque no tiene edge medid
 |---|---|
 | 0. Archivar el bot de 5 min y apagar los experimentos | ✅ 22/10 |
 | 1. Velas spot 1 h de BTC + reglas del exchange (mínimo, step, tick, retiro) | ✅ 22/10 — `scripts/btc_rangos_datos.py`, paridad Binance↔BingX ~0 bps |
-| 2. Backtest contra DCA puro, con selección 2021-2023 y validación 2024-2026 intacta | ❌ 22/10 — **no viable**: 0 de 5 finalistas pasan, no le gana al placebo. Ver [docs/btc_rangos_fase2_informe.md](docs/btc_rangos_fase2_informe.md) |
+| 2. Backtest contra DCA puro, con selección 2021-2023 y validación 2024-2026 intacta | ❌ 22/10 — **no viable**: v0.1 0 de 5 finalistas, no le gana al placebo; v0.2 (sólo en ventana COMPRA) 0 de 5. Ver [docs/btc_rangos_fase2_informe.md](docs/btc_rangos_fase2_informe.md) |
 | 3. Bot live spot: papel → real, sólo si la Fase 2 pasa | ⛔ no se construye con la v0.1 |
 
 Herramientas de la Fase 2: `pkg/btc_rangos_reglas.py` (señales), `pkg/btc_rangos_motor.py` (motor; el mismo que usaría el live), `scripts/btc_rangos_backtest.py` (grilla + validación + placebo, ~70 s) y `scripts/btc_acumulacion_backtest.py` (§13).

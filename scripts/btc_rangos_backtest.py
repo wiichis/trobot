@@ -25,6 +25,14 @@ PROTOCOLO, fijado antes de correr:
   mensual explica más del 50 % del neto total.
 - Sensibilidad: las finalistas también con `intrabar=False` (todo sólo con closes).
 
+v0.2 (`--regimen`, 22/10/2026, fijado antes de correr): todo lo anterior idéntico, más el
+régimen R de `pkg/btc_rangos_reglas.py` aplicado a todas las combinaciones (no se abren slots
+si el último cierre diario está bajo la media de 100 días). El placebo también respeta el
+régimen: entradas al azar sólo en las velas permitidas, con la misma probabilidad que la
+señal real tiene en ellas. Cierre diario: spot diario de Binance (`archivos/btc/binance_1d/`,
+desde 2017, así la media está calentada en 2021) y, después de su último día, días completos
+armados con las velas 1 h. Salidas en `archivos/btc_rangos/backtest_v02/`.
+
 Uso: python3 scripts/btc_rangos_backtest.py [--procesos 8]
 """
 from __future__ import annotations
@@ -66,16 +74,29 @@ SEMILLAS_DCA = [1, 2, 3, 4, 5]
 N_PLACEBO = 50
 META_MES = 0.01
 
-_V = _IND = None
+_V = _IND = _REG = None
 _SEN: dict = {}
 
 
-def _init():
-    global _V, _IND
+def cierre_diario(v1h: pd.DataFrame) -> pd.Series:
+    """Close diario spot: Binance 1d y, después de su último día, días completos de las 1 h."""
+    lab_spec = importlib.util.spec_from_file_location("btc_lab", REPO / "scripts" / "btc_lab_temporalidades.py")
+    lab = importlib.util.module_from_spec(lab_spec)
+    lab_spec.loader.exec_module(lab)
+    d = lab._leer_velas("archivos/btc/binance_1d", "BTCUSDT-1d-*.zip")["close"]
+    g = v1h["close"].resample("1D")
+    extra = g.last()[g.count() == 24]
+    return pd.concat([d, extra[extra.index > d.index[-1]]]).sort_index()
+
+
+def _init(regimen: bool = False):
+    global _V, _IND, _REG
     _V = pd.read_csv(REPO / "archivos/btc_rangos/velas_1h.csv", parse_dates=["date"], index_col="date")
     _IND = rr.indicadores(_V)
+    _REG = rr.regimen_compra(cierre_diario(_V), _V.index) if regimen else None
     for e, f in itertools.product(ENTRADAS, FILTROS):
-        _SEN[(e, f)] = rr.senal_entrada(_V, _IND, e, f)
+        s = rr.senal_entrada(_V, _IND, e, f)
+        _SEN[(e, f)] = s & _REG if regimen else s
 
 
 def dca_fn(escenario: str):
@@ -133,10 +154,11 @@ def correr(args) -> dict:
     cfg = mm.Config(slots=slots, escalon=esc or 0.02, salida=salida, ganancia=ganancia, intrabar=intrabar)
     sen = _SEN[(entrada, filtro)]
     if placebo is not None:
-        sl = sen[(sen.index >= periodo[0]) & (sen.index < periodo[1])]
-        p = sl.mean()
+        en_periodo = (sen.index >= periodo[0]) & (sen.index < periodo[1])
+        permitido = _REG.to_numpy() if _REG is not None else np.ones(len(_V), dtype=bool)
+        p = sen[en_periodo & permitido].mean()
         rng = np.random.default_rng(10_000 + placebo)
-        sen = pd.Series(rng.random(len(_V)) < p, index=_V.index)
+        sen = pd.Series((rng.random(len(_V)) < p) & permitido, index=_V.index)
     r = mm.simular(_V, sen, _IND["atr"], cfg, dca_fn(escenario), *periodo)
     out = {"slots": slots, "escalon": esc, "entrada": entrada, "filtro": filtro, "salida": salida,
            "ganancia": ganancia, "escenario": escenario, "intrabar": intrabar, "placebo": placebo}
@@ -171,10 +193,14 @@ def resumen_por_combo(df: pd.DataFrame) -> pd.DataFrame:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--procesos", type=int, default=8)
+    ap.add_argument("--regimen", action="store_true", help="v0.2: sólo abrir slots en ventana COMPRA")
     args = ap.parse_args()
+    global OUT
+    if args.regimen:
+        OUT = OUT.parent / "backtest_v02"
     OUT.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
-    with Pool(args.procesos, initializer=_init) as pool:
+    with Pool(args.procesos, initializer=_init, initargs=(args.regimen,)) as pool:
         # 1) Selección
         tareas = [(s, e, f, sa, "G4", esc, SEL, True, None)
                   for s, e, f, sa, esc in itertools.product(SLOTS, ENTRADAS, FILTROS, SALIDAS, ESCENARIOS)]
