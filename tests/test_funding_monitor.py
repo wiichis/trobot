@@ -1,4 +1,6 @@
 """Monitor del carry de funding (09/10/2026)."""
+import json
+
 import pandas as pd
 import pytest
 
@@ -23,6 +25,12 @@ def fuentes(tabla):
 @pytest.fixture
 def entorno(tmp_path, monkeypatch):
     monkeypatch.setattr(fm, "OUT_DIR", tmp_path)
+    # El monitor está apagado en prod desde el 22/10 (pkg/jobs.json): los tests lo prenden.
+    cfg = json.loads(fm.CONFIG_PATH.read_text(encoding="utf-8"))
+    cfg["enabled"] = True
+    cfg_path = tmp_path / "funding_monitor.json"
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+    monkeypatch.setattr(fm, "CONFIG_PATH", cfg_path)
     avisos = []
     monkeypatch.setattr(fm, "_emitir", lambda **kw: avisos.append(kw))
     return avisos

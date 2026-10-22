@@ -1,0 +1,9 @@
+{
+  "_comentario": "Qué grupos de jobs registra main.py al arrancar. Cambiar = editar + restart. 22/10/2026: el bot de 5 min multi-par queda archivado (tag v1-bot-5m-final, rama archivo/bot-5m); el foco pasa al bot BTC por rangos (docs/reglas_bot_btc.md). Un flag ausente vale lo que dice JOBS_DEFAULT en main.py.",
+  "bot_5m": false,
+  "btc_bots": false,
+  "paper_momentum": false,
+  "funding_monitor": false,
+  "btc_alertas": true,
+  "daily_digest": true
+}

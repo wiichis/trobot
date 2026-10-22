@@ -1,0 +1,1512 @@
+# TRobot — Guía rápida
+
+Bot de trading automatizado de futuros perpetuos en BingX. Opera 12 pares en USDT con una estrategia trend-following sobre velas de 5 minutos, optimizada por sweep semanal y desplegada a un servidor EC2 que corre 24/7 vía systemd.
+
+---
+
+## Qué hace el proyecto
+
+1. **Recolecta datos**: cada minuto sincroniza velas 5m de BingX (`pkg/price_bingx_5m.py`).
+2. **Calcula indicadores**: EMA fast/slow, RSI, ADX, ATR, volumen relativo (`pkg/indicadores.py`).
+3. **Genera señales y abre/cierra posiciones**: trend-following con confirmación multi-indicador. Lógica live en `pkg/monkey_bx.py`.
+4. **Gestiona TP/SL**: TP escalonado (TP1, TP2, TP3) opcional, BE-trigger después de TP1, SL fijo en `%` o ATR-trailing (`pkg/tp_stage_state.py`).
+5. **Optimiza parámetros**: cada lunes corre [scripts/evaluate_pairs.py](scripts/evaluate_pairs.py) que clasifica pares por PnL real, re-optimiza los perdedores via sweep aleatorio sobre `pkg/backtesting.py`, rota el peor por uno nuevo de top-volumen.
+6. **Reporta**: resúmenes horarios + diarios + alertas TP/SL/BE por Telegram (`pkg/telegram_alerts.py`).
+
+## Lógica del scheduler (main.py)
+
+| Frecuencia | Tarea |
+|---|---|
+| Cada 5 min (minuto :01,:06,…) | Pull velas 5m de BingX |
+| Cada 5 min (minuto :03,:08,…) | `update_indicators` + `colocando_ordenes` (entradas) |
+| Cada 50 s | `colocando_TK_SL` (gestión TP/SL en vivo) |
+| Cada 5 min | `unrealized_profit_positions` (posiciones antiguas) |
+| Cada 6 h | `resultado_PnL` (refresca PnL.csv desde exchange) |
+| Cada hora :59 | Reporte horario por Telegram |
+| Diario 23:00 UTC | Resumen diario |
+| Cada 12h | Backfill velas + huecos |
+
+## Composición actual del portfolio
+
+🤖 **Cuatro bots sobre BTC SIN DINERO desde el 03/10** (`pkg/btc_bots.py`): tendencia diaria, tendencia de 4 h, cobro de funding y compra de caídas, 25% del capital cada uno, con libros virtuales y una posición neta. Ver "Cuatro bots sobre BTC".
+⏸️ **ENTRADAS PAUSADAS desde el 02/10 21:09 UTC** (`entries.enabled: false`, `bd7fd79`): la estrategia no tiene edge medido; el bot sólo gestiona posiciones abiertas. Reanudar = `true` + restart.
+**7 pares activos** (al 2026-10-02, MD5 `0fd4f8bc`): APT, BCH, BNB, CFX, ETH, LINK, XMR — con `peso` 0,20 explícito, así el tamaño por trade no sube al pasar de 10 a 7 pares (el equal-weight daría 0,29).
+**En banca** (`pkg/bench.json`, no operan, se simulan hacia adelante): **AVAX**, **DYDX** y **ONDO** desde el 02/10, más 15 candidatos en observación. Ver "Banca de pares". Rollback a 10 pares: md5 `68c049c1`; a 8 (con ONDO): `a9711a05`.
+
+🔧 **AVAX y XMR RE-OPTIMIZADOS** (19/09, `3daa85c`) — validados con cross-val 4/4 **y holdout fuera de muestra**. Ver "Revisión 19/09". ⚠️ **AVAX sale del congelamiento**: la nota de abajo ("NO re-optimizar sus params") queda **derogada**.
+
+🔧 **DYDX RE-OPTIMIZADO** (25/08, `f54bfc2`) — **primer cambio de params desde el 03/07**. Era el peor par: −3,32 USDT/30d reales, payoff 0,19. `tp` 0.012→**0.015**, `sl_pct` 0.015→**0.010**, `sl_mode` percent→atr_then_trailing (19 params en total). **TP1/SL de 0,48 a 0,90.** Portfolio mejor en 4/4 (+17,8/+13,3/+18,6/+14,3); cobertura de costos 0/4 → **4/4** (bruto/trade 0,097→0,292, trades 110→47 en 120d). ⚠️ **REGLA DE VIGILANCIA: si pierde su 1ª semana (check 01/09), revertir sin discusión** — rollback md5 `57daca5b`. Reglas de contrato: qty_step 0.1, price_tick 0.00001.
+🎯 **TP×2 aplicado** (03/07) a 8 pares (todos menos AVAX congelado y LINK NEW): el A/B de estructura de salidas mostró TPs demasiado cercanos (payoff real 0.42, perdedores 11h vs ganadores 3h). Cross-val 5/5 ventanas. Esperar: winrate más bajo, ganancias más grandes, ~20% menos trades/fees. Ver memoria `exit-structure-experiments`.
+✅ **BCH NEW validó** (22/06): +2.02 real, 10/12 wins. El acierto del mes.
+🔄 **LINK paramset NEW** (30/06, cross-val 5/5): validar que se realice. ⚠️ 0 trades desde 03/07 — mudo.
+⏪ **CFX revertido** a `min_vol_ratio` 1.15 (30/06): volvió a plano/positivo (+0.11 la semana 13/07).
+~~🧊 **AVAX congelado**~~ → **DEROGADO el 19/09**: era el peor par del portfolio en sim (negativo 4/4, −36 en el holdout) y su re-optimización es el mayor aporte del cambio del 19/09 (+26 a 120d). El congelamiento venía de una buena semana en julio y sobrevivió sin re-examen dos meses.
+⚠️ **Mudez de portfolio**: APT/BCH/ETH/LINK/ONDO 0 trades desde 03/07 (5/10 pares). TP×2 bajó frecuencia + fresh-cross muy selectivo. Tema #1 para revisión estructural 03/08 (re-optimizar params está congelado hasta entonces).
+
+Pares removidos (no reincorporar a ciegas):
+- DOGE-USDT (02/05) — peor 90d
+- TRX-USDT (08/05) — sweep robusto sin paramset que pase filtros
+- NEAR-USDT (18/05) — peor 90d (-1.91)
+- HBAR-USDT (01/06) — 3 sweeps sin paramset robusto, 0 trades
+- SOL-USDT (01/06) — 3 sweeps sin paramset robusto, 0 trades
+- AAVE-USDT (10/06) — regla de vigilancia: perdió −1.19 su 1ª semana; cross-val regresivo 60/90d
+- BTC-USDT (10/06) — 4 sweeps sin paramset robusto + 0 trades reales en 5 semanas
+- DOT-USDT (20/07) — mudo crónico (2 trades desde 03/07, −0.31) + semanas rojas; rotado a DYDX
+
+Candidatos evaluados y rechazados (10/06): HYPE, XRP, ZEC — overfit en 60/90d.
+Sintéticos NC* (oro/Nasdaq/petróleo/FX): descartados — gaps de finde rompen velas 5m.
+
+## Archivos clave
+
+| Path | Función |
+|---|---|
+| `main.py` | Scheduler principal, levanta todos los jobs |
+| `pkg/best_prod.json` | **Fuente de verdad de pares + parámetros activos**. Lo lee el bot al arrancar |
+| `pkg/monkey_bx.py` | Lógica de entradas, salidas, TP/SL, riesgo |
+| `pkg/indicadores.py` | Cálculo de indicadores y filtros de señal. Lee whitelist de `best_prod.json` |
+| `pkg/backtesting.py` | Motor de backtest + sweep. (El atexit que sobrescribía `best_prod.json` fue parcheado en `27cc863`; verificar md5 tras sweeps sigue siendo buena práctica) |
+| `scripts/evaluate_pairs.py` | Flujo semanal: clasificar, re-optimizar, rotar, deploy a prod |
+| `scripts/weekly_pull_and_backtest.sh` | Cron wrapper de evaluate_pairs |
+| `archivos/cripto_price_5m_long.csv` | Histórico de velas para backtesting |
+| `archivos/PnL.csv` | PnL realizado descargado de BingX |
+| `archivos/trade_closed_log.csv` | Log de cierres con razón (stop_loss, tp1/2/3) |
+| `archivos/ganancias.csv` | Snapshot de balance cada minuto |
+| `dashboard/` | Streamlit local para monitorear (no afecta a prod) |
+
+## Operación — comandos comunes
+
+### Conexión a producción
+
+```bash
+ssh -i ~/Documents/proyectos/ls_keys/trobot4.pem ubuntu@98.81.217.194
+# Servicio: sudo systemctl {status|restart|stop|start} trobot
+# Logs: journalctl -u trobot -f
+# Working dir: ~/TRobot/  (branch main, mergea desde origin/codex/nuevo-bot-estrategia)
+```
+
+### Verificar consistencia local ↔ prod
+
+```bash
+# MD5 del archivo de pares en prod
+ssh prod "cd TRobot && md5sum pkg/best_prod.json"
+# vs local
+md5 pkg/best_prod.json
+# vs HEAD del repo
+git show HEAD:pkg/best_prod.json | md5
+# Los tres deben coincidir. Si no: hay drift (ver feedback_atexit_bug en memoria)
+```
+
+### Sweep semanal (ya con metodología robusta)
+
+```bash
+# Local, dry-run (no toca prod):
+python3 scripts/evaluate_pairs.py --skip_sync --skip_rotation
+# Default n_trials=500, train_ratio=0.66, rank_by=calmar, min_trades=15, max_dd=0.12
+
+# Aplicar a local + deploy a prod (requiere confirmación):
+python3 scripts/evaluate_pairs.py --apply --deploy --send_alert
+```
+
+### Antes de cualquier dry-run de backtesting
+
+El bug atexit que sobrescribía `pkg/best_prod.json` fue parcheado (`27cc863`). Buena práctica que se mantiene: snapshot `md5 -q pkg/best_prod.json` antes del sweep y verificar igualdad después.
+
+Para cross-validar paramsets de **símbolos fuera de la whitelist** (candidatos nuevos): `indicadores.py` fuerza señales en False si el símbolo no está en `best_prod.json`. Usar `TROBOT_BEST_PROD_PATH=<ruta_candidates.json>` como env var al invocar `pkg/backtesting.py --live_parity`.
+
+## Branches
+
+- **`main`** — branch que corre prod. Mergea desde `codex/nuevo-bot-estrategia`. Suele estar muchos commits "ahead de origin/main" porque los merges/auto-commits no se pushean a github desde prod (eso es OK).
+- **`codex/nuevo-bot-estrategia`** — branch de desarrollo. Es donde se hacen commits desde local y se pushea a `origin/codex/nuevo-bot-estrategia`. Prod la mergea a su `main` local.
+
+## Estrategia (resumen)
+
+Trend-following con confirmación multi-indicador en velas 5m:
+
+- **Entrada LONG**: EMA fast > EMA slow + RSI > rsi_buy + ADX > adx_min + filtros (ATR%, volumen relativo, distancia a EMA slow, opcional fresh-cross o fresh-breakout).
+- **Entrada SHORT**: simétrica con RSI < rsi_sell.
+- **TP**: fijo (`tp_mode=fixed`, ej 1.2-2.2%) o adaptativo por ATR (`tp_mode=atrx`).
+- **SL**: porcentual fijo (`sl_mode=percent`) o ATR + trailing tras BE (`sl_mode=atr_then_trailing`).
+- **Cooldown**: bars entre entradas consecutivas en el mismo símbolo.
+- **Time exit**: cierre forzado tras N bars sin alcanzar TP.
+
+Cada par tiene su propio paramset en `pkg/best_prod.json`, optimizado individualmente.
+
+---
+
+## Pendientes — para retomar la próxima semana
+
+### P0 — ✅ COMPLETADO (2026-05-18)
+
+~~Parchear `_post_run_normalize_best` en `pkg/backtesting.py`~~ → **Hecho en commit `27cc863`**. El handler ahora solo escribe a `pkg/best_prod.json` si el usuario lo pidió explícitamente vía `--export_best pkg/best_prod.json`. Verificado en el sweep semanal: archivo intacto antes/después.
+
+### ✅ P2.1 Filtro de régimen — ACTIVADO el 20/09 (ADX 1h ≥ 18)
+
+**Ambas direcciones falsificadas el mismo día** (A/B parity, 10 pares, 30/60/90d, logs en `archivos/backtesting/regime_validation_20260611/`):
+
+- **Opción A (bloquear si ADX_1h<umbral)**: −51/−54/−53% del PnL. Los trades en lateral eran netos POSITIVOS (+21 USD/90d). Sensibilidad monótona: a más umbral, peor (ADX≥22 → portfolio negativo).
+- **Opción B (relajar `adx_min`/`min_vol_ratio` ×0.8/×0.9 en lateral)**: Δ −5/−12/−23 USD en 30/60/90d. Monótono también (aggr ×0.7/×0.85 → −77). Los trades marginales desbloqueados pierden (XMR +0.7→−15.4). **Y los pares silenciosos NO despiertan** (CFX 7→7 trades, ETH 7→7 en 30d): su blocker no es ADX/volumen.
+- Conclusión: los paramsets actuales están en un óptimo local respecto a estos knobs condicionados a régimen. No insistir con variantes (ver memoria `regime_filter_experiments`).
+
+**Activado el 20/09 14:40 UTC** con telemetría de fail-closed (`a1d61c3`). Es **flip de config**: `archivos/backtesting/configs/live_benchmark_runtime.json` → `timeframe`. Backup en prod: `.bak_20260920_pre_htf`. ⚠️ **Corrección 23/09**: esta guía decía que el archivo no viaja por git. **Es falso: está versionado** (el cambio viajó en `48418b8`), aunque `archivos/` está en `.gitignore` — por eso `git add` lo rechaza y hay que usar `git add -f` (seguro: el archivo ya está trackeado). En prod quedó como modificación sin commitear sobre su HEAD (`cc8e8e3`), con el mismo contenido que trae `48418b8`. Antes del próximo `git merge` en prod: `git checkout -- archivos/backtesting/configs/live_benchmark_runtime.json` (el merge trae el mismo contenido) o el merge aborta con *local changes would be overwritten*.
+
+**Verificado en vivo**, contrastando `HTF_LONG_OK` del CSV contra un ADX(1h) calculado por fuera: APT (ADX 13,77) → bloqueado, los otros nueve (18,4 a 54,1) → permitidos. Coincide exactamente.
+
+🐛 **Gotcha de verificación**: el primer chequeo dio **100% permitido en los 10 pares**, que era falso — `indicadores.csv` era de las 14:38 y la config se aplicó a las 14:39. **Tras un flip de config hay que esperar un ciclo POSTERIOR al restart** (comparar el mtime del CSV contra `ActiveEnterTimestamp`) y **contrastar contra un cálculo independiente**, no contra lo que el bot escribió.
+
+**Criterios definidos de antemano** (juzgar por **20-25 cierres reales**, no por calendario; a ~10 entradas/semana son unas 3 semanas):
+- ✅ **Éxito**: PnL medio por cierre mejor que el **−0,122** de referencia, con la tasa de entradas cayendo ~30%.
+- ❌ **Fracaso**: PnL medio por cierre igual o peor con 30% menos de muestra — paga el costo sin comprar nada.
+- 🚨 **Abortar ya**: cualquier `htf_regime_fail_closed` en el log.
+
+**Telemetría nueva** (`indicadores.py`): `htf_regime_fail_closed` (CRITICAL) cuando el filtro está pedido y sus features no están, cubriendo los dos caminos silenciosos —`excepcion:<tipo>`/`resample_vacio` y `adx_nan_en_ultima_barra`— más `htf_regime_recuperado` (INFO). Se emite **en la transición**, no por ciclo.
+
+#### 🔄 Re-medición del 19/09 — el rechazo de junio se apoyaba en un instrumento roto
+
+⚠️ **Las configs de junio (`regime_A_*`, `regime_B_*`) NO se pueden reutilizar**: traen `session.entry_hours_utc` con el gate horario (quitado del live el 18/08), `tp_mode: legacy_market_tp` (el live usa `partial_limit_tp` desde el 03/07), `break_even_after_tp1: true` (revertido el 11/09) y `tp_reduce_only: true` (corregido el 07/07). Correrlas mide el régimen **y todo eso junto**. Las nuevas se construyeron **copiando `live_benchmark_runtime.json` y tocando sólo los knobs de régimen**.
+
+Y entre junio y hoy se corrigieron el tick size (`d895c7b`), el modelo de fill (`cc36b90`), el reparto de tramos (`cf61157`) y el anclaje del ladder (`591cafe`). El rechazo de junio se midió con todos esos defectos activos.
+
+**Opción B (relajar en lateral): CONFIRMADA MUERTA.** 0/5 en todas las variantes y monótona: mild −36, medium −39, aggr −75. Además falla la falsación (−13,78). No volver.
+
+**Opción A (bloquear si ADX 1h < umbral): se dio vuelta.**
+
+| config | 30d | 60d | 90d | 120d | hold-1 | **falsación** | gana |
+|---|---|---|---|---|---|---|---|
+| control (hoy) | −17,09 | −16,79 | −4,14 | +8,78 | −34,83 | −24,07 | — |
+| A_adx15 (1h) | −15,49 | −14,42 | −7,53 | −1,80 | −34,46 | **−31,67** | 3/6 |
+| **A_adx18 (1h)** | **−5,13** | **+2,64** | **−3,35** | +6,07 | **−31,51** | **−15,79** | **5/6** |
+| A_adx22 (1h) | −5,81 | −0,95 | −2,16 | −6,18 | −35,08 | +3,44 | 4/6 |
+| A30_adx18 (30m) | −3,15 | −1,99 | −13,80 | −9,75 | −36,52 | −10,45 | 3/6 |
+
+**`A_adx18` sobre 1h gana 5 de 6 ventanas, incluidas LAS DOS de falsación** — y la de 50d terminando el 22/02 **nunca se usó para elegir** (+8,28). Es el primer A/B global en pasar ese filtro; los otros siete no llegaron.
+
+**Dónde ayuda y dónde no** (Δ por mes, portfolio):
+
+| mes | Δ |
+|---|---|
+| mar24 → abr23 | +0,49 |
+| abr23 → may23 | +2,09 |
+| may23 → jun22 | −5,63 |
+| **jun22 → jul22** | **−19,45** |
+| jul22 → ago21 | +3,83 |
+| **ago21 → sep20** | **+11,96** |
+
+**Ayuda justo donde el sistema hoy pierde** (el último mes pasa de −17,09 a −5,13) y estorba en el mes fuertemente tendencial de jun-jul, que es **el mismo mes de AVAX** que confundió el barrido de ladders. El fallo a 120d es ese mes: AVAX −10,12 y BNB −13,89.
+
+Concentración a 60d: **7 de 10 pares mejoran** (BCH +9,62, ONDO +5,33, ETH +4,43, BNB +3,22), el mayor explica el 49%. Pasa la alarma.
+
+**Costo**: recorta el caudal de **484 a 337 trades** en 120d (−30%). Con 5 pares en prueba, es menos muestra.
+
+#### ⚠️ Contraste contra los TRADES REALES — el sim y la realidad no coinciden
+
+Aplicando el mismo criterio (ADX 1h < 18 en el momento de la entrada) a los cierres reales **desde el 01/08** (n=67, el tramo sin duplicados):
+
+| | n | PnL | medio | winrate |
+|---|---|---|---|---|
+| **bloqueadas** (adx1h<18) | 18 (27%) | −0,73 | **−0,041 ± 0,152** | 44% |
+| permitidas (≥18) | 49 | −7,73 | **−0,158 ± 0,071** | 39% |
+
+**El filtro habría ahorrado +0,73 USDT en siete semanas** — y las operaciones que bloquea fueron, por trade, **menos malas** que las que deja pasar. Los intervalos se pisan por completo, así que no hay diferencia demostrable en ninguna dirección; lo que no hay es **apoyo real** al +11,96 que promete el sim en el último mes.
+
+Es la divergencia de siempre: el sim abre 3-4× más trades que el bot. Regla vigente: **cuando divergen, manda el real** (ver memoria `parity_sim_realization_gap`). Con n=18 bloqueadas tampoco se puede concluir en contra — pero **el caso no está cerrado a favor**.
+
+#### 🐛 Dato podrido encontrado en el camino: `trade_closed_log.csv` de julio está DUPLICADO
+
+**91% de las 131 filas de julio** tienen `(symbol, close_reason, pnl)` repetido: el mismo cierre de AVAX `trail_stop +0,2080` aparece **5 veces** con duraciones 648/658/663/668/673 min. Los ganadores se re-loguearon en ciclos sucesivos y los perdedores no, así que **julio muestra 96% de winrate y +33,07** — ambos falsos.
+
+⚠️ **La advertencia que ya estaba en esta guía no alcanza**: decía "filtrar por `pnl_source`", pero estas filas tienen `pnl_source='api'`. **Agosto y septiembre están limpios (0% duplicados)**, así que el log sólo es usable **desde el 01/08**. Cualquier análisis de trades reales a 90d o más con este archivo está envenenado — de hecho la primera versión de la tabla de arriba daba "141 bloqueadas con 91% de winrate", que fue lo que delató el problema.
+
+🔌 **Es flip de config, sin deploy**: `indicadores.py:263` hace `p.update(get_timeframe_overrides())`, así que el bloque `timeframe` del runtime config pisa los params de todos los símbolos. El HTF se **resamplea de las propias velas 5m** (`merge_asof` backward, sin lookahead), así que no hace falta otro feed.
+
+⚠️ **Antes de encenderlo, cerrar un hueco**: si el cálculo del HTF falla, `indicadores.py` hace **fail-closed** (bloquea TODAS las señales) y **no emite telemetría**. Un fallo silencioso ahí deja el portfolio mudo sin alarma — exactamente la clase de bug que costó meses. Hace falta un evento antes de activarlo.
+
+**Infra que queda (commiteada, inerte por default, reutilizable)**:
+- `htf_mode: 'adx_only'` + knobs `regime_relax_*` en `pkg/indicadores.py` (features HTF hoisted, se computan una vez).
+- Env override `TROBOT_RUNTIME_CONFIG_PATH` en `pkg/live_runtime_config.py`.
+- Configs: `archivos/backtesting/configs/regime_{A_adx*,B_*}.json`.
+- Harness: `TROBOT_RUNTIME_CONFIG_PATH=<cfg> python3 pkg/backtesting.py --live_parity --parity_days N --parity_per_symbol`.
+
+### ✅ P2.1b Diagnóstico de blockers — HECHO 11/06 (herramienta: `scripts/diagnose_blockers.py`)
+
+Descompone la señal en sus 11 condiciones y mide fail% + **near-miss** (barras donde solo falla esa condición). Valida la descomposición contra Long/Short_Signal reales. Resultados 30d en `archivos/backtesting/blockers_20260611_30d.csv`:
+
+- **`ema_cross_recent` domina el portfolio** (blocker #1 en 13/20 par-lados, fail 86-97%): `fresh_cross_max_bars` 3-7 = el bot solo entra en los primeros 15-35 min tras un cruce EMA. La estrategia es "entrar en el cruce", no trend-following amplio.
+- **CFX**: blocker es `vol_ratio` (fail 92%) — `min_vol_ratio=1.15` × media 40 barras casi nunca pasa.
+- **ONDO**: `momentum_trigger` (fail 97%) — `logic=strict` exige RSI-cross Y breakout simultáneos.
+
+**A/B quirúrgico (relajar solo el blocker #1 de cada par silencioso)**:
+- ✗ AVAX fresh-cross 3→6: −19/−35/−46 (más trades = más pérdida; problema de edge, no de frecuencia)
+- ✗ ETH fresh-cross 7→10: −4.6/−10.3/−12.9
+- ✗ XMR fresh-cross 3→6: +5/+29 en 30/60d pero −18.8 en 90d (viola regla ≤$2)
+- ✅ **CFX `min_vol_ratio` 1.15→1.0: mejora en LAS 5 ventANAS** (7/14/30/60/90d), 0→12 trades en 7d, cost_ratio 0.04-0.18. Sim con compounding exagera magnitud absoluta (esperar realización ~5%); aplicado 11/06 → vigilar.
+
+Lección consolidada (3ª vez hoy): desbloquear near-misses solo paga cuando el edge subyacente del par es bueno (CFX era el mejor backtest del portfolio). En pares con edge débil, más trades = más pérdida.
+
+### ✅ P1 Asimetría W/L — HECHO 03/07: time-stop RECHAZADO, TP×2 APLICADO
+
+Diagnóstico con PnL real 90d: winrate 66% pero payoff 0.42 (ganador +0.16, perdedor −0.37) → PF bruto 0.83, negativo antes de fees. Perdedores viven 11h (SL), ganadores 3h (TP).
+
+- ✗ **Time-stop de perdedores** (`loss_time_stop_bars` 24/36/48): empeora las 5 ventanas, monótono. **4ª confirmación** de "cortar/bloquear trades quita los netos-positivos". Infra inerte commiteada (knobs en `live_runtime_config`, check en parity-sim, configs `loss_ts_{24,36,48}.json`). NO insistir.
+- ✗ `be_trigger=0`: 4/5 pero −9.57 en 60d. El BE aporta en ventanas largas.
+- ✅ **TP×2 en 8 pares** (sin AVAX congelado ni LINK NEW): cross-val **5/5** (Δ +1.7/+1.1/+3.2/+6.7/+14.8), mejora repartida 8/10 pares (no la explica CFX), −20% trades, Sharpe 3.61→4.25. Aplicado 03/07. Esperar winrate ~57% con ganancias más grandes; veredicto real en 2-4 semanas.
+
+### ✅ P4 Costos de ejecución — HECHO 03/07: TPs LIMIT maker activados
+
+- Live ya entraba maker (PostOnly); las salidas eran todas taker. La infra `partial_limit_tp` de `monkey_bx.py` (TPs escalonados LIMIT reduce-only, one-at-a-time, fallback a market) existía completa y testeada (32 tests) pero apagada.
+- 🐛 De paso: `should_fill_tp_limit`/`LimitFillPolicy` estaban hardcodeados a `None` en `pkg/backtesting.py` (resto de un módulo borrado) → `conservative_limit_fills` era código muerto en TODOS los sweeps históricos. Restaurados: fill solo si trade-through ≥buffer_bps o close confirma.
+- A/B (fills conservadores + fee maker + slippage 0 en TPs vs status quo): **+0.45/+0.80/+1.15/+1.30 en 30/60/90/120d, 4/4**, peor celda por par −0.09. Fills perdidos ~2-3%.
+- Aplicado: `tp_mode: partial_limit_tp` + `break_even_after_tp1: false` (mantiene BE por price-trigger idéntico a hoy) en `live_benchmark_runtime.json`. Reversible con flip de config + restart.
+- 🐛 **Fix 07/07**: la primera semana los 9/9 TP LIMIT fueron rechazados por BingX (`109400: Hedge mode no acepta reduceOnly`) y cayeron al fallback market (sin pérdidas, pero sin ahorro). Fix: `tp_reduce_only: false` en config (en Hedge, side+positionSide ya define el cierre), kwargs omite el campo, y el retry sin reduceOnly cubre también LIMIT. Verificar fills LIMIT reales el 13/07.
+- ✅ **Verificado 27/07**: el guard de notional del 07/07 funcionó — los 276 rechazos `101485` + 273 `110422` están todos concentrados en el 08/07 y desaparecen desde el 10/07. Residual: `101215` (~3 reintentos cada 3-5 días) = entradas LIMIT PostOnly que habrían cruzado el book; existe desde abril con la misma cadencia, es el comportamiento correcto de PostOnly, no una regresión.
+
+### 🐛 Bug 27/07 — cantidad de los TPs (DYDX) — CORREGIDO Y DESPLEGADO
+
+DYDX abrió 314.7 el 26/07 y colocó tramos **103.8 / 103.8 / 69.5**; el 4º submit salió 35.3 (4.47 USDT), bajo el mínimo de cierre de BingX, y no se envió. Quedaron **37.6 unidades (~4.8 USDT) sin cobertura de TP**, colgando sólo del SL (cerró en verde a las 06:03, +0.25). Tres defectos de cantidad, los tres reproducidos con los números reales antes de tocar código (commit `753ebd0`):
+
+1. **Base del reparto degradada**: `set_tp_submitted` reescribía `tpN_submit_position_qty` con la posición viva en cada recolocación del mismo tramo → el 33% se calculaba sobre 314.7 → 210.9 → 107.1 y cada tramo salía más chico. Ahora la base se conserva (es el tamaño de la posición cuando se armó el plan).
+2. **Remanente huérfano**: el guard del 07/07 miraba que *el tramo* llegara al mínimo, no que *lo que queda después* fuera cerrable. Un resto bajo el mínimo ya no se puede cerrar por TP en ningún ciclo posterior. Ahora `_compute_partial_limit_stage_qty` colapsa al total restante (`ok_collapsed_min_leftover`).
+3. **`_round_step` perdía un step entero por binario**: `107.1/0.1 == 1070.9999…` → floor daba `107.0`; también `0.3 → 0.2`, `314.7 → 314.6`. Dejaba polvo sin gestionar en toda orden que redondeara. Pasa a `Decimal` igual que `_split_position_qtys`. **Sólo lo usa el camino de TP; `backtesting.py` no lo referencia → los sweeps históricos no cambian.**
+
+`upsert_tp_state` con `tp_stage="none"` (apertura) ahora limpia los tramos previos, para que anclar la base no haga heredar la posición anterior. Esto además drena solo los residuos viejos de `tp_stage_state.csv` (filas `tp3_live`/`tp1_live` de posiciones ya cerradas, porque `clear_tp_state` sólo se llama en cierre por SL).
+
+Replay del caso real post-fix: **103.8 / 103.8 / 107.1 y la posición cierra íntegra por TP**. 13 tests nuevos, 45 en total. Desplegado 28/07 01:48 UTC.
+
+### ✅ Bug 28/07 — el TP escalonado no escalonaba — CORREGIDO Y DESPLEGADO
+
+**Era la causa raíz aguas arriba del bug de cantidad del 27/07.** Cadena: el job de colocación (cada 50 s) recolocaba el mismo stage y `set_tp_submitted(tp_idx=1)` **sobrescribía `tp1_order_id` antes de que `_log_pending_order_transitions` pudiera atribuir el fill de la orden anterior**. Sin ese match, `_infer_tp_idx_from_state_order_id` devuelve `None`, el fill nunca se confirmaba → `tp_stage` se quedaba en `tp1_live` para siempre → `_next_tp_idx_from_stage` devolvía `1` indefinidamente → `price_src_idx = 0` siempre → **los 3 tramos salían al precio de TP1**.
+
+Evidencia: **0 fills `tp1/tp2/tp3` en 133 cierres desde el 03/07** (`trail_stop` 116, `stop_loss` 15, `be_stop` 2). El TP escalonado llevaba ~1 mes sin escalonar; quien capturaba la ganancia era el trailing stop.
+
+Fix (commit `077951b`, desplegado 28/07 04:17 UTC): `_reconcile_stage_before_submit()` confirma el fill del tramo vivo cuya orden ya no está pendiente, **justo antes de decidir el próximo stage**. Reutiliza `_infer_tp_fill_from_position` (misma regla de reducción ≥60% del tramo), así que una orden cancelada sin fill no avanza el stage. Sin doble conteo por los dos órdenes posibles: si el job de transiciones confirma primero, el stage ya es `tpN_filled` y la reconciliación es no-op; si reconcilia primero, suelta `tpN_order_id` y el otro job deja de matchear. **El stage 3 se deja al job de transiciones a propósito** (es el cierre de la posición; reconciliarlo aquí duplicaría `_record_trade_closed`). Replay del caso DYDX: TP1 → TP2 → TP3 y la posición cierra íntegra. 50 tests en verde.
+
+⚠️ **Consecuencia para el veredicto de TP×2 del 03/08**: el A/B asumía TPs escalonados que se llenan, pero lo que corrió en real desde el 03/07 fue "un TP al nivel de TP1 + trailing". **El mes de datos NO valida ni invalida TP×2.** El reloj de observación de la estructura de salidas arranca de cero el 28/07.
+
+### 🔴 Mudez del portfolio — diagnóstico 28/07: DOS causas, una corregida
+
+> ⚠️ **Corrección 10/08 — había una TERCERA causa, y era de ejecución.** Este diagnóstico concluyó que "la mudez es de señales, no de ejecución". Eso era cierto para la mayoría de los pares, pero **no para ONDO y APT**: sus entradas LIMIT PostOnly se colocaban a −2,41% y −0,62% del mercado por el tick roto, así que **no podían llenar** aunque la señal existiera. Ambos figuran en la lista de mudos del 03/07. Ver "Bug 10/08 — tick size ausente". La lección se repite: *cuando un par no opera, descartar ejecución con evidencia, no por argumento.*
+
+Punto de partida: 7/10 pares con **0 señales** en 10,5 días (indicadores.csv de prod sólo retiene ~10d); todo el portfolio produjo 11 señales en 28.998 barras (0,04%). La semana 20-27/07 sólo operó DYDX.
+
+**Primero se descartó lo obvio**: la mudez es de **señales**, no de ejecución — las señales simplemente no se generan. Y NO es por falta de relajar filtros: eso ya se falsificó 4 veces (P2.1, P2.1b, P1, P2-2). El diagnóstico de blockers confirma el mismo cuadro de junio (`ema_cross_recent` blocker #1 en 9/10 pares) y la tasa de señales del **sim** apenas bajó (105 → 87 normalizado a 30d). El problema no es que los filtros se hayan endurecido: es que **live y sim divergen**.
+
+**Causa 1 — velas en formación (CORREGIDA, commit `723e5f7`, desplegada 28/07 04:53 UTC).**
+El pull corre en :01,:06,… cuando la vela de 5m aún no cerró, así que se guardaba parcial. El filtro `df_new['date'] > last_date` descartaba justamente esa vela ya cerrada en el ciclo siguiente, y el `drop_duplicates(keep='last')` nunca llegaba a reemplazarla. Firma medida contra el API (2881 velas/par, 10 pares): `open` idéntico 100%, `high_live ≤ high_api` 100%, `low_live ≥ low_api` 100%, **`close` idéntico 0,4%**. O sea: EMA/RSI/ADX/ATR del live corrían sobre closes que no eran los closes reales — y el blocker dominante (`ema_cross_recent`) se calcula sobre closes. Explica el gap de señales sim 28 vs live 10 en ventana idéntica de 10d. Fix: `>=` en vez de `>`, y `fetch_limit` 2→3. **Verificado post-deploy: 7/7 velas cerradas coinciden al 100% en OHLC** (muestra chica, ~11 min).
+⚠️ **Sigue abierto**: la *decisión* de entrada se toma sobre la vela en formación (`update_indicators` + `colocando_ordenes` corren en :03,:08,… con la vela a mitad), mientras el backtest decide sobre velas cerradas.
+
+**Causa 2 — gate de sesión heredado (NO aplicada, requiere decisión).**
+`colocando_ordenes()` retorna sin hacer nada si la hora UTC no está en `session.entry_hours_utc` = `[6,7,8,9,10,11,12,14,15,16,17,19,21,22]` (14 de 24 h; bloquea 0,1,2,3,4,5,13,18,20,23). Medido sobre las señales reales: **8 de 11 (73%) cayeron en hora bloqueada**.
+- El perfil viene del bloque `reference` de `live_benchmark_runtime.json`: `session_profile: liquid_utc_wo_13_18_20` con `entry_style: rsi_reversal` y `timeframe_combo: 30m_5m` — **otra estrategia**, no la actual (trend-following fresh-cross 5m).
+- **El backtest nunca lo simula**: `run_live_parity_portfolio` no aplica gate horario, y el `SimBacktester` lee `entry_hours_utc` de los params por símbolo (vacío en los 10). Los params se optimizaron asumiendo 24/7 y se ejecutan con 14/24. `--entry_hours_utc` no tiene efecto en `--live_parity`.
+- A/B (parity-sim, trades particionados por hora de entrada): las horas bloqueadas son **40-44% de los trades** y su PnL es −4,21 / −2,29 / **+7,62** / **+3,28** en 30/60/90/120d, con winrate igual o mejor que las permitidas (49/52/59/56% vs 49/57/58/59%). Ninguna hora bloqueada es tóxica por sí sola (peor: 05h −0,83; la mejor es 13h con +3,60).
+- **Conclusión: el gate no filtra horas malas, sólo recorta caudal.** Quitarlo restauraría la coherencia sim↔live y ~40% de los trades.
+- ⚠️ **Pero arregla la mudez, no la rentabilidad**: el sim da PnL negativo en las 4 ventanas, así que más trades de edge similar da *muestra*, no ganancia. El valor real es poder medir: con 5/10 pares mudos no hay muestra para ningún veredicto.
+
+### 🐛 Bug 31/07 — el bot decidía sobre la vela EN FORMACIÓN — CORREGIDO Y DESPLEGADO
+
+**3 días (28-31/07) sin una sola orden, y sin un solo submit al exchange.** No fue el mercado ni el exchange: era el bot.
+
+**Lo primero que quedó claro: el fix de velas del 28/07 SÍ funcionó.** Señales antes 9 en 7,1d (38 normalizado a 30d) → después 13 en 2,9d (**135, ×3,6**), y volvieron a producir ETH, XMR, BNB y LINK, mudos desde el 03/07. 7/10 pares generando señal vs 3/10 antes. El portfolio despertó.
+
+**Pero 0 entradas.** Causa: `ema_alert` leía `df_symbol.iloc[-1]` = **la vela en formación** (el comentario del código ya decía "solo la última vela cerrada"; la implementación no lo hacía). Esa vela lleva 1-3 min de datos, así que su volumen es ~1/5 del real → `Rel_Volume` cae a 0,04-0,49 → **el filtro de volumen la veta siempre**. Medido en prod sobre los 10 pares: `VOL_OK` **False en 10/10** en la vela en formación vs **True en 3/10** en la misma vela ya cerrada. Históricamente `VOL_OK` pasa 19,1% de las barras cerradas y ~0% de las que están en formación.
+
+**Por qué apareció justo ahora** (importante, es el patrón a recordar): antes del 28/07 la vela parcial no se corregía nunca, así que `indicadores.csv` guardaba señales calculadas sobre velas parciales — **las mismas** que el job evaluaba. Estaban mal, pero eran consistentes entre sí. Al corregir el histórico, el CSV pasó a tener señales de velas cerradas mientras el job seguía leyendo la parcial: dos poblaciones distintas, y la parcial no dispara nunca. **Arreglar los datos destapó un bug de lectura que llevaba latente desde siempre.**
+
+Fix (commit `15b1e1b`, desplegado 31/07 02:31 UTC):
+- `pkg/indicadores.py`: nuevo `last_closed_bar()` — decide por **tiempo de cierre**, no por posición, así que no asume que la última fila siempre está en formación. `ema_alert` lo usa.
+- `pkg/monkey_bx.py`: la señal viene de la vela cerrada, pero **el sizing y el precio de la orden LIMIT pasan a usar el precio vivo** (`_last_traded_price`). Con el close de una vela de hace 3-8 min la PostOnly quedaría descolocada respecto al book, o rechazada por cruzarlo (`101215`).
+
+Verificado en vivo tras el deploy: evalúa la barra 02:30 (`vol_rel=0,78`) en lugar de la 02:35 en formación (`vol_rel=0,12`). 5 tests nuevos, 57 en total.
+
+⚠️ **Queda como deuda**: los niveles TP/SL (`get_last_take_profit_stop_loss`, `latest_values` en `colocando_TK_SL`) siguen leyendo la última fila. Es menos grave (son niveles de precio que se recalculan cada 50 s, no un filtro binario), pero es la misma incoherencia. Ver P5.
+
+### 🐛 Bug 10/08 — tick size ausente: envenenaba el backtest y descolocaba las órdenes en prod — CORREGIDO Y DESPLEGADO
+
+`SYMBOL_TRADING_RULES` existe **duplicada** en `pkg/backtesting.py` y `pkg/monkey_bx.py`, y las dos derivaron. Cualquier símbolo sin entrada cae a `price_tick=0.01`. En el backtest faltaban 8 de los 10 pares (la tabla tenía 6 símbolos, **4 de ellos ya removidos** del portfolio: DOT, HBAR, TRX, DOGE); en prod faltaban 7.
+
+**En el backtest (commit `d895c7b`) — pérdidas falsas.** Los TP se redondeaban con `ROUND_DOWN` incondicional. Para CFX (~$0.042) el tick 0.01 es el **24% del precio**, así que el TP caía **por debajo del precio de entrada** y el trade cerraba en la vela siguiente como `TP` con −13%. Firma inconfundible: **todas las salidas al mismo precio redondo** (`0.040000`), duración de exactamente 1 barra, `exit_reason=TP` con `ret_pct` fuertemente negativo.
+- CFX marcaba −60 a −98 USD según la ventana y explicaba **entre el 55% y el 97% de la pérdida del portfolio**. Con el tick real (1e-05): −1,5/−2,7/**+4,4**/**+8,4**.
+- ⚠️ **El sesgo no es unidireccional**: APT (1,68% del precio) y ONDO (2,87%) estaban inflados **en positivo** y al corregir el tick pasan a negativos en las 4 ventanas. Sus parámetros se optimizaron contra una función objetivo corrupta.
+
+**En prod (commit `c0e453e`) — órdenes descolocadas.** Live redondea en dirección conservadora (`_trigger_rounding`), así que no invertía los precios, pero los descolocaba, y **el síntoma es silencioso: el par simplemente deja de operar**.
+
+| Par | Entrada LONG (diseñada −0,02%) | TP efectivo (diseñado 1,20%) |
+|---|---|---|
+| ONDO | **−2,41%** → −0,03% | **3,33%** → 1,21% |
+| APT | −0,62% → −0,03% | **2,75%** → 1,21% |
+| CFX | −0,05% → −0,02% | 1,38% → 1,21% |
+
+Las entradas son **PostOnly**: una orden a −2,41% del mercado casi nunca llena. Confirmado en vivo el mismo 10/08 a las 12:20, antes del deploy: `entry_order_canceled_or_expired` / `protection_timeout` en ONDO.
+
+**Guards añadidos** (45 tests nuevos, 118 en total):
+- `_assert_tick_size_sane()` en `backtesting.py`, llamado desde `load_candles()` — **rompe** con `ValueError`. Preferimos un sweep caído a un número envenenado.
+- `_warn_if_tick_implausible()` en `monkey_bx.py` — **avisa** por lifecycle event (`tick_size_implausible`), una vez por símbolo por proceso. En vivo no rompe: matar el bot es peor que un tick grueso.
+- Umbral 0,1% del precio; los ticks legítimos rondan 0,001-0,03% (3× de margen).
+- Ticks y `qty_step` traídos de `/openApi/swap/v2/quote/contracts`, no estimados. BNB pasa de 0.1 a 0.01 (el valor real).
+
+**Al incorporar un par nuevo**: traer `pricePrecision`/`quantityPrecision` del endpoint de contratos (tick = 10^-pricePrecision) y agregarlo a **las dos** tablas. Ver memoria `backtest_tick_size_poisoning`.
+
+### 🐛 Bug 25/08 — el parity-sim llenaba los TP con un simple toque — CORREGIDO (`cc36b90`)
+
+`run_live_parity_portfolio` decidía el fill con `high >= price` y podía llenar TP1, TP2 y TP3 en la **misma vela**. Ninguna de las dos cosas ocurre en vivo:
+
+- El live deja órdenes **LIMIT maker** (`tp_mode: partial_limit_tp`). Una orden que espera en el book no se ejecuta porque el precio la toque y rebote: está en una cola, y el toque ejecuta a los de adelante. Hace falta que el mercado **atraviese** el nivel (trade-through ≥ `limit_fill_buffer_bps`, 2 bps) o que el cierre lo confirme.
+- El live manda **un tramo por vez** (`tp_one_at_a_time: true`) y espera el fill antes de someter el siguiente. Medido en prod: TP1 de XMR 02:17, TP2 02:31 — 14 min de diferencia.
+
+La lógica conservadora (`should_fill_tp_limit` / `LimitFillPolicy`) **ya existía** y se usaba en `class Backtester`, el camino del **sweep**. El parity —el que decide todos los A/B de estructura de salidas— nunca la invocaba. Dos meses de A/B de salidas se apoyaron en fills optimistas.
+
+**El modelo se ata a la config del LIVE** (`get_tp_mode`, `get_tp_one_at_a_time`), no al flag `conservative_limit_fills` de los params: ese flag existe para que un sweep elija su supuesto de ejecución y está en `False` en los 10 pares, así que colgarlo de ahí habría dejado el parity optimista igual. Si el live vuelve a TPs market, el parity lo sigue solo.
+
+⚠️ **El fix corrige el modelo pero NO cierra el gap**: la tasa de posiciones que tocan TP pasó de 57% a 55% (90d), contra un **38% real** *(⚠️ corrección 02/10: contado en el exchange es **45%**; ver "Bug 01-02/10")*. Se probó además armar el BE intrabarra (como el live, que revisa cada 50 s, en vez de con el cierre de la vela): sólo lleva 55% → 50%. **La causa dominante del resto sigue sin identificar** — queda en P5.
+
+### 🐛 Bug 31/08 — el reparto de tramos de TP estaba hardcodeado en el parity — CORREGIDO (`cf61157`)
+
+`_prepare_live_tp_plan` usaba `TP_SPLITS_DEFAULT` (**40/40/20**), constante del módulo, mientras el live reparte según `tp_partial_distribution` del runtime config (**33/33/34**). Dos consecuencias:
+
+- El parity simulaba un ladder distinto al de prod.
+- El reparto quedaba **fuera del alcance de `TROBOT_RUNTIME_CONFIG_PATH`**, así que cualquier A/B sobre la distribución era un **no-op silencioso**: corría, daba números idénticos en las 4 ventanas y parecía "el cambio no tiene efecto". Así se detectó.
+
+Mismo criterio que el fix del fill (`cc36b90`): el parity se ata a la config del **live**, no a constantes ni a flags de sweep. `_runtime_tp_splits_parity()` espeja a `_runtime_tp_splits` de `monkey_bx`, normalización incluida.
+
+**Tercer hueco encontrado en el camino de TP del parity** (fill por simple toque → tramos simultáneos → reparto). Los tres deformaban lo que el sim creía medir.
+
+### 🐛🐛 Cascada del 05-06/09 — SEIS bugs en el camino que mueve el stop
+
+Arrancó al implementar el ratchet y terminó destapando que **el break-even casi nunca se ejecutaba**. Los seis se encontraron mirando comportamiento real, **ninguno lo detectó un test**, y dos los detectó el usuario antes que la telemetría.
+
+**1. El BE se armaba en el 16% de las posiciones** (`3728bf1`). Se evaluaba contra `precio_actual`, que sale de la última fila de `indicadores.csv` — la vela EN FORMACIÓN (deuda P5.1, anotada el 31/07 y nunca saldada). El TP1 es una orden LIMIT descansando en el exchange y ve cada tick; el BE se muestreaba una vez cada 5 min contra un close parcial. Medido 28/07→04/09: de 22 posiciones que llenaron TP1, sólo **7** registraron `break_even_activated`. Con BE armado: **7/7 ganadoras**. Sin BE: **8/15**.
+Fix: comparar contra `_last_traded_price`, y **armar el BE sí o sí cuando TP1 se confirma** (invariante: TP1 = tp×0.6 está siempre más lejos que `be_trigger`, así que su fill *prueba* que el precio cruzó el umbral).
+
+**2. Ventana ciega de 9 HORAS** (`ee89e1a`) — **la causa raíz del 16%**. `filtrando_posiciones_antiguas()` usaba `pd.Timestamp.now() - timedelta(hours=9)` como "ahora" (un parche de husos, con un `+5` comentado para Mac). En un server UTC no corrige nada: abre una ventana en la que una posición **sólo entraba al job que mueve el stop cuando su STOP_MARKET tenía más de 9 h**. Y como el BE/ratchet **recrean** la orden al moverla, cada ajuste reiniciaba el bloqueo. La mayoría de las posiciones cierra antes de 9 h, así que el job nunca las miraba. Fix: `pd.Timestamp.utcnow().tz_localize(None)`.
+
+**3. El stop RETROCEDÍA y el ratchet se auto-bloqueaba** (`0a812e3`). Detectado por el usuario: `13:44 → 752,73 · 14:14 → 749,69 · 14:45 → 743,25 · 14:50 → 756,47`.
+- El ratchet medía su espera contra `updated_at_utc`, que se reescribe en CADA upsert (incluido `set_break_even_state`, que corre cada ciclo) → al disparar se auto-bloqueaba 30 min. La firma: disparos exactamente cada 30 min, en diente de sierra. Fix: `stage_since_utc`, que sólo avanza cuando la ETAPA cambia.
+- `potencial_nuevo_sl` se recalcula desde cero cada ciclo desde el SL del indicador, que puede ser más flojo que el del ratchet, y el valor del ratchet no se persistía. Fix: `protective_stop` persistido + `bump_protective_stop()`, que sólo acepta mejoras. **Se limpia al abrir posición** — heredarlo pinaría el candado en un precio ajeno.
+
+**4. El stop se recolocaba en bucle** (`c626ea1`). BCH emitió `break_even_activated` **once veces con el mismo valor**, una cada 5 min. Se comparaba el stop CRUDO (258.608268) contra el que devuelve el exchange, redondeado al tick (258.61) → `!=` siempre True. Preexistente, pero el candado de monotonía lo volvía permanente. Fix: `_round_trigger_price` ANTES de comparar.
+
+**5. Un error de lectura borraba TODO el estado** (`b50fbb5`). `_load_state_df` devolvía un DataFrame VACÍO en silencio si `pd.read_csv` fallaba → el upsert siguiente creaba la fila desde `_default_row` y al guardar escribía **un archivo con esa sola fila**, borrando el seguimiento de TP de todos los demás pares. Fix: **fallar cerrado** — `TpStateUnreadable`, evento CRITICAL, y nadie escribe.
+
+**6. El ratchet proponía stops que el exchange rechaza** (`7b5cf72`). El stop de un SHORT debe estar POR ENCIMA del precio; el ratchet toma `min(low)×(1+buffer)` y si el precio rebotó queda del lado equivocado → `110412`. **Y se emitía `ratchet_activated` y se guardaba el `protective_stop` aunque el post fallara** — un stop inexistente que el candado reintentaba en bucle, y cuyo fallback puso 760,89 donde ya había 756,28. Fix: descartar el candidato si no queda a ≥0,1% del lado correcto, y capturar el resultado del post antes de registrar nada (`stop_update_failed` en CRITICAL si falla).
+
+**+ una regresión propia**: `stage_since_utc` vacío vuelve del CSV como **NaN**, y `str(nan) == "nan"` es VERDADERO → el encadenamiento `or` nunca caía al respaldo, `pd.to_datetime("nan")` daba NaT y **el ratchet quedó inerte** (`158f3e3`). Fix: `_ts_o_vacio()`. Se detectó al calcular a mano cuándo dispararía el próximo ratchet, no por un test — los tests construían el estado en memoria y nunca pasaban por el ciclo guardar→leer del CSV, que es donde `""` se vuelve NaN.
+
+> **La lección, y es de proceso**: los seis fallos están en los **bordes con el mundo real** —el CSV que devuelve NaN, el exchange que rechaza, el registro que llega desfasado, el reloj del server— no en la lógica. Los tests con estado construido a mano no los ven. Al tocar el camino de ejecución, probar contra el ciclo completo de persistencia y contra respuestas reales del exchange.
+>
+> **+ 01-02/10, tres más del mismo borde**: ids que vuelven float al releer el CSV, `df.loc[len(df)]` pisando la fila de otro par, y `'nan'` pasando por id válido. Y una regla nueva: **la fuente de verdad de un fill es el estado de la orden en el exchange**, no la inferencia por posición. La telemetría del bot veía 41 de 66 fills de TP (ver "Bug 01-02/10").
+
+### 🆕 Ratchet temporal del stop — implementado 05/09 (`f0e9819`)
+
+Si un tramo de TP ya llenó y el **siguiente** tarda más de `after_min`, el stop sube a pegarse al mejor precio alcanzado menos `buffer_pct`. **Nunca baja del break-even ni de la entrada: asegura, no arriesga.**
+
+Motivación: el recorrido favorable medio a 8 h es **+1,85%** y el trade termina mucho peor. El ratchet convierte parte de ese máximo en ganancia realizada.
+
+- Config en `live_runtime_config` → `ratchet` (`enabled`, `after_min` 30, `buffer_pct` 0,0025, `min_improve_pct` 0,0005). **Apagar = flip + restart, sin deploy.**
+- El "mejor precio" sale del OHLC de `indicadores.csv` desde `stage_since_utc`: sin estado nuevo y sobrevive a reinicios.
+- `buffer_pct` acotado a ≥0,1%: por debajo el stop entra en el **ruido intrabarra**, que el backtest de velas 5m NO ve — ahí "más ceñido" siempre parece mejor y es ilusión.
+- Evento propio `ratchet_activated`, deliberadamente distinto del BE: se desplegaron juntos y sin telemetría separada no se podría atribuir.
+
+**Evidencia de simulación** (284 señales, 120d): es lo único que mejora de forma AMPLIA — **+0,107/señal con 8/10 pares mejorando y el mayor aportando 30%**, o sea que pasa la alarma de concentración, cosa que no logró ningún otro cambio en 7 A/B. Con reparto hacia la cola llega a +0,153. Positivo en las **4 ventanas** (+0,140/+0,086/+0,103/+0,107) y plano entre 20 y 60 min: no es un parámetro de filo.
+
+### 🆕 Telemetría de transiciones del estado de TP — 06/09 (`15ed005`)
+
+Tres eventos que convierten esta clase de bug en detectable en vez de arqueológica. **No cambian comportamiento.**
+- `tp_state_row_recreated` (CRITICAL) — un upsert que NO declara etapa materializa la fila desde defaults. Siempre anómalo: ese llamador asume que ya existe.
+- `tp_mode_changed` (WARN) — el modo cambia en caliente. El camino legacy no avanza `tp_stage`, así que explica que el ladder deje de seguirse.
+- `tp_state_cleared` (INFO) — borrado con su origen y qué etapa se perdió.
+
+El emisor traga cualquier excepción: **observar no puede costar la persistencia del estado.**
+
+### 🐛 Bug 02/10 — fills parciales: el timeout cancelaba el STOP y el SL no seguía a la posición — CORREGIDO Y DESPLEGADO
+
+**1. El timeout de la cola de protección cancelaba la protección** (`55da99d`, desplegado 02/10 04:29 UTC). A los 20 ciclos (~17 min) se cancelaba `orderId.iloc[0]` del símbolo **sin mirar qué orden era**. Con la posición abierta era su STOP_MARKET. Caso ONDO 24/09: entrada SHORT 57,02 llena 22,99, crece a 34,03, TP1 llena y quedan 11,04 (4,65 USDT, ningún TP posible por notional). La fila vuelve a la cola, el contador llega a 20 y **cancela el stop en 09:53, 10:12, 10:32 y 10:51**, ~1 min sin stop cada vez, con aviso "⛔ Orden cancelada — No se ejecutó a tiempo" sobre una posición viva.
+- `_timeout_de_proteccion`: sólo cancela órdenes de **entrada** (el orderId guardado al enviarla, columna nueva `entry_order_id` de la cola, + cualquier LIMIT del lado que abre). **Lee la respuesta del cancel** (antes daba "cancelada" con sólo no lanzar excepción) y lee la posición después, distinguiendo sin posición / abierta / ilegible (`total_positions` devuelve lo mismo para "no hay" que para "no pude leer").
+- `_protegida_solo_con_sl`: con SL, sin TP posible por notional mínimo y sin remanente de entrada vivo, la posición cuenta como protegida y no llega al timeout.
+- ⚠️ `entry_order_id` se lee con `dtype=str`: con una sola fila sin id pandas lo devuelve como `2.1030450921587343e+18` y `_norm_order_id` no lo recupera.
+
+**2. El SL no seguía a la posición** (`e6f3e92`, desplegado 02/10 04:47 UTC). De 102 entradas desde el 01/08, **4 fills parciales reales** (17-40% en el primer fill; otras 6 eran redondeo al step anterior al 10/08). En las 4 el remanente **llenó en 4-9 min** y el STOP quedó con la cantidad del primer fill:
+
+| Caso | SL / posición | Qué pasó |
+|---|---|---|
+| BNB 07/09 | 0,01 / 0,05 | el SL disparó y cerró **sólo el 20%**; el 80% siguió con un stop nuevo más lejos (727,98 vs 740,77), −0,93 |
+| ONDO 19/08 | 23,55 / 112,99 | ~1 h con el 79% sin stop; el cierre por TP quedó registrado como `stop_loss` +1,01 |
+| AVAX 19/08 | 1,0 / 6,0 | ~2 h con el 83% sin stop |
+| ONDO 24/09 | 22,99 / 34,03 | ≤9 min, hasta que el trailing lo redimensionó |
+
+- `_ajustar_cantidad_sl`: si los STOP cubren menos que la posición, confirma contra el exchange y coloca uno nuevo **al mismo precio** con la cantidad completa, **antes** de cancelar el viejo (en Hedge mode un stop de cierre no abre la contraria; nunca queda sin stop). Actualiza el watch del SL. Sin `origQty` en el registro, o en 0, no toca nada. Corre en `colocando_TK_SL` y, como red de seguridad cada 5 min, en `unrealized_profit_positions`.
+- `_reanclar_base_del_ladder`: `tp1_submit_position_qty` sube con la posición mientras TP1 no llenó. Con la base en el primer fill, ONDO 24/09 medía una reducción de 11,95 < 13,79 y **el fill de TP1 nunca se confirmaba**.
+- La fila sigue en la cola **mientras viva el remanente de la entrada**, y al vencer el plazo con la posición abierta pasa por el camino normal. Antes, una vez colocados SL y TP, **nadie cancelaba nunca el remanente**.
+- De paso: la rama SHORT reescribía el watch del SL **cada ciclo con el precio del indicador**; con el stop movido por el BE quedaba sin `orderId` y `sync_cooldowns_from_sl_fills` lo descartaba.
+- ❌ **Se evaluó y descartó cancelar el remanente al detectar el fill parcial**: habría dejado 3 de 4 posiciones bajo el notional mínimo del TP (6-10 USDT con peso 0,13-0,20) —el caso degenerado del bug 1— y se apartaría del parity, que asume fill completo de la PostOnly.
+- ⚠️ **Sin verificar en vivo**: el nombre `origQty` del campo de cantidad en `openOrders` (no había órdenes abiertas al desplegar). Confirmarlo con el primer evento `stop_resized`.
+
+Eventos nuevos: `entry_remainder_canceled`, `protection_sl_only`, `stop_resized`, `stop_resize_failed` (CRITICAL). Tests: `tests/test_timeout_proteccion.py` y `tests/test_sl_sigue_a_la_posicion.py`, contra un exchange falso con la forma real de BingX (`tests/exchange_falso.py`) que deja correr el ciclo real de los CSV; con el código anterior fallan por las razones del bug (el de BNB deja 0,04 abiertos al disparar el stop).
+
+✅ **Encontrado en el camino y ya resuelto**: los `order_id` de `tp_stage_state.csv` volvían como float. Ver la sección siguiente.
+
+### 🐛 Bug 01-02/10 — los order_id volvían float del CSV, y el exchange dice que el bot veía 41 de 66 fills de TP — CORREGIDO Y DESPLEGADO
+
+**El bug.** `_load_state_df` leía `tp_stage_state.csv` sin `dtype`. Con una sola fila de id vacío (lo normal: `tp_stage=none`) las tres columnas `tpN_order_id` volvían float64 y el id de BingX salía como `2.103045465791529e+18`, que nunca coincide con openOrders. **El job de transiciones no atribuyó ni uno de los 41 fills del 28/07 al 30/09**; todos vinieron de `reconcile_before_submit`. Además, al reescribir el CSV el id derivaba de forma permanente (14 de 41 difieren hasta 1.280 unidades). Mismo borde en `sl_watch.csv`: 31 `stop_loss_hit` con id en notación científica.
+
+**Dos bugs más en el mismo ciclo de persistencia:**
+- `df.loc[len(df)] = row` después de `df[~m]` **pisaba la última fila**: el índice queda con un hueco y `len(df)` coincide con la etiqueta de la última. Lo hacían `upsert_tp_state` y `_append_sl_watch`, así que cada upsert de una fila que no era la última borraba el estado de TP (o el watch del SL) de otro par. Firma: los 100 `tp_state_row_recreated` del 09/09, con BCH/ETH/AVAX/ONDO abiertos a la vez.
+- En `sync_cooldowns_from_sl_fills`, una fila sin id daba `'nan'`, que es verdadero: nunca se usaba la comparación por precio y la fila se descartaba con la posición viva.
+
+**La verdad del exchange.** Consultadas en BingX (`GET /openApi/swap/v2/trade/order`) las 157 órdenes TP LIMIT del 28/07 al 30/09:
+
+| | llenaron | el bot vio |
+|---|---|---|
+| TP1 | **53** | 32 |
+| TP2 | **10** | 9 |
+| TP3 | **3** | 0 |
+
+- **TP3 sí llena**: LINK 15/08, XMR 22/08 y LINK 23/08. Al llenar deja la posición en cero, la reducción no se puede medir, y el SL watch lo registraba como stop (XMR 22/08: `stop_loss` +1,31) o no quedaba registrado (LINK 15/08).
+- **TP1 llenó en 46 de 103 posiciones (45%)**, no en el 38% que se usaba de referencia.
+- Las 7 órdenes que "desaparecieron con la posición viva" estaban **todas llenas**. La base de cantidad estaba desfasada (entrada llenada en varias veces) y el bot volvía a someter el mismo tramo: **6 posiciones llenaron TP1 dos o tres veces** (APT 19/08, tres).
+- Desglose de las 157: 41 llenas que el bot vio; 87 canceladas al cerrar la posición por stop; 16 llenas con la posición ya en cero al detectarlo (13 TP1 seguidos de un stop y los 3 TP3); 7 llenas con la posición viva; 2 llenas más; 4 reemplazadas antes de desaparecer.
+
+**Fixes, todos desplegados el 02/10:**
+- `c06dd11` — `tpN_order_id` como texto al leer; `reset_index` antes de `df.loc[len(df)]`.
+- `145f07e` — **sin fallback a mercado en el job de transiciones.** Al empezar a matchear, cada confirmación fallida disparaba `_submit_tp_legacy_fallback`: habrían sido 103 close orders sobre posiciones ya cerradas y 7 TP maker convertidos en taker, cuando el job de colocación ya re-somete el LIMIT en 10-43 s. Con la posición en cero se anota `tpN_gone_position_flat` sólo en el ledger (como `tpN_failed` serían ~1,6 alertas de Telegram por día). Al confirmar se suelta el `order_id`, igual que reconcile. El fallback sigue activo cuando el SUBMIT del LIMIT es rechazado.
+- `7ace307` — `_read_orders_csv()` lee `orderId` como texto en `order_id_register`, `order_pending_prev` y `sl_watch`; `entry_watch` lee `order_id`/`request_id` como texto; `reset_index` en `_append_sl_watch`.
+- `aae1a59` — **`tp_fill_confirmation_mode: exchange_state`** (el valor existía y nunca se había implementado). Cuando una orden TP desaparece, el estado en BingX decide:
+  - `FILLED` confirma con el precio y la cantidad reales. Un TP3 lleno registra el cierre como `tp3` antes que el SL watch, que ve el cierre reciente y ya no lo duplica como stop.
+  - `CANCELLED` no confirma, aunque la posición se haya reducido, y suelta el id.
+  - `NEW`/`PENDING`/`PARTIALLY_FILLED` es un pending_gone falso: sólo ledger.
+  - Si la consulta falla, respaldo por inferencia. **Rollback: `inferred` + restart, sin deploy.**
+
+Estados reales de BingX: `FILLED`, `CANCELLED` (doble L), `NEW`; openOrders informa las órdenes vivas como `PENDING`. El historial llega al menos a 7 semanas. Para consultar desde prod, las claves vienen del `EnvironmentFile` del servicio (`/etc/default/trobot`).
+
+**Verificado en vivo** con la BNB SHORT del 02/10 15:00: id de TP1 exacto en `tp_stage_state.csv` junto a filas con id vacío, e id del STOP exacto en `sl_watch.csv`. **Falta ver** el primer `tpN_filled` con `source=exchange_order_status`.
+
+**Qué se cae con esto** (corregido donde aparecía): "TP3 nunca llena (0 de 39)"; el 38% de realización de TP1 en vivo; y, en la semana del 18-25/08, que el último tramo lo capturó el trailing — 2 de esos 4 TP3 llenaron en la orden TP3. El gap de P5.2c (sim 50-55% vs vivo) se achica de ~12-15 a ~5-10 puntos.
+
+Tests: `tests/test_tp_state_ids_csv.py`, `tests/test_order_ids_csv.py` y `tests/test_tp_confirmacion_exchange.py`. `query_order` queda bloqueada por defecto en `conftest` (ningún test sale a la red) y el exchange falso la responde con la forma real.
+
+**Dashboard** (local, no afecta a prod): `_safe_read` lee las columnas de ids como texto (`order_id`, `orderId`, `tpN_order_id`, `request_id`, `tranId`, `tradeId`...). De paso, la tabla "Posiciones activas" de En vivo pedía columnas que `tp_stage_state.csv` no tiene y mostraba sólo símbolo y lado, **incluidas las posiciones ya cerradas**. Ahora filtra `tp_stage != none`, muestra etapa, precios, ids y stop protector, y agrega la tabla de `sl_watch`. Verificado renderizando las páginas con `streamlit.testing.v1.AppTest` contra los CSV de prod (`.venv-dashboard`; no hay pytest ahí).
+
+### ❌ P2 Timeframe 15m — CERRADO 03/07: sweep completo, RECHAZADO
+
+Hipótesis: mismo motor en 15m = menos señales pero movimientos más grandes vs costos. Falsificada:
+
+- El estilo fresh-cross genera **~10× menos señales en 15m** (~10 trades/90d por par con la config más laxa vs ~100 en 5m). Parte era `max_dist_emaslow` calibrado a geometría 5m (en 15m la EMA slow es media de 7.5h, el precio casi siempre está a >1%), pero aun corregido el techo es estructural.
+- Sweep 500 trials × 10 pares, 120d, espacio calibrado a 15m (`tf15m_validation_20260703/sweep_15m_v2.json`): 8 candidatos pasaron filtros, pero en cross-val 30/60/90/120d **pierden en las 4 ventanas** (−6.1/−13.6/−13.6/−5.0) vs baseline 5m (−1.6/+6.5/+4.2/+13.5). Overfit sobre señal escasa.
+- Única señal débil: APT y ETH 15m positivos en 3-4 ventanas sin regresión (mudos crónicos en 5m), pero con 13-18 trades/120d y requeriría wiring de `entry_tf` en `indicadores.py` (live es 5m-only). NO pagar ese costo por 2 candidatos marginales; revisitar solo si APT/ETH siguen mudos ≥4 semanas más.
+- Artefactos: `archivos/backtesting/tf15m_validation_20260703/`.
+
+### Flujo semanal estándar (referencia, ya consolidado)
+
+1. Pre-check consistencia local ↔ prod (`md5sum`); restaurar con `git checkout` si hay drift.
+2. Sync PnL/ganancias/trade_closed de prod vía SCP. Para velas, ver **"De dónde sacar velas"** abajo — la regla vieja de "NO bajar long.csv de prod, es la versión thin ~10-40d" era **FALSA** y se corrigió el 11/09.
+3. Análisis PnL real de la semana.
+4. ⚠️ **El sweep NO va en el flujo semanal** — ver "Cadencia del sweep" abajo. La revisión semanal es **sólo diagnóstico**: PnL, señales, fills, cobertura de costos, sin tocar params.
+5. Cross-val anti-overfit (criterio refinado: 3/5 vale solo si regresión ≤$2 en ventanas perdidas).
+6. Presentar propuesta → confirmar con usuario → aplicar + deploy + verificar + actualizar memoria.
+
+### 📊 De dónde sacar velas — corregido el 11/09
+
+Había una afirmación **falsa** en esta guía desde julio: *"NO bajar long.csv de prod, es la versión thin ~10-40d"*. Verificado el 11/09: el `cripto_price_5m_long.csv` de prod tiene **190 días continuos** (06/03→12/09, 54.720 velas por par, 33 MB). La regla falsa costó un rodeo entero de top-up por API y una limitación artificial a ventanas de 45 días.
+
+Las tres fuentes, con lo que cada una sirve y en qué falla:
+
+| Fuente | Cobertura | Calidad |
+|---|---|---|
+| **API BingX** (`/quote/klines`) | **sólo ~45 días** hacia atrás | verdad de referencia. `startTime` se ignora/rechaza: caminar hacia atrás con `endTime` |
+| **`long.csv` de prod** | 190 días continuos | ⚠️ **12,7% de velas truncadas**, concentradas en may-jun 2026 |
+| **`long.csv` del repo local** | ~290 días, con huecos | la copia **completa** de may-jun; le faltaba 30/06→28/07 |
+
+⚠️ **El long.csv de prod arrastra velas EN FORMACIÓN.** Firma medida contra el API: `open` idéntico al 100%, y **59.412 casos de `high` más bajo contra 1 en sentido contrario** (ídem `low`) — truncamiento de un solo lado, no ruido. Por mes: mar 0,00% · abr 0,90% · **may 20,94%** · **jun 86,86%** · jul 0,44% · ago 0,65% · sep 0,60%. O sea: **limpio desde julio** (el fix `723e5f7` funcionó), envenenado antes.
+
+**Receta que funciona** (11/09): API para los últimos 45 días → prod **sólo** para tapar huecos anteriores y **sólo en el tramo ≥29/06** → el local conserva may-jun, que ahí es la copia buena. Resultado: serie continua sin huecos, 130 días, los 10 pares. Con eso la cross-val de 4 ventanas (30/60/90/120d) vuelve a ser posible.
+
+**Antes de confiar en cualquier archivo de velas**, correr el check de paridad contra el API en la ventana solapada (P3.4), excluyendo siempre la última vela de cada serie. Es barato y ya evitó dos análisis envenenados.
+
+### 🔁 Cadencia del sweep — decidido el 31/08
+
+**El sweep nunca estuvo automatizado**: no hay crontab, ni timer, ni job en `main.py` para `evaluate_pairs.py`. Siempre fue manual, en la sesión semanal. Corrió con cadencia semanal hasta el **30/06** (`weekly_20260630_dryrun.log`) y se detuvo porque el **03/07 arrancó el congelamiento** — decisión deliberada, no una falla.
+
+**Decisión: MENSUAL y dirigido, no semanal ni barrido.**
+- **Semanal** → sólo diagnóstico, sin tocar params.
+- **Mensual** → re-optimizar **1-2 pares como máximo**, elegidos por evidencia, con:
+  - **`--conservative_limit_fills` obligatorio** (sin él el sweep vuelve a premiar TP cercanos — es lo que envenenó a DYDX),
+  - cross-val en 4 ventanas, verificando **cuáles solapan con el entrenamiento** (con pares de historia corta casi todas lo hacen),
+  - la **alarma de concentración**: si un solo par explica >50% de la mejora, no es una mejora del portfolio.
+
+**Por qué no volver a lo semanal**: cada sweep es una oportunidad de sobreajustar. Con 500 trials sobre 120d casi siempre aparece algo que "gana 4/4" — el 25/08 la semilla 202 dio 4/4 y las otras dos 1/4. Correrlo cada semana multiplica las chances de aplicar ruido. Y el historial lo respalda: la rutina semanal de junio dio **un acierto claro (BCH) y varios falsos positivos** (AAVE removido a la semana; DYDX entró con cross-val 3/3 y resultó el peor par).
+
+**La rotación automática de pares queda suspendida**: con el edge medido como está, cambiar el peor par por otro mueve el problema en vez de resolverlo (DOT → DYDX lo mostró).
+
+### ❌ Tuner diario de loss-recovery — ELIMINADO el 31/08 (`9d4be14`)
+
+Existía un timer de systemd (`trobot-loss-recovery`, diario 04:10 UTC) que re-optimizaba los pares con pérdidas en las últimas 24 h. **Se eliminó**: el servidor de producción no da abasto para correr sweeps.
+
+De paso, el estado real en que estaba: **142 ejecuciones fallidas consecutivas desde el 12/04**, todas con `FileNotFoundError: pkg/best_prod_consistent.json`. El **11/04** el commit `16ffe06` ("fuente única best_prod.json") borró ese archivo a propósito; al día siguiente el job empezó a fallar y siguió 4,5 meses. El default del script Python sí se había corregido, pero el wrapper pasaba la ruta vieja explícitamente. **Los 210 logs estaban en `archivos/backtesting/daily/` y nadie los leía** — el mismo patrón que los bugs de julio.
+
+Corría con `APPLY=0`, así que sólo reportaba por Telegram; nunca tocó parámetros. **Que estuviera muerto conviene**: re-optimizar con disparador de 24 h y 45 trials habría contradicho la cadencia mensual con cross-val y metido ruido durante todo el congelamiento.
+
+### 📅 Plan con fechas — REFIJADO 28/07
+
+**Julio (cerrado).** Los lunes 06, 13 y 20/07 corrieron en modo observación con params congelados. El 27-28/07 se descubrió que **buena parte de lo que se creía estar midiendo no estaba ocurriendo**: los TPs nunca escalonaron y los indicadores corrían sobre velas parciales. Los datos de julio sirven para diagnóstico, **no para veredictos**.
+
+**Estado a 28/07 05:00 UTC — 3 fixes desplegados hoy, ninguno verificado en operación real todavía**
+
+| Fix | Commit | Desplegado | Qué falta |
+|---|---|---|---|
+| Cantidad de TPs (base, remanente, `_round_step`) | `753ebd0` | 28/07 01:48 | ver una posición real cerrar íntegra por TPs |
+| El TP escalonado no escalonaba | `077951b` | 28/07 04:17 | ver `tp1/tp2/tp3_filled` en `execution_ledger` |
+| Velas en formación | `723e5f7` | 28/07 04:53 | 7/7 velas OK post-deploy (muestra de ~11 min); confirmar con días |
+
+**Próximos días — sólo observar, no tocar**
+1. **¿Despertó el portfolio?** Contar señales en `indicadores.csv` por par. Con velas correctas debería subir de ~1 señal/día en todo el portfolio. Si NO sube, el fix de velas no era la causa principal y hay que volver al diagnóstico.
+2. **¿Escalonan los TPs?** En `execution_ledger`: `tp1_filled` → `tp2_filled` → `tp3_filled` con **precios distintos**. Si todos salen al mismo precio, el fix del escalonamiento no está actuando.
+3. **¿Cierran íntegras?** Ninguna posición debe dejar remanente colgando sólo del SL (era el caso DYDX del 26/07).
+4. **Velas**: bajar `cripto_price_5m.csv` de prod y comparar OHLC contra el API — las cerradas deben coincidir al 100% (excluir siempre la última, está en formación por diseño).
+
+**✅ Gate de sesión — QUITADO el 18/08 (`e172f72`) y VALIDADO el 25/08**
+- Medición previa: 6/17 señales bloqueadas (35%) del 31/07-03/08 y 5/15 (33%) del 10-18/08. Dos semanas independientes, el mismo tercio.
+- Implementación: flip de config, `session.entry_hours_utc: []` en `live_benchmark_runtime.json` (`is_entry_hour_allowed_utc` devuelve True si no hay horas). Revertir = restaurar `[6,7,8,9,10,11,12,14,15,16,17,19,21,22]` + restart.
+- **Resultado a 7,1 días**: entradas 7 → **17**, pares operando 4 → **9/10**, PnL +0,62 → **+2,87**. Y el test directo por hora de entrada: las horas **antes bloqueadas** dieron **+1,77 con 67% de winrate** contra −0,39 y 43% de las ya permitidas.
+- Se esperaba comprar *muestra* pagando pérdida a corto plazo; salió muestra **y** ganancia. No reponer el gate.
+
+**✅ Análisis de edge — HECHO el 10/08** (el check del 06/08 no se corrió; el PnL del 10/08 lo respondió igual: −4,87 USDT en 10 días, sólo ONDO en verde). Resultado y matices en "¿hay edge?" abajo. De paso destapó el bug de tick size.
+- Receta que funcionó, para repetirla: top-up de velas desde el API (los datos locales estaban 41 días viejos; **NO bajar `long.csv` de prod**), `--live_parity` con **`--symbols` explícito** (sin él usa BTC-USDT y reporta 0 trades sin avisar — P5.4), y descomponer los trades en bruto vs costos, no mirar sólo el neto.
+- **Regla que se ganó con sangre**: si un solo par explica >50% del PnL del portfolio, **es una alarma de datos, no una conclusión**. CFX explicaba el 55-97% y resultó ser el tick roto.
+
+**✅ ~17/08 — análisis de edge rehecho con datos limpios — HECHO el 18/08.** Resultado en "¿hay edge?" abajo. Sigue negativo en 4/4 y el diagnóstico se afina: 7 de 10 pares no cubren su propio costo.
+
+**✅ ~24/08 — veredicto de estructura de salidas — EMITIDO el 25/08: NO revertir TP×2.**
+Pierde en 3 de 4 ventanas con el parity ya corregido. Detalle en "Revisión semanal 25/08". Lo que queda abierto de la estructura es **TP3, que nunca llena** (0 de 39). *(⚠️ Falso, corregido el 02/10: TP3 llenó 3 veces; el bot no podía verlo. Ver "Bug 01-02/10".)*
+
+**🔓 Congelamiento de parámetros: VENCIDO el 24/08.** Rigió desde el 03/07. Durante su vigencia se corrigieron 7 bugs de ejecución/datos (07, 08, 13, 14, 27, 28/07, 10/08) y ninguno era un parámetro. Ahora se pueden tocar params, pero con la cadencia de abajo y **con cross-val obligatoria**.
+
+**❌ P-TP3 — CANCELADO el 25/08, la premisa era falsa.** Se propuso porque "TP3 nunca llena (0 de 39)". Cierto sobre los *fills*, pero el encuadre era erróneo: hubo **4 `tp3_submitted`** en la semana (XMR ×2, LINK, AVAX) — y para someter TP3, TP1 y TP2 **ya se llenaron**. Esas 4 posiciones hicieron **+2,21 de los +2,87 de la semana (77%)**, y en 3 de 4 el **último tramo fue el que más aportó** (+0,826, +0,449, +0,374), capturado por el **trailing**, no por la orden TP3. *(⚠️ Corrección 02/10, contra el exchange: 2 de esos 4 TP3 **sí** llenaron en la orden — XMR 22/08 @437,87 y LINK 23/08 @11,328; el de XMR quedó registrado como `stop_loss` +1,31. La conclusión de abajo se refuerza.)* El tercer tramo no es peso muerto: es donde está la ganancia. *(Lo detectó el usuario al contar alertas de Telegram — la telemetría de `tp3_submitted` decía lo contrario que la de `tp3_filled`.)*
+- Lo único que sí vale mirar: **AVAX**, el 1 de 4 donde el trailing devolvió todo lo capturado en TP1+TP2 (−0,426 en el último tramo).
+
+**Cola de trabajo — en este orden**
+1. ~~01/09 — veredicto de DYDX~~ → **sin veredicto el 31/08: DYDX no operó**. Criterio redefinido a **5-8 trades cerrados**, no calendario.
+2. **P-geometría** 🆕 *(el hilo más productivo; ver "La geometría TP1/SL")*: LINK y AVAX tienen TP1/SL de 0,48 y 0,50, la misma geometría que hundía a DYDX. Uno por vez y sólo si DYDX se realiza.
+3. **P-paridad** *(P5.2c)*: cerrar el gap de realización de TP (sim 50-55% vs vivo **45%**; era 38% hasta contar los fills en el exchange el 02/10). Mientras siga abierto, todo A/B de salidas conserva un sesgo optimista de ~5-10 puntos.
+4. **P-proceso**: cadencia MENSUAL de re-optimización (máx. 1-2 pares/mes; cada cambio debe ganarle a "no tocar nada" en cross-val). **Al re-optimizar, usar siempre `--conservative_limit_fills`** — sin eso el sweep vuelve a premiar TP cercanos.
+5. **P-pesos**: concentrar capital en vez del equal-weight actual. ⚠️ Ver la trampa de selección in-sample en "¿hay edge?".
+
+### P2 — Mejoras estratégicas adicionales
+
+1. ~~**Filtro de régimen**~~ → ❌ cerrado (A y B rechazadas, ver arriba).
+2. ~~**Anti-re-entry post-SL**~~ → ❌ **CERRADO 16/06: implementado, validado, RECHAZADO**. Knob global `post_sl_cooldown_bars` en `live_runtime_config` (default 0=off, infra inerte commiteada). A/B 10 pares: post-SL 36 barras (3h) Δ +3/−34/−41 en 30/60/90d; post-24 peor (−74/90d). Bloquea re-entradas rentables (CFX +206→+165 en 90d). Misma lección que P2.1: bloquear trades quita los netos-positivos. Configs `post_sl_{24,36}.json`, logs `post_sl_validation_20260616/`.
+3. **Kill-switch DD diario**: si PnL día < −1% del balance, cortar nuevas entradas hasta el siguiente día UTC. *(siguiente candidato P2 sin probar)*
+4. **Filtro de volatilidad relativa**: además de `min_atr_pct/max_atr_pct` absolutos, percentile-based para adaptarse al régimen actual de cada par.
+
+### ✅ Bug 16/06 — desajuste de unidad en `cooldown` — CORREGIDO 03/07
+
+`cooldown` per-símbolo era **barras en backtest** pero **minutos en live** → cooldown vivo 5× más débil que lo optimizado. Fix: live convierte barras→minutos (`_cooldown_minutes_for_symbol` retorna `cooldown*5`; alias legacy `cooldown_min` sigue en minutos) y el parity-sim usa barras directas. Los 3 motores (SimBacktester/parity/live) hablan barras. A/B parity: +2.56/+2.78/+0.49 en 30/60/90d, −0.47 en 14d, empate 7d. Efecto práctico: tras un SL se espera 30-75 min (según par) en vez de 6-15.
+
+### P3 — Telemetría y observabilidad
+
+0. ~~**PnL del trade_closed_log**~~ → ✅ **CORREGIDO 03/07**. El `pnl` venía de PnL.csv (refresco cada 6h) → 50% de filas en 0.0 y el resto contaminado con 48h del símbolo. Ahora: income API filtrado desde la entrada de la posición (fallbacks `price_est`/`csv_stale`, columna `pnl_source`). Cierres por stop reclasificados: `stop_loss`/`be_stop`/`trail_stop` (columna `stop_price`). ⚠️ El `pnl` de filas anteriores al 03/07 NO es confiable — filtrar por `pnl_source` en análisis.
+1. **Alerta Telegram semanal**: PnL/balance, # trades, distribución razones de cierre, top losers. Si TP-rate < 25% en 7d → recomendar pausar.
+2. **Dashboard mejorado**: agregar página de "salud del portfolio" con métricas de cada par (PnL 7/30/90d, winrate, pf, max_dd) y alertas visuales.
+3. **CI ligero**: hook que verifique `md5sum pkg/best_prod.json` local == HEAD == prod después de cualquier deploy.
+4. 🆕 **Check de paridad de datos (alto valor, barato)**: comparar semanalmente el OHLC de `cripto_price_5m.csv` de prod contra el API para las velas cerradas — deben coincidir al 100%. El bug de velas parciales del 28/07 vivió meses sin detectarse y contaminó todos los indicadores. Excluir siempre la última vela.
+5. 🆕 **Check de ejecución diseñada**: contar fills `tp1/tp2/tp3` en `execution_ledger`. Si en N cierres hay 0 fills de TP, algo está roto aguas arriba — fue la señal que gritó el bug del escalonamiento durante un mes sin que nadie la leyera. **Medir siempre por EVENTOS** (`tp1_filled` / `entry_order_filled`), nunca agrupando cierres de `PnL.csv` por proximidad temporal: eso dio 12% cuando el valor real era 38%. Y los eventos del bot también subcontaban: el 02/10 el exchange mostró 66 fills de TP donde el bot había registrado 41. **La fuente de verdad es el estado de la orden en el exchange.**
+7. 🆕 **Tests anclados a fechas fijas caducan en silencio** (25/08): `test_price_pull_partial_candles` usaba el 23/07 y empezó a fallar al pasar los 30 días de `SIGNAL_HISTORY_DAYS` — la purga borraba las velas del fixture. Falló días sin que hubiera regresión, justo en los tests que cubren el bug de velas parciales. Cualquier test que dependa de una ventana de retención debe anclarse al presente.
+6. 🆕 **Entradas que expiran sin llenar** (10/08, barato y de alto valor): contar `entry_order_canceled_or_expired` con `reason=protection_timeout` por par. Un par que acumula timeouts **no está mudo por señal, está mudo por precio** — su orden PostOnly se coloca donde no puede llenar. Fue el síntoma del bug de tick size y se confundió con selectividad de filtros durante un mes.
+
+### ✅ Parity con el modelo de ejecución del live — 23/09 (sin commitear al escribir esto)
+
+**Cómo se encontró**: cruzando el parity **posición por posición** contra los trades reales (25/08→20/09, 6 pares con params sin cambios, capital 188, filtro de régimen apagado como estaba el live). **Las señales coinciden: 41 de 43 entradas reales tienen su posición en el sim.** Lo de "el sim abre 3-4× más trades" ya no es cierto. Los huecos estaban todos en la ejecución:
+
+| Hueco | Antes | Real | Ahora en el parity |
+|---|---|---|---|
+| Fill de la entrada PostOnly | 100% al cierre | 79% (98 submits desde el 10/08) | LIMIT a 2 bps, llena sólo en velas **t+2..t+4** → 78%, acuerdo orden por orden 87% |
+| Fee entrada / TP | taker 5 bps + slippage | **2 bps exactos**, 36/36 y 14/14 fills | maker 2 bps sin slippage; stops siguen taker + slippage |
+| Ratchet del stop | no existía | activo desde el 05/09 | espejo de `_ratchet_stop_candidate`, con velas cerradas (sin lookahead) |
+| `peso` por par | ignorado (`_load_weight_map` no mira el path) | ONDO 0,13 | espejo de `_peso_para_simbolo`, con el piso del escalonado |
+| BE al llenar TP1 | sólo si el cierre cruza `be_trigger` | `be_forzado_por_tp1` | forzado |
+
+⚠️ **La vela t+1 no puede llenar la entrada**: el live somete en T+8, así que casi toda esa vela es anterior a la orden. Contarla daba 14 falsos fills en 98 órdenes. Con el precio límite REAL y ventana t+2.. el acuerdo sube a 95%, o sea que el residuo es no conocer el precio vivo de T+8.
+
+Sobre las mismas posiciones, **después del fix del BE del 06/09**: correlación sim↔real por posición **0,90** (era 0,75), costo por posición 0,040 contra 0,032 real (era 0,073). **Queda un sesgo optimista de bruto de ~0,13 por posición de 37 USDT** (sim −0,074 vs real −0,207) que no se explicó: el mayor caso es el TP1 re-anclado (ya corregido el 19/09) y hay stops del indicador que el live lee de la vela en formación (P5.1a).
+
+Knobs para descomponer (kwargs de `run_live_parity_portfolio`): `entry_fill_model`, `cost_model`, `ratchet`, `use_peso`, `force_be_after_tp1`. `PARITY_LEGACY_EXECUTION` / `--parity_legacy_execution` reproduce el parity anterior **byte por byte** (verificado). Tests: `tests/test_parity_execution_model.py` (22).
+
+**Edge rehecho con el modelo nuevo** (config viva con filtro de régimen, capital 1000, serie local+prod sin huecos hasta el 24/09):
+
+| | 30d | 60d | 90d | 120d |
+|---|---|---|---|---|
+| parity viejo | +1,66 | +1,86 | −8,71 | +2,02 |
+| **parity nuevo** | **+8,89** | **+7,27** | **+7,14** | **+26,02** |
+| aporte costos reales | +9,28 | +16,22 | +19,85 | +29,17 |
+| aporte fill PostOnly | −5,63 | −17,60 | −13,52 | −22,21 |
+| aporte ratchet | −2,66 | −5,62 | −7,62 | −4,19 |
+
+⚠️ **Positivo 4/4 NO significa edge.** El sesgo optimista residual (~0,13/posición real ≈ 0,7/posición a escala 1000, ×149 posiciones ≈ −100 a 120d) es mayor que el +26. **El real sigue perdiendo** (−7,05 en 30d). Leer el sim para comparar variantes, no para el nivel.
+
+Lo que sí cambia:
+- **"Los costos se comen el edge" era en buena parte un artefacto**: los costos del sim bajan de 78,9 a 31,6 a 120d. El problema es el **bruto**, no los costos. Cobertura de costos: BCH, AVAX, LINK, XMR, BNB sí (5/10); DYDX, APT, CFX, ETH, ONDO no.
+- 🔴 **Selección adversa de la entrada PostOnly**: las órdenes que el sim deja expirar son ganadoras (8 de 10 pares empeoran a 60-120d). Contra eso, en la muestra real las 11 expiradas valían −1,44. **Hipótesis abierta**, no conclusión: medir en real qué habría hecho cada entrada expirada.
+- 🔴 **El ratchet, simulado, no suma**: resta en 4/4 ventanas, 5-7 pares empeoran, y el efecto se reparte (BCH +4,5 a +5,8, BNB −1,7 a −9,7). Su "validación" del 19/09 fueron 3 cierres y un harness aparte. **No está validado**; reabrir con los cierres reales.
+
+### 🔬 Ratchet y entradas expiradas medidos con datos REALES — 24/09
+
+**Ratchet: no está validado, y la evidencia real apunta a neutro o levemente negativo.** Disparó en sólo **6 posiciones** desde el 05/09. Las 2 del 05-06/09 se descartan porque corrían con los bugs del stop que retrocedía. En las 4 restantes se reconstruyeron dos ramas sobre velas 5m a horizonte fijo: con ratchet (validada: reproduce la salida real en precio y hora en las 4) y sin ratchet (BE + trailing del indicador, monótono):
+
+| posición | con − sin, 24 h | con − sin, 8 h |
+|---|---|---|
+| DYDX L 13/09 | +0,105 | +0,105 |
+| CFX S 15/09 | −0,120 | −0,120 |
+| BCH L 19/09 | −0,062 | −0,062 |
+| BNB L 21/09 | −0,165 | −0,324 |
+| **Σ** | **−0,24** | **−0,40** |
+
+Mismo signo que el parity (resta en 4/4 ventanas). Mecanismo: el trailing del indicador termina subiendo igual o más que el ratchet, pero sin cortar temprano; el ratchet adelanta la salida. Con n=4 no hay veredicto estadístico, pero **se cae la premisa de "validado"**: sus tres "mejores cierres" del 19/09 también los habría cobrado el trailing.
+
+**Entradas PostOnly que expiran: selección adversa real, en la dirección que predijo el parity.** 99 submits desde el 10/08, 21 expirados. Las expiradas son, por construcción, las que el precio abandonó a favor (+0,31% en sus ~18 min). Desde el precio límite:
+
+| | 1 h | 4 h | 8 h | 24 h | MAE 8 h |
+|---|---|---|---|---|---|
+| expiradas (21) | +0,28% | **+0,60%** | +0,35% | **+1,65%** | −1,02% |
+| llenadas (78) | +0,04% | +0,06% | +0,17% | −0,07% | −1,45% |
+
+A 4 h la diferencia está a ~1,6 errores estándar. Pasando la gestión completa por el parity (sólo pares/fechas con los mismos params): expiradas +0,053 por posición contra −0,004 (n=12, ~0,4 σ). **Sugestivo, no concluyente.** Incluso "persiguiendo" al mercado después del timeout (restando el +0,31% perdido) queda +0,29% a 4 h contra +0,06%. Siguiente paso barato: A/B en el parity de offset 0, timeout más largo y fallback a mercado al expirar, cobrando taker en la entrada.
+
+### ❌ Re-prueba del ratchet con variantes — 24/09: ninguna pasa, queda APAGADO
+
+Apagado en prod el 24/09 03:28 UTC (`235473b`) y re-probado fuera de prod con dos instrumentos. Infra nueva (inerte con los defaults, que reproducen el ratchet original): `buffer_mode: "atr"` + `buffer_atr_mult` (buffer = k × ATR% de la última vela cerrada, piso 0,1%) y `only_after_tp2`, en el live (`_ratchet_stop_candidate`) y en el parity, con la regla compartida `ratchet_buffer_pct()` en `live_runtime_config`.
+
+**Parity** (Δ contra ratchet apagado, capital 1000; elegir con las 4 recientes, falsar con hold1 = 60d al 23/04 y hold2 = 50d al 22/02):
+
+| variante | 30d | 60d | 90d | 120d | hold1 | hold2 | mayor par a 120d |
+|---|---|---|---|---|---|---|---|
+| actual (0,25%, 30 min) | −2,66 | −5,63 | −7,61 | −4,19 | −10,75 | +4,59 | — |
+| 0,25% / 60 min | −3,06 | −5,22 | −8,00 | +3,21 | −8,76 | +6,78 | BCH 144% |
+| 0,25% / 120 min | −4,24 | −7,76 | −8,32 | −4,41 | −6,20 | +1,82 | — |
+| ATR 1,5× | +1,95 | +1,91 | +0,61 | +9,48 | −10,41 | +7,56 | BCH 156% |
+| ATR 2× | +1,30 | +2,24 | +2,80 | +15,16 | −7,85 | +7,45 | BCH 114% |
+| ATR 3× | −2,89 | −3,92 | −5,34 | +4,98 | −9,79 | +4,19 | BCH 272% |
+| ATR 2× / 60 min | +1,60 | −0,54 | −2,51 | +11,99 | −6,44 | +9,68 | BCH 115% |
+| sólo tras TP2 | +4,89 | +5,57 | +6,84 | +5,58 | −3,44 | +0,12 | BNB 103% |
+| **sólo tras TP2 + ATR 2×** | +3,87 | +5,27 | +6,28 | +9,30 | **−4,12** | +2,93 | BNB 57% (7 mejoran, 2 empeoran) |
+
+**Replay sobre las 32 posiciones REALES que llenaron TP1** (desde el 28/07, arrancando en el fill real de TP1, horizonte fijo 24 h, mismas funciones del parity): actual +0,12 (sin su mejor posición −0,31) · ATR 3× +0,92 y ATR 2×/60 +0,91 (BCH >100%) · **sólo tras TP2 + ATR 2× +0,62, 7 mejoran / 1 empeora, ningún par >50%**. Validado contra las salidas reales del período con ratchet activo: coincide en 8 de 9; la diferencia (BNB 21/09) es de granularidad — el live evaluó a mitad de vela, el replay sólo ve velas cerradas.
+
+**Veredicto: ninguna variante pasa el protocolo completo.** Las 4 que ganan las ventanas recientes (ATR 1,5×, ATR 2×, sólo tras TP2, y su combinación) **pierden todas en hold1** — de hecho TODAS las variantes pierden en hold1, así que el efecto del ratchet depende del régimen. Las variantes de buffer por ATR son, además, un efecto de BCH.
+- El mejor candidato, **sólo tras TP2 + ATR 2×**, gana 4/4 recientes, es positivo en el replay real y pasa la concentración ahí, pero **falla hold1 (−4,12)** y a 120d BNB explica el 57%. Aun si fuera real: ~+9 a 120d a escala 1000 ≈ **+1,7 USDT reales en 4 meses**. No compensa ni el riesgo ni el ruido que mete en otros veredictos.
+- ⚠️ La versión original (0,25% / 30 min) es de las peores en todo: pierde 4/4 recientes y hold1. **Estuvo tres semanas en prod por una validación que no existía.**
+- **Queda APAGADO.** Revisitar sólo "sólo tras TP2 + ATR 2×", y sólo si se acumulan ≥30 posiciones reales que lleguen a TP2 (hoy son 9 desde el 28/07). Configs: `archivos/backtesting/configs/` no tiene estas variantes; se generan copiando el runtime config y tocando sólo el bloque `ratchet`.
+
+### ❌ A/B de la entrada — 24/09: la selección adversa es real pero NO es aprovechable; no tocar la entrada
+
+Las órdenes PostOnly que expiran son las mejores (+0,60% a 4 h), pero porque el precio **ya se fue**. Probado en el parity (Δ contra la entrada actual, capital 1000; 4 ventanas recientes + 2 de falsación):
+
+| variante | 30d | 60d | 90d | 120d | hold1 | hold2 |
+|---|---|---|---|---|---|---|
+| offset 0 bps | +0,33 | +0,09 | −0,12 | −1,12 | −1,82 | −4,18 |
+| timeout 6 velas | 0,00 | +4,10 | −7,57 | −7,79 | −2,84 | +1,26 |
+| timeout 10 velas | +0,55 | +12,05 | +0,98 | +0,55 | **−7,40** | **−2,81** |
+| fallback a mercado al expirar | −1,07 | −8,37 | −22,35 | −22,86 | −20,81 | +30,80 |
+| offset 0 + fallback | −3,56 | −15,12 | −28,50 | −30,53 | −18,91 | +26,59 |
+| siempre a mercado | −14,83 | −18,91 | −31,77 | −46,51 | −3,06 | +19,12 |
+
+- **Perseguir el precio cuesta más de lo que recupera.** El fallback y la entrada a mercado entran tarde, a peor precio y con fee taker: −23 a −47 a 120d. Que "sin fill" diera +22 el 23/09 era un contrafactual inalcanzable (llenar al cierre de la vela de señal con fee maker).
+- **Timeout de 10 velas** gana 4/4 recientes, pero con un solo aporte grande (+12 a 60d) y **pierde las dos falsaciones**. Offset 0 empeora en casi todo, también en la lente real.
+- Lente real (99 órdenes, retorno desde la entrada a horizonte fijo, neto de fees): el signo cambia con el horizonte (fallback +18% a 24 h, −2,4 pts a 8 h) y el ruido es de ±12 pts. No contradice al parity.
+- **Conclusión: la entrada PostOnly a 2 bps con timeout de ~17 min queda como está.** Infra reutilizable en el parity: `entry_fill_model='market'`, `entry_timeout_bars`, `entry_offset_bps`, `entry_expiry_fallback='market'`.
+
+### 🏦 Banca de pares — diseño del 01/10 (AVAX y DYDX los primeros)
+
+**Idea (del usuario)**: los pares que no rinden dejan de operar pero se siguen simulando; vuelven si demuestran resultado, y se reemplazan si no. **Ajuste, con datos**: el resultado de un par NO persiste de un mes al siguiente (Spearman −0,07 en sim, ~0,07 en real). Un interruptor mensual ("activo si el mes pasado fue positivo") habría hecho +3,09 contra +18,63 de dejar todos, y los apagados +15,54; mirando 2 meses, −22,24. Igual que el placebo del 11/09. Por eso las transiciones exigen muestra, no un mes.
+
+- **Separación total del trading**: `pkg/best_prod.json` = lo que opera. `pkg/bench.json` = banca (estados `banca` con params, `observacion` sin params). La banca no entra a `currencies_list()`, ni a `cripto_price_5m.csv`, ni a `indicadores.csv`. Sus velas van a `archivos/cripto_price_5m_bench.csv` por un job propio (`sync_bench_candles`, cada hora a :04, nunca levanta excepción, máx. 25 pedidos por corrida para no demorar el trading). `_ensure_long_history` ya no purga el histórico de los pares en banca (antes lo habría borrado a los 14 días).
+- **Criterios** (`pkg/bench.py`, con tests):
+  - activo → banca: sim negativo en ≥3 de 4 ventanas **y** real negativo en ≥3 de los últimos 4 bloques de 14 días (un bloque sin operar no cuenta como negativo).
+  - banca → activo: params que pasaron el protocolo (4 ventanas + falsación, `protocolo_ok`) **y** ≥15 trades simulados hacia adelante con PnL por trade mayor al sesgo del sim (0,35% del notional ≈ los 0,13 USDT/posición del cruce del 23/09).
+  - banca → fuera: más de 60 días (dos ciclos mensuales) sin poder activarse.
+- **Revisión semanal**: `python3 scripts/bench_shadow.py --data <long.csv> --bench_data <bench.csv> --pnl <PnL.csv>` (bajar los tres de prod). **Sólo propone**; las transiciones las decide el usuario. Reporte en `archivos/bench/reportes/`.
+- ~~**Re-optimización**: mensual y sólo de los pares en banca~~ → **descartada el 02/10**: ver "Optimizador sobre el parity". Optimizar params empeora el resultado fuera de muestra; un par en banca vuelve sólo si su forward con los params actuales es bueno.
+- **Primera corrida (01/10) propuso también ONDO** (sim −0,23/−0,17/−0,82/−1,08, real +3,78/−0,91/−0,70/−0,07): **movido a banca el 02/10** con el OK del usuario.
+
+**Candidatos** (15, en observación): UNI, SUI, ARB, ENA, WLD, TAO, QNT, 1000PEPE (nunca probados) y LTC, SOL, NEAR, AAVE, XRP, ZEC, HYPE (descartados antes de los fixes de tick y fill, así que aquel veredicto no vale). Historia: `scripts/candidatos_velas.py` une los mensuales de Binance USDT-M (dic-25 → ago-26, en `archivos/candidatos/binance/`) con el API de BingX desde el 17/08; en el solape el close difiere 1-5 bps de mediana (p99 5-17): **Binance sirve como proxy**. Serie en `archivos/candidatos/velas_candidatos.csv`, reglas de contrato agregadas a las dos tablas `SYMBOL_TRADING_RULES` (idénticas, 29 pares).
+
+### ❌ Candidatos 02/10: 0 de 45 pasan — y el sweep no tenía test fuera de muestra
+
+**Resultado.** 15 candidatos × 3 semillas × 500 trials (150d, `--conservative_limit_fills`, filtro `adx_only`), validados con `scripts/candidatos_validar.py` (parity con la config viva, par solo con peso 0,20): **ninguno pasa** (4 ventanas recientes positivas + 2 de falsación + ≥15 trades + ≥4/6 meses + ningún mes >50%). Los más cercanos:
+- **ZEC s101**: +2,36/+2,03/+5,97/+1,55 recientes, hold1 +1,07, **hold2 −6,17**, 19 trades, concentración 62%.
+- **QNT s303**: +14,4/+11,5/+11,2/+7,3 recientes y **−30,1 / −13,2** en las falsaciones: sobreajuste de manual.
+Tabla completa en `archivos/candidatos/validacion/resumen.csv`. Los 15 siguen en observación (la banca les baja velas).
+
+**🔴 El hallazgo de fondo: el sweep elige en su propio "test".** `Backtester.run` (línea ~2648, *"no operamos en train"*) sólo abre trades a partir de `train_ratio`; el 66% previo es precalentamiento. El ranking (calmar) se calcula sobre esos ~51 días finales, así que **lo que el sweep llama test es el período de selección**. Los 45 ganadores dan positivo ahí (45/45); el parity, sobre casi el mismo período (60d), sólo 14/45.
+- ⚠️ **Corrige la nota del 19/09** ("con `train_ratio 0.66` sólo la ventana de 30d es limpia"): es al revés. **30d y 60d están enteras dentro del tramo de selección** — son las más contaminadas. Lo único fuera de muestra son las ventanas de falsación y la parte de 90/120d anterior a los últimos ~51 días. Explica el patrón repetido de "gana 30/60d y se cae a 90/120d y en hold" (QNT, HYPE, AVAX s202).
+- **El motor del sweep no genera las mismas señales que el live**: sobre el mismo período el parity abre ~1,6× más posiciones por día (mediana 17 en 60d contra 9 en 52d). El sweep optimiza otra variante de la estrategia. Ya pasó con el filtro de régimen (corregido el 01/10); éste es más profundo.
+- **La validación con parity + falsación es lo que funciona**: es lo que frenó estos 45. Mientras el sweep no cambie, ninguna re-optimización se aplica sin ella.
+- **Propuesta pendiente**: optimizar directamente sobre el parity (el modelo del live), eligiendo en un tramo de entrenamiento y midiendo en uno posterior que no participa. Una corrida de parity de un par cuesta ~5 s: 500 trials ≈ 7 min por semilla.
+
+**Dos bugs de los scripts de simulación, corregidos**: `indicadores._calc_symbol` apaga las señales de todo par fuera de `TRADE_SYMBOLS` (que sale de `best_prod.json` al importar). Sin `bench.habilitar_en_indicadores()`, **cada candidato y cada par en banca daban 0 trades en silencio** — `bench_shadow.py` lo tenía latente desde que AVAX/DYDX/ONDO salieron de `best_prod.json`. Y con ruta relativa, `--export_best` escribe **dentro** de `--out_dir`.
+
+### 🔴 Optimizador sobre el parity — 02/10: optimizar params ya no sirve en esta estrategia
+
+`scripts/optimizar_parity.py` (tests en `tests/test_optimizar_parity.py`) busca params simulando con el **parity** (ejecución del live, filtro de régimen, peso 0,20) y elige **sólo con un entrenamiento de 90 días** que termina 60 días antes del fin de los datos; el test (últimos 60 días) y las dos falsaciones no participan. El candidato es el #1 del entrenamiento (≥10 posiciones, ≥2 de 3 tercios positivos); pasa si es positivo en test y en las dos falsaciones y, si hay paramset vigente, le gana en las tres. Una ventana sin datos (par de historia corta) cuenta como no aprobada. ~4 min por par con 500 trials. Resultados en `archivos/optimizacion/<PAR>_s101/informe.json`.
+
+**Corrido sobre 25 pares** (15 candidatos, AVAX/DYDX/ONDO en banca y los 7 activos), 500 combinaciones cada uno:
+
+- **El #1 del entrenamiento no pasa en ninguno: 0 de 25.** Y en los 10 pares con paramset vigente, **nunca le gana al vigente**.
+- **Más entrenamiento ⇒ peor fuera de muestra.** Sobre los 125 paramsets del top-5: correlación entre PnL de entrenamiento y PnL fuera de muestra **−0,38** (test), **−0,40** (hold1), **−0,23** (hold2); sólo **~20%** positivos fuera de muestra. Casos extremos: LINK +30,7 → −31,5, NEAR +25,4 → −26,6, XMR +13,5 → −27,7.
+- **Los vigentes aguantan mejor que cualquier optimización.** En el test (últimos 60 días): activos BCH +6,69, XMR +4,59, ETH +3,58, BNB +3,18, LINK +2,41 (5 de 7 positivos; APT −4,46 y CFX −1,07 no). En banca, AVAX −9,81, DYDX −4,62 y ONDO −1,37 (0 de 3): **confirma la decisión de la banca**.
+
+**Conclusiones operativas**:
+1. **No re-optimizar params**, con ningún método: la búsqueda encuentra lo que se acomodó a un tramo del mercado, no un edge que se repita. Los params vigentes quedan congelados.
+2. **La re-optimización mensual de la banca se cae**: un par en banca sólo vuelve si su forward con los params que tiene se vuelve bueno; si no, sale a los 60 días.
+3. **Ningún candidato reemplaza a nadie**: el portfolio sigue con 7. Los 15 quedan en observación por si cambia el régimen.
+4. **APT y CFX** también son negativos en el test: vigilarlos con `bench_shadow.py`.
+5. La palanca que queda **no son los params**: es la estrategia en sí (el edge depende del régimen) o el tamaño de la exposición.
+
+### ❌ Edge a horizonte fijo — re-medido el 02/10: la señal NO tiene un edge persistente
+
+`scripts/edge_horizonte.py`: cada señal del mismo `_calc_symbol` del bot (params vigentes, config viva), mantenida 2/4/8/12/24 h con tres salidas — sin stop, stop inicial, stop + trailing ATR del indicador (sin TPs ni BE) —, neto de costos reales (maker 2 bps entrada, taker 5 bps + slippage salida). 503 señales de 10 pares, dic-25 → sep-26. Salida en `archivos/analisis/`.
+
+| a 8 h | señales | sin stop | stop | stop + trailing |
+|---|---|---|---|---|
+| params de hoy + filtro de régimen, todo | 503 | −0,033% | −0,007% | +0,021% (se 0,063) |
+| **réplica del 31/08** (params de entonces, sin filtro, may→ago) | 279 | **+0,259%** | +0,150% | +0,076% |
+| mismos params del 31/08, toda la historia | 658 | +0,002% | −0,019% | −0,048% |
+| mismos params del 31/08, **después del 31/08** | 79 | **−0,643%** | **−0,426%** | −0,393% |
+
+- **La medición del 31/08 era correcta para su ventana** (la réplica da +0,336% de ventaja bruta contra +0,32% de entonces), **pero la ventana era la buena**: may +0,51% y jun +0,37% por señal. En el resto de la historia es ~0, y **fuera de muestra (septiembre) muy negativa**. El "+0,198% neto por señal" no era una propiedad de la señal sino de ese período.
+- **Ningún horizonte ni salida tiene edge distinguible de cero** sobre los 10 meses (todo dentro de ±1 error estándar). Por mes alterna: 6 positivos, 5 negativos.
+- **La asimetría long/short no es estable**: los shorts superan a los longs en 6 de 11 meses (t < 1,4).
+- ⇒ **Se descartan** la salida a horizonte fijo y el horizonte por lado como palancas de edge. Lo único abierto es **identificar el régimen ANTES** (el edge aparece en meses de tendencia): medir si la señal rinde distinto alineada con la tendencia de BTC / del mercado, sin filtrar nada todavía. El filtro ADX 1h es el intento vivo de eso (veredicto a 20-25 cierres).
+- ⚠️ **Corrige "La paradoja del edge"** y la sección "Revisión semanal 31/08 — la SEÑAL tiene edge": la paradoja se resuelve porque **no había edge persistente que el sistema estuviera desperdiciando**.
+
+### 🔬 02/10 — régimen de mercado y laboratorio de familias de estrategia
+
+**Régimen de mercado (propuesta #3) — descartado.** `scripts/regimen_mercado.py`: índice equiponderado de 25 pares; la señal actual alineada con la tendencia de 72 h del mercado (métrica fijada de antemano) rinde +0,085% más con stop+trailing (t=+0,67), pero sin stop rinde −0,22% menos (t=−1,10), y por mes gana en 7 de 11. Con 24 h, 6 de 11. **No hay un régimen de mercado en el que la señal actual gane de forma confiable.**
+
+**Laboratorio de familias (propuesta #4) — primer barrido, sin optimizar.** `scripts/lab_estrategias.py`: 6 familias clásicas con params fijados de antemano, velas 1 h, señal al cierre y entrada en la apertura siguiente, costos taker 16 bps por vuelta, 25 pares, nov-25 → sep-26, ~22.700 trades. Régimen de mercado "tendencia/rango" según |retorno 72 h del índice| contra su mediana de 30 días.
+
+| familia | bruto/trade | t bruto | neto taker | meses + |
+|---|---|---|---|---|
+| **F5 momentum entre pares** (largo top-3 / corto bottom-3 por retorno 72 h, 24 h) | **+0,28%** | **+2,0** | +0,12% | 6/10 |
+| F1 breakout 48 h + trailing 2×ATR | +0,11% | +1,6 | −0,05% | 6/12 |
+| F2 momentum de serie (signo 72 h, 24 h) | +0,05% | +0,8 | −0,12% | 4/11 |
+| F4 reversión Bollinger | −0,06% | −1,5 | −0,22% | 2/12 |
+| F3 reversión RSI | −0,21% | −2,0 | −0,37% | 5/11 |
+| F6 reversión entre pares | −0,00% | −0,0 | −0,16% | 3/10 |
+
+- **La reversión a la media pierde incluso en bruto** en estas monedas a 1 h: descartada como familia.
+- **Las familias de momentum tienen un edge bruto chico que los costos se comen** a 1-24 h. El horizonte corto con taker no da.
+- **F5 (momentum entre pares) es la única positiva neta**, en las dos mitades (+0,03% dic-may, +0,23% may-sep) y la sostiene la pata larga (+0,38% contra −0,13% de la corta): los que más subieron siguen subiendo. No es significativa todavía (t neto +0,9).
+- La partición tendencia/rango **no muestra un "switch" claro**: F5 rinde más en rango (+0,22%) que en tendencia (+0,02%), al revés de lo intuitivo; F1 igual.
+- **Próximo paso propuesto**: F5 a horizonte largo (mirada 7 días, mantener 3-7 días, rebalanceo semanal) para que los costos pesen menos; variante sólo-largos; más pares (top 50 por volumen, requiere bajar más historia). Variantes fijadas de antemano y mitad de la historia reservada para validar.
+
+### ⏸️ 02/10 — entradas pausadas y momentum entre pares a horizonte largo
+
+**Pausa** (`bd7fd79`, desplegado 21:09 UTC): nuevo `entries.enabled` en el runtime config y `are_entries_enabled()`; `colocando_ordenes()` no evalúa señales ni abre posiciones si es false, con un único evento `entries_paused` por proceso. La gestión de posiciones abiertas no lo consulta. Verificado: un evento a las 21:13, cero entradas, y la BNB SHORT abierta conserva TP y stop. ⚠️ **Congela el veredicto del filtro de régimen** (quedó en 14 de 20-25 cierres): sin cierres reales, sólo se puede seguir en simulación.
+
+**Datos**: 14 pares más de Binance (BTC, PUMP, DOGE, INJ, ASTER, SAND, FARTCOIN, ZRO, YFI, ADA, XPL, UAI, MOVR, NIGHT; dic-25 → sep-26, 47,5 MB) en `archivos/candidatos/binance/`. Universo de 39 pares.
+
+**Momentum entre pares** (`scripts/lab_momentum_cruzado.py`, 4 variantes fijadas antes de correr, 16 bps por vuelta y pata; criterio: positivo en dic-abr y may-sep, t > 2, ningún mes > 50%):
+
+| variante | neto/pata | t | dic-abr | may-sep | meses + |
+|---|---|---|---|---|---|
+| V1 72 h / 24 h, 3×3 (la F5 original) | +0,005% | 0,0 | +0,13% | −0,11% | 5/10 |
+| V2 7 d / 7 d, 5×5 | −1,32% | −1,4 | +0,43% | **−2,98%** | 4/10 |
+| **V3 mirar 7 d / mantener 3 d, 5×5** | **+0,46%** | 1,3 | **+0,46%** | **+0,46%** | 6/10 |
+| V4 7 d / 7 d, sólo 5 largos | −0,11% | −0,1 | −1,08% | +0,82% | 5/10 |
+
+- **La F5 original se diluye** al pasar de 25 a 39 pares (+0,12% → +0,005%): no era una propiedad robusta.
+- **Mantener 7 días se rompe por la pata corta** (−2,53%; septiembre −9,5%): los que más cayeron rebotan fuerte —squeezes en monedas chicas.
+- **V3 es la única consistente**: igual en las dos mitades, 6 de 10 meses, ningún mes domina (31%), la carga la pata larga (+0,91% contra +0,02%). **No cumple** el criterio (t 1,3) y es la mejor de 4: el riesgo de que sea suerte es real.
+- ⇒ **Ninguna estrategia del laboratorio tiene edge demostrado todavía.** El paso honesto para V3 no es más backtest (cada variante extra aumenta la chance de falso positivo) sino **probarla hacia adelante, sin dinero**, varias semanas.
+
+### 📄 Prueba SIN DINERO del momentum entre pares (V3) — desde el 02/10
+
+`pkg/paper_momentum.py` (config y criterios en `pkg/paper_momentum.json`, tests en `tests/test_paper_momentum.py`), desplegado el 02/10 22:10 UTC (`c334bde`). Cada **72 h** cierra el libro anterior y arma uno nuevo: **largo los 5 pares con mayor retorno en 168 h, corto los 5 con menor**, sobre 39 pares, con velas de 1 h **cerradas** de BingX. **No manda órdenes.**
+- Job horario del bot (:05) que decide con el **estado en disco** (`archivos/paper/momentum_estado.json`): un job "cada 3 días" de `schedule` se reinicia con cada restart y no correría nunca.
+- Nunca levanta excepción. Aviso `paper_momentum_rebalanceo` en cada rebalanceo.
+- Resultados: `archivos/paper/momentum_libro.csv` (patas abiertas) y `momentum_trades.csv` (cerradas, bruto y neto con 16 bps por vuelta).
+- **Evaluación**: `python3 scripts/paper_momentum_reporte.py` tras bajar `archivos/paper/` de prod.
+- **Criterios fijados antes de empezar** (referencia de backtest: +0,46% neto por pata, t 1,3), revisión a los **15 rebalanceos (~45 días)**: éxito = neto medio por pata ≥ +0,20% y ≥ 60% de rebalanceos positivos → proponer piloto con dinero chico; fracaso = neto medio ≤ 0 → descartar V3; intermedio → extender a 30 rebalanceos.
+- ⚠️ El universo incluye monedas muy volátiles (PUMP, FARTCOIN, NIGHT…): el primer libro compra pares que subieron 30-138% en 7 días. Es parte de lo que la prueba tiene que medir.
+
+### 🤖 Cuatro bots sobre BTC — desde el 03/10, SIN DINERO
+
+**Por qué**: la estrategia de 5 min no tiene edge y el momentum entre pares es débil. El usuario ya hace holding de BTC (compra mensual) y quiere que la infra genere un % operando **sólo BTC**.
+
+**Lo que se descartó en el camino** (02/10, todo con reglas fijadas antes de mirar):
+- **Elegir el momento de la compra semanal** (`scripts/btc_compras_semanales.py`, velas diarias spot 2017-2026): media de 200 días, distancia al máximo, RSI semanal y "esperar caída del 20%" quedan a ±1-3% de la compra fija y cambian de signo por mitades. Con el mismo depósito, "comprar más" sólo se hace con lo ahorrado antes.
+- **Operar BTC por horas** (`scripts/btc_lab_temporalidades.py`, 4 reglas × long/short y sólo-long × 1d/4h/1h, perpetuo 1h 2020-2026 y **funding real**): todas las long/short de 1h pierden 72-98%; **la EMA 20/50 en 4h, que con 10 meses daba +59%, pierde −47% en 6 años**; 15m pierde todo por costos. Las sólo-long ganan siempre menos que el holding.
+- El funding real de BTC fue 17% (2020) y 31% (2021) anual para los longs: el supuesto de 0,01%/8 h (11%) era bajo.
+
+**Los cuatro bots** (`pkg/btc_reglas.py` es la fuente única de las reglas para el live y la simulación; resultados idénticos byte a byte al moverlas):
+
+| bot | regla | sim feb-20 → sep-26 (anual / caída) |
+|---|---|---|
+| A tendencia lenta | diario, precio vs media 100, long/short | +16% / −60%, positivo todos los años (2024-25 +4/+5%) |
+| B tendencia rápida | 4 h, Donchian 20/10, long/short | +11% / −73% (2021 −54%, 2025 −37%) |
+| C cobro de funding | BTC contado + short del perpetuo, mitad del capital en cada pata | +6% / −1% (2026 ~1%) |
+| D compra de caídas | diario, RSI 14 < 30 compra, sale en 50, sin shorts | +11% / −25%, 15 operaciones en 6,7 años |
+| **cartera 25% c/u** | | **+11% / −38%**, 2025 −11% |
+
+Correlaciones: A–D −0,43 y C ≈ 0 con todos. ⚠️ B y D salieron de elegir entre 24 combinaciones: su historia puede estar inflada por esa selección.
+
+**Diseño** (`scripts/btc_cuatro_bots.py` simula; `pkg/btc_bots.py` opera):
+- **Una sola cuenta** (decisión del usuario): cada bot lleva su libro virtual y al exchange iría la SUMA de sus posiciones en el perpetuo. En Hedge mode BingX tiene una sola posición LONG y una SHORT por símbolo, así que sin netear las posiciones de los bots se mezclarían.
+- Job horario a las :02. Cada bot decide **una vez por vela cerrada** de su temporalidad, con la posición que da la regla en la última vela cerrada; el estado en disco (`archivos/btc_bots/estado.json`) evita decidir dos veces la misma vela. Con 500 velas la regla decide igual que con toda la historia (0 diferencias en ~20.000 decisiones, 2017-2026).
+- Precio vivo del perpetuo, 0,07% por lado (taker + slippage, igual que la sim); C paga 0,1% en el contado. Funding con la tasa y el precio de referencia de BingX, procesado ANTES de decidir.
+- Corte: un bot que pierde 30% de su capital cierra y se apaga. Evaluación a 12 meses del arranque con dinero; no se mueve capital entre bots.
+- Avisos: `btc_bots_inicio`, `btc_bots_operaciones` (uno por ciclo, Telegram silencia una categoría 15 min), `btc_bots_resumen` (diario), `btc_bots_modo_rechazado`.
+- 📨 **Formato de Telegram (03/10)**: los avisos de `lifecycle_events` se mandaban en texto plano (`parse_mode: ""`), así que se veían los `*` y las comillas invertidas tal cual. Ahora van en Markdown con respaldo: si Telegram rechaza el texto (400), se reenvía limpio (`quitar_markdown`). Los valores del cuerpo genérico se escapan (`escapar_md`: un `sl_watch_stop` sin escapar abre una cursiva que no cierra y Telegram rechaza el mensaje entero). Un aviso puede traer su propio cuerpo armado en `mensaje_md`; lo usan la ventana de BTC, los bots de BTC y el momentum. La tabla de capital va en un bloque ``` para que se alinee.
+- Verificado al desplegar contra un cálculo independiente: A LONG (cierre 84.880 > media 100 de 70.559), B LONG (ruptura del máximo de 20 velas el 02/10 04:00), D fuera (RSI 64,8).
+
+**Alerta de ventana de compra/venta de BTC** (`pkg/btc_alertas.py`, desde el 03/10, pedida por el usuario para su holding): usa las reglas de A y D sobre la vela diaria cerrada y avisa por Telegram (`btc_ventana`) sólo cuando una ventana cambia; el estado del día va también en el resumen diario de los bots.
+- Tendencia: cierre sobre la media de 100 días = COMPRA, debajo = VENTA; el "precio de referencia" es la media. Seguida con un holding al contado 2019-2026: **+2.845% contra +2.193%, caída −39% contra −77%**, invertido 57% del tiempo, ~6 compras/año y sólo 24% salen bien. Gana en los años malos (2022 −21% contra −65%) y pierde en los alcistas (2020 +166% contra +302%).
+- Caída fuerte: RSI diario < 30 = COMPRA, se cierra al volver a 50 (28 veces en 2019-2026). El RSI alto **no** es señal de venta (shortear con RSI > 70 perdió −90%).
+- No hay "precio de compra recomendado" aparte del umbral: esperar un precio mejor deja pasar los movimientos (lo mostraron las entradas PostOnly que expiraban) y elegir el momento de la compra semanal no mejora nada.
+- Al arrancar (03/10): COMPRA desde el 19/08, cierre 84.480 contra media 70.761, RSI 62,9.
+
+**Para pasar a dinero real falta** (el modo `real` hoy se rechaza):
+1. Mandar la orden neta al perpetuo y conciliar el fill con los libros.
+2. La pata de contado de C (API spot + transferencia entre cuentas). Sin eso C quedaría con un short desnudo: no habilitar C en real antes.
+3. **Auditar que el bot de 5 min no toque la posición de BTC**: `obteniendo_ordenes_pendientes` lee todas las órdenes abiertas sin filtrar símbolo, y `resultado_PnL`/reportes leen todo el income.
+
+### 🆕 P5 — Deuda de paridad live ↔ sim (abierta desde 28/07)
+
+Todos surgieron al diagnosticar la mudez. Ninguno es un parámetro: son diferencias entre lo que prod ejecuta y lo que el backtest simula, y **hacen que los A/B midan algo distinto de lo que se cree**.
+
+1. ~~**La decisión de entrada se toma sobre la vela en formación**~~ → ✅ **CORREGIDO 31/07** (`15b1e1b`), era la causa de 3 días sin órdenes. Ver "Bug 31/07" arriba.
+1a. ~~**Residuo: los niveles TP/SL leen la vela en formación**~~ → ✅ **CORREGIDO 06/09** para el BE (`3728bf1`): pasa a `_last_traded_price`. **No era menos grave**: era la mitad de por qué el BE se armaba en el 16% de las posiciones. Queda el mismo patrón en `get_last_take_profit_stop_loss`.
+1b. **Latencia de decisión de 3-8 min.** Con el fix, a las :03 la última vela cerrada es la de :55 (cerró a :00): se decide 3 min después del cierre. El backtest decide en el cierre exacto. Se podría reducir moviendo el pull a :00,:05,… y el job de entradas a :01,:06,… Medir antes de tocar: puede no valer el riesgo de leer velas aún no publicadas por el API.
+2. ~~**El gate horario no existe en el sim**~~ → ✅ **RESUELTO 18/08 quitando el gate del live**: ahora live y sim son ambos 24/7, que era la condición de paridad. Si alguna vez se repone un gate, hay que simularlo.
+2b. ~~**El parity llenaba los TP con un simple toque**~~ → ✅ **CORREGIDO 25/08** (`cc36b90`). Ver "Bug 25/08".
+2d. ~~**El reparto de tramos estaba hardcodeado 40/40/20**~~ → ✅ **CORREGIDO 31/08** (`cf61157`). Ver "Bug 31/08". Era además la razón de que los A/B de distribución fueran no-op silenciosos.
+2e. ℹ️ **`time_exit_bars` NO es un hueco de paridad** (verificado 31/08): está deliberadamente desactivado en los tres motores — *"producción no la implementa"*. Es un parámetro inerte en `best_prod.json`. No perder tiempo con él otra vez.
+2c. 🔴 **Gap de realización de TP, sin causa identificada (abierto).** El sim da 50-55% de posiciones que tocan TP; en vivo es **38%** (15 `tp1_filled` sobre 39 entradas desde el 28/07). *(⚠️ Corrección 02/10: contado en el exchange es **45%** — 46 de 103 posiciones del 28/07 al 30/09; el bot no veía 25 de 66 fills. El gap se achica a ~5-10 puntos.)* Ya descartados por medición: el modelo de fill (57→55%) y el BE armado con el cierre en vez de intrabarra (55→50%). **Mientras siga abierto, todo A/B de salidas conserva un sesgo optimista** (~5-10 puntos con el 45% real). Próximos sospechosos a medir: (a) la latencia de 50 s entre que se confirma un tramo y se somete el siguiente, que el sim no modela; (b) el trailing stop del live, que puede cerrar antes de TP y en el sim se actualiza sólo una vez por vela; (c) que el sim abre más posiciones que el live y el mix es distinto.
+3. 🐛 **`--entry_hours_utc` no tiene efecto en `--live_parity`** — se acepta el flag y se ignora en silencio. Para medir el gate hubo que particionar los trades por hora de entrada a mano. Arreglar o al menos hacer que falle ruidosamente.
+4. **`--live_parity` sin `--symbols` usa BTC-USDT por defecto** (que ni está en el portfolio) y reporta 0 trades sin avisar. Fácil de malinterpretar como "no hay señales".
+
+### P4 — Limpieza
+
+1. ~~**Borrar `pkg/best_prod.json.bak.*`**~~ → ✅ HECHO 22/06: se conservó el más reciente (`.20260502_234317`), borrados 6. Desde 03/08 está en `.gitignore` (sigue en disco, ya no ensucia `git status`).
+2. ~~**Branch `main` en prod ahead de `origin/main`**~~ → ✅ **HECHO 04/09**: `origin/main` estaba congelado en el 30/03 (`c23831f`) y se puso al día con la rama de desarrollo (`43a542a`, 74 commits, +7382/−3489). Fue **fast-forward** — `origin/main` no tenía ningún commit que la rama no tuviera, así que no se perdió nada. **No afectó a prod**: el servidor mergea desde `origin/codex/nuevo-bot-estrategia`, no desde `origin/main`.
+   - ⚠️ **Riesgo latente que esto elimina**: el `main` de prod tiene `origin/main` como upstream, así que un `git pull` a secas en el servidor habría traído código de marzo. Ahora prod queda **0 commits detrás** de `origin/main` (los 56 por delante son sus merges locales, que nunca se pushean — normal).
+   - Repetir cuando `origin/main` vuelva a quedar rezagado: `git checkout main && git merge --ff-only origin/main && git merge --ff-only codex/nuevo-bot-estrategia && git push origin main`. Verificar antes que `git rev-list --count codex/nuevo-bot-estrategia..origin/main` sea **0**.
+3. ~~**`dashboard/jobs.py` + `5_🧪_Backtesting.py` sin commitear**~~ → ✅ **HECHO 03/08** (`3afb438`). Verificado sin credenciales antes de commitear. `.gitignore` cubre ahora `.venv-*/`. **`git status` queda limpio.**
+
+### Memoria persistente
+
+Las gotchas detectadas y validadas están en `~/.claude/projects/-Users-will-Documents-proyectos-TRobot/memory/`:
+- `backtest_history.md` — qué se rotó cada semana, monedas removidas/probadas
+- `feedback_deploy_gotchas.md` — qué hacer cuando el deploy falla
+- `feedback_atexit_bug.md` — el bug del atexit y cómo aislarse de él
+- `live_sim_data_parity.md` — velas en formación (corregido 28/07) + gate horario que el sim no simula
+- `backtest_tick_size_poisoning.md` — el tick por defecto (0.01) que envenenaba el backtest y descolocaba las órdenes en prod
+- `execution_cost_notes.md` — TPs LIMIT maker, y el escalonamiento que no escalonaba
+- `parity_sim_realization_gap.md` — cuándo el sim sobrestima y por qué mandar el real
+- `tp_state_ids_float.md` — ids float en los CSV, la fila pisada por `df.loc[len(df)]`, y los fills de TP contados en el exchange (66, no 41)
+
+### ✅ Verificación 03/08 — los 4 fixes de la semana pasada FUNCIONAN
+
+Primera semana con la cadena completa operativa (señal → gate → orden → TP escalonado) desde el 03/07.
+
+**1. Volvieron las órdenes** (valida `15b1e1b`). 20 submits desde el 31/07 02:31, **todos aceptados** (`code=0`, sin rechazos). Operaron **7 pares** — BNB, ONDO, BCH, LINK, AVAX, APT, DYDX — incluidos APT/BCH/LINK/ONDO, mudos desde el 03/07. Ritmo de cierres: **9/semana vs 3/semana** antes de los fixes.
+
+**2. Los TPs escalonan** (valida `077951b` + `753ebd0`). Caso BCH-SHORT del 01/08, el primer `tpN_filled` tras 133 cierres sin ninguno:
+- `tp1_submitted` 0.059 @ **205.99** → `tp1_filled` (+0.1675)
+- confirmado con `notes=stage_advanced_before_resubmit` → **es la reconciliación del fix actuando**
+- `tp2_submitted` 0.059 @ **198.65** — precio distinto: escalonó de verdad
+- BE se activó tras TP1 y el resto cerró en verde. Total BCH **+0.1475**.
+
+**3. Señales estables**: 17 en 3,9 d (**130/30d**, vs 38 pre-fix), 8/10 pares produciendo. El caudal no fue un pico.
+
+**4. Sin remanentes huérfanos** ni rechazos `101485`/`110422`/`109400` en toda la semana.
+
+⚠️ **Pero el PnL de la semana es −1,21 USDT** (5 cierres: 3 `stop_loss`, BCH +0,15 por TP). Acumulado agosto −1,24. **Esto era lo esperado y está advertido desde el 28/07**: arreglar la ejecución da *muestra*, no *ganancia*. Con 5 cierres no hay veredicto posible — pero ver "Edge" abajo.
+
+### ✅ Revisión semanal 18/08 — primera semana en verde; el fix de ticks NO despertó a ONDO/APT
+
+**Sistema**: 7,3 días estable desde el deploy del 10/08. `NRestarts=0`, 0 errores, md5 consistente, **0 avisos `tick_size_implausible`**. 9 fills de TP en la semana.
+
+**PnL: +0,62 USDT** (vs −3,62 la semana previa) — LINK +0,80, DYDX +0,26, BCH +0,14, XMR −0,59. Balance 193,74. Sólo **2 cierres, ambos `be_stop`**: el BE protegió capital. Con 2 cierres no hay veredicto, pero rompe la racha.
+
+⚠️ **La predicción del 10/08 falló y hay que registrarlo.** Se esperaba que el fix de ticks hiciera despertar a ONDO y APT. **Tuvieron cero eventos en 7,3 días** — ni un submit. Los `protection_timeout` pasaron de 2 a 0, pero con n=2 eso no prueba nada.
+- La causa real de su mudez **no era (sólo) el precio**: es que **casi no generan señal** — 1 cada uno en 2.112 barras.
+- El fix seguía siendo necesario (los precios estaban objetivamente mal), pero **no era la causa principal**. Tercera vez que se atribuye a una causa y aparece otra encima: no cerrar el diagnóstico de un par mudo con una sola explicación.
+
+**El gate es ahora el cuello de botella medido**: de **15 señales, 5 en hora bloqueada (33%)** — APT 20h, BNB 03h, LINK 13h, AVAX 23h, LINK 01h. Las 10 que pasaron dieron 7 submits (las 3 perdidas son cooldown de DYDX y 1 de ONDO). **La única señal de APT en toda la semana murió en el gate.**
+
+**Caudal de señales**: 15 en 7,3d = ~62/30d, la mitad de las ~130/30d medidas el 03/08. Vigilar si sigue cayendo.
+
+### ✅ Revisión semanal 25/08 — la mejor semana; gate validado; veredicto de salidas emitido
+
+**PnL +2,87 USDT en 7,1 días** — la mejor semana registrada. Balance **196,61** (era 193,74). Sistema estable, `NRestarts=0`, 0 errores.
+
+**El gate quedó validado por el resultado.** Entradas que llenaron: **7 → 17**. Pares operando: **4 → 9 de 10**. APT (+0,84) y ONDO (+1,00) volvieron a operar. Y el test directo, particionando por la hora de entrada:
+
+| Origen de la entrada | n | PnL | Winrate |
+|---|---|---|---|
+| Hora que ya estaba permitida | 7 | −0,39 | 43% |
+| **Hora antes bloqueada** | 6 | **+1,77** | **67%** |
+
+Las horas que el gate bloqueaba fueron las buenas. Muestra chica (n=6), pero contradice el miedo de que abrir el caudal sumaría perdedores. **No reponer el gate.**
+
+**✅ Veredicto de estructura de salidas (el hito del ~24/08): NO revertir TP×2.** Con el parity ya corregido (ver "Bug 25/08"), revertir pierde en **3 de 4** ventanas: 30d +3,35 / 60d −3,26 / 90d −0,60 / 120d −5,63. *Antes* del fix daba 2/4 y era no concluyente — o sea que el fix del instrumento fue el que permitió emitir el veredicto.
+
+🔴 **Lo que queda abierto y es el hallazgo más sólido: TP3 nunca llena.** **0 fills en 39 entradas** desde el 28/07 (tp1 15, tp2 8, tp3 **0**). Está a 3,84%-7,04% según el par (ETH y ONDO en 7,04%) en una estrategia de velas de 5m. El tercer tramo es el **34% de cada posición** y jamás captura: siempre termina colgado del stop. No depende del modelo de fill ni del gap de paridad — es geometría.
+
+> ⚠️ **Corrección 02/10 — esto era falso.** El 0 venía de la telemetría del bot, que no podía confirmar un TP3: al llenar deja la posición en cero y la confirmación por reducción fallaba. En el exchange, TP3 llenó **3 veces** del 28/07 al 30/09 (LINK 15/08, XMR 22/08, LINK 23/08). Sigue siendo raro (3 de 103 posiciones), así que la geometría lejana es real, pero "jamás captura" no.
+
+**La geometría del problema, para tenerla escrita** (ejemplo APT): `be_trigger` **+0,4%**, TP1 **+1,44%**, `sl_pct` **−1,5%**. Entre +0,4% y +1,44% hay **un punto entero de zona muerta** donde el BE ya está armado pero no hay TP: cualquier retroceso cierra plano. La firma en los datos: de 52 posiciones que nunca tocaron TP1, 15 perdieron −10,00 mientras 26 ganaron apenas +6,84.
+
+⚠️ **Gotcha de medición, no repetirlo**: la tasa de TP en vivo se mide contando **eventos** (`tp1_filled` vs `entry_order_filled`), no agrupando cierres de `PnL.csv` por proximidad temporal. Agrupar con una ventana de 90 min dio 12% —cifra errónea que casi motiva un cambio de parámetros— porque parte en dos las posiciones cuyos tramos se separan horas (XMR: TP1 15:21, TP2 22:58). El número correcto era **38%** con los eventos del bot; contado en el exchange es **45%** (corrección 02/10).
+
+### 🆕 La geometría TP1/SL — el diagnóstico que destapó DYDX (25/08)
+
+Modelo simple y potente: **TP1 sólo cierra el 33% de la posición**, y si el resto sale en BE, el ganador banca `0,33 × TP1` mientras el perdedor paga el **SL entero**. De ahí sale el winrate mínimo para empatar:
+
+| Par | TP1 | SL | TP1/SL | WR necesaria |
+|---|---|---|---|---|
+| ~~DYDX~~ (antes) | 0,72% | 1,50% | **0,48** | **86%** |
+| **LINK** | 0,72% | 1,50% | **0,48** | **86%** |
+| **AVAX** | 0,90% | 1,80% | **0,50** | **86%** |
+| XMR | 1,44% | 1,80% | 0,80 | 79% |
+| APT | 1,44% | 1,50% | 0,96 | 76% |
+| BNB | 1,80% | 1,80% | 1,00 | 75% |
+| BCH / CFX | 2,16% / 1,44% | 1,80% / 1,20% | 1,20 | 72% |
+| ETH / ONDO | 2,64% | 1,00% | 2,64 | 53% |
+| **DYDX (nuevo)** | 0,90% | 1,00% | **0,90** | **77%** |
+
+Es un modelo de **peor caso** (en la práctica el trailing captura más que el BE, y el tercer tramo suele ser el que más aporta), así que subestima el resultado real. Pero el **orden** es informativo y se validó contra datos reales: DYDX tenía winrate 53% contra un 86% necesario, y sus pérdidas eran −0,63 constantes (SL completo) contra ganancias de +0,07 a +0,14 — exactamente lo que predice la fórmula.
+
+**Por qué los sweeps eligieron geometrías malas**: corrían con el modelo de fill optimista (ver "Bug 25/08"). Un TP1 cercano "llena" fácil cuando basta con tocarlo, así que la función objetivo **premiaba sistemáticamente TP cercanos** que en la realidad bancan un tercio y dejan el resto salir en BE. **Los paramsets de TP1/SL bajo son víctimas directas de ese bug.**
+
+⚠️ **CORRECCIÓN 19/09 — los TP1 de esta tabla son TEÓRICOS y no se ejecutan.** El bot somete TP1 a **0,42·tp**, no a 0,6·tp (ver "RESUELTO 19/09"). Los ratios reales y la winrate de equilibrio de peor caso:
+
+| Par | TP1 real (0,42·tp) | SL | TP1/SL real | WR necesaria |
+|---|---|---|---|---|
+| LINK | 0,50% | 1,50% | **0,34** | 90% |
+| AVAX* | 0,76% | 1,80% | 0,42 | 88% |
+| XMR* | 0,92% | 1,00% | 0,92 | 77% |
+| ETH | 1,05% | 1,80% | 0,58 | 84% |
+| DYDX | 0,63% | 1,00% | 0,63 | 83% |
+| APT | 1,01% | 1,50% | 0,67 | 82% |
+| BNB | 1,26% | 1,80% | 0,70 | 81% |
+| BCH | 1,51% | 1,80% | 0,84 | 78% |
+| CFX | 1,01% | 1,20% | 0,84 | 78% |
+| ONDO | 1,05% | 1,00% | 1,05 | 74% |
+
+(*) AVAX y XMR con los params del 19/09. La winrate de equilibrio real es **74-90%**, no 53-86%. Cruzar siempre contra el MFE mediano de 1,23% de "Revisión 11/09".
+
+⚠️ **CORRECCIÓN 31/08 — el modelo NO generaliza como ranking.** Se propuso a LINK (0,48) y AVAX (0,50) como los siguientes por tener el peor ratio. Con los datos al 31/08, **ambos SÍ cubren su costo**, y los cuatro que no lo cubren (APT, ETH, ONDO, XMR) tienen geometría buena (0,80 a 2,64). El modelo sirvió para **diagnosticar DYDX**, no para ordenar el portfolio — el trailing captura bastante más que el peor caso que asume. **Retirada la recomendación de "LINK y AVAX son los siguientes".**
+
+### ✅ Revisión semanal 31/08 — mala semana, pero la SEÑAL tiene edge
+
+**PnL −4,79 USDT**, la peor en un mes. Balance 191,83 (era 196,61). 10 cierres, **9 por stop**. Winrate 31% (venía de 75%).
+
+**No se rompió nada: el sim perdió lo mismo** — −28,97 con winrate 28% contra 31% real. Coinciden, así que fue régimen. Sistema sano: 22 señales (~98/30d, el mejor caudal desde el 03/08), 13 entradas, 4 fills de TP, 0 errores. A vigilar: **29% de los submits no llenaron** (5 de 17 expiraron por `protection_timeout`).
+
+**DYDX: sin veredicto — no operó ni una vez.** 2 señales, 1 orden el 27/08, expirada por `protection_timeout`. La regla de vigilancia ("si pierde su primera semana") **no es aplicable**: el sim dice que con los params nuevos opera 1-2 veces por semana. ⚠️ **Redefinida: se juzga por los primeros 5-8 trades CERRADOS, no por calendario.**
+
+#### 🎯 El hallazgo principal: la señal de entrada SÍ tiene edge *(⚠️ 02/10: no persiste — era de la ventana may-ago; ver "Edge a horizonte fijo — re-medido")*
+
+Medido con `_calc_symbol` (la misma función que corre el bot), retorno futuro de cada señal contra el baseline del mismo par, **independiente de la gestión de salida**:
+
+| Horizonte | Ventaja sobre baseline | WR direccional (long/short) |
+|---|---|---|
+| 2h | +0,13% | 61% / 53% |
+| 4h | +0,26% | 57% / 59% |
+| **8h** | **+0,32%** ← pico | 51% / 58% |
+| 24h | +0,15% (decae) | 47% / 55% |
+
+Baseline 48-49%. **La señal predice.** Mantener 8h con el SL actual daría **+0,198% neto por señal** después de costos. El sistema real pierde.
+
+Y **el stop no es el culpable**: mantener 8h sin stop da +0,203%, con stop +0,198% — cuesta 0,005% por señal. Recorrido dentro de la ventana de 8h: MAE medio −1,28%, MFE medio **+1,85%**, toca el SL antes de madurar el 28,9%, toca TP1 el 46,3%.
+
+**Esto reencuadra el problema**: no es qué trades se eligen, es qué se hace con ellos después de entrar.
+
+#### Tres experimentos, tres resultados negativos
+
+- **Reparto de tramos** (concentrar en TP1: 60/40/0, 50/30/20, 100/0/0): sin efecto material en las 4 ventanas.
+- **`time_exit_bars`**: es un **parámetro MUERTO** en los tres motores — el código lo dice, *"Salida por tiempo desactivada — producción no la implementa"*. No es un hueco de paridad. Sigue en `best_prod.json` (24-60) sin hacer nada.
+- **`be_trigger`** (0, 1,0%, 1,5% vs el 0,4-0,6% actual): parecía EL hallazgo — gana **4/4 ventanas**, y contradecía el rechazo del 03/07 (medido con el fill optimista). **Pero la alarma de concentración se disparó**: BNB solo explica el **98%** de la mejora a 60d y AVAX el **172%** a 120d; sólo **3 de 10 pares mejoran**, 6-7 empeoran. ❌ **Rechazado como cambio global** — 6º A/B global rechazado con la misma lección. ✅ Pero **AVAX y BNB quedan como candidatos pair-specific fuertes**.
+
+### ✅ Revisión semanal 08/09 — arreglar el BE destapó la zona muerta
+
+**PnL 01→09/09: −1,61 USDT** (previa −4,79). Balance 190,22. 12 cierres: 6 `stop_loss`, 5 `be_stop`, 1 `trail_stop`. Prod estable 2,3 d sin reinicios ni errores.
+
+#### 🔴 El hallazgo: el BE arreglado cosecha antes de tiempo
+
+| Período | días | entradas | tasa TP1 | tasa BE | `be_stop` medio |
+|---|---|---|---|---|---|
+| **Antes** (28/07-05/09) | 39,5 | 56 | **39%** | 18% | **+0,147** |
+| **Con los fixes** (06/09 17h+) | 2,4 | 7 | **0%** | 143% | **+0,032** |
+
+El BE pasó de armarse en el 18% de las posiciones a **varias veces por posición**, y la tasa de TP1 se fue a cero. El mecanismo es la **zona muerta** ya descrita el 25/08: el BE se arma a +0,4-0,6% y TP1 está a +0,72-2,64%; en el medio, cualquier retroceso cierra plano.
+
+**Antes el BE estaba roto y eso, por accidente, dejaba correr las posiciones hasta TP1.** Arreglarlo expuso una falla de diseño que llevaba meses tapada.
+
+Efecto colateral: **el ratchet se quedó sin materia prima** — necesita TP1 lleno y sólo disparó 1 vez en 55 h. Ese disparo fue limpio (BNB a 748,83; la posición cerró +0,77 quince minutos después).
+
+⚠️ **7 entradas en 2,4 días.** Si la tasa real siguiera en 39%, ver 0 de 7 tiene ~8% de probabilidad por azar: sugestivo, no concluyente. Lo que sí parece sólido es la caída del `be_stop` medio de +0,147 a +0,032 — la firma de cosechar antes de tiempo.
+
+#### 🔬 En prueba desde el 08/09: `break_even_after_tp1: true` (`ea5c9bc`)
+
+El BE espera a que TP1 llene antes de armarse. Elimina la zona muerta y le devuelve el disparador al ratchet. `allow_be_overlay` queda en False hasta que TP1 se confirme, así que ni BE ni ratchet actúan antes; **el SL del indicador (ATR trailing) sigue igual**. Flip de config, revertir = `false` + restart.
+
+**Criterios definidos de antemano, para no racionalizar después:**
+- ✅ **Éxito**: la tasa de TP1 vuelve hacia el 39%, y el `be_stop` medio sube del +0,032 hacia el +0,147.
+- ❌ **Fracaso**: más cierres por `stop_loss` completo y PnL medio por cierre peor que el −0,122 actual. Es el riesgo aceptado: sin BE temprano, la posición que avanza y se da vuelta paga el stop entero.
+- ⚪ **Ambiguo**: ~8 cierres en dos días no alcanzan para veredicto. En ese caso **dejarlo correr, no revertir por impaciencia.**
+
+#### La telemetría nueva capturó algo (55 h)
+
+`tp_state_cleared` **7** (todos legítimos, `sl_watch_stop_loss_inferido`, coinciden con los cierres) · `tp_mode_changed` **9** · `tp_state_row_recreated` **1** · `tp_state_read_failed` **0**.
+
+Los 9 cambios de modo son **siempre `legacy → partial`, nunca al revés**: entre el cierre de una posición y el registro correcto de la siguiente hay una ventana donde la fila vive con defaults. Es la misma condición que arruinó a BCH el 06/09 (llenó TP1 —0,14→0,10, +0,1456 verificado contra el exchange— y el ladder dejó de seguirse). No rompió nada esta semana, pero **queda como pendiente**.
+
+#### ⚠️ Trampa conocida, sin arreglar a propósito
+
+`_reconcile_stage_before_submit` sólo reconcilia `tp1_live` y `tp2_live`. Con `tp_stage=none` no hay nada que reconciliar, así que **un estado caído en `none` no se recupera solo**.
+
+**No se implementó la recuperación a propósito**: para "recuperar" habría que afirmar que TP1 llenó, y eso activa `be_forzado_por_tp1`, que pone el stop en la entrada **sin mirar el precio**. En una posición bajo el agua ese stop ya está traspasado → **cierre inmediato a pérdida**. Una recuperación mal fundada convierte un bug de seguimiento en pérdidas reales, y la evidencia que la haría segura (el tamaño original de la posición) es justo lo que el estado corrupto pierde.
+
+### ✅ Revisión 11/09 — el TP1 estaba donde el precio no llega
+
+#### ❌ `break_even_after_tp1` REVERTIDO a false (`e7e1c1a`) — el experimento era INTESTABLE
+
+No fracasó: **no se pudo probar**. En las 13 entradas desde el 06/09 **TP1 no ocurrió ni una vez**, así que el mecanismo (que sólo actúa después de TP1) nunca llegó a correr, y las 6 posiciones del período corrieron **sin protección alguna** hasta el stop completo (−0,176 por cierre contra el −0,122 de referencia).
+
+**Lo primero fue descartar que se hubiera roto la detección** — era la hipótesis obvia y es el bug que ya pasó en julio. **No lo era**: reconstruyendo el recorrido de las 13 posiciones contra las velas reales, **el precio no llegó al TP1 en 11 de 13**. MFE medio **+0,75%** contra un TP1 medio a **+1,51%**.
+
+⚠️ **Corrección al modelo mental del ratchet**: `_ratchet_stop_candidate` exige `tp_stage` en `tp1_filled`/`tp2_live`/`tp2_filled`/`tp3_live` **en las dos configuraciones**. Este flag NO decide si el ratchet corre — sólo si hay break-even **antes** de TP1. Mientras TP1 esté fuera de alcance el ratchet está muerto haga lo que haga el BE.
+
+A/B sobre las **70 posiciones reales** recorriendo sus velas 5m: `false` gana en 3 de 5 horizontes (4 de 5 sin LINK) y convierte 13 stops completos en break-evens a 24 h, pero por poco (~+0,04 USDT/posición) y con BCH explicando el 68%.
+> 🐛 **Trampa metodológica que casi invierte el resultado**: la primera versión cortaba cada posición en su **hora de cierre real**, que la produjo la política vigente entonces. Como `true` cierra menos, más posiciones quedaban "abiertas" y se valuaban a un corte arbitrario — y eso daba `true` ganador por 4,54 USDT. Con **horizonte fijo e igual para las dos ramas** el signo se invierte. Al comparar políticas de salida, el horizonte no puede depender de la política.
+
+#### 🎯 El hallazgo: sólo el 41% de las posiciones alcanza su TP1
+
+Medido sobre las **70 posiciones reales desde el 28/07** contra sus velas 5m. MFE mediano del portfolio **1,23%**. Curva de alcanzabilidad: TP1 a 0,4% → 77% · 1,0% → 54% · 1,5% → 43% · 2,0% → 36% · 2,5% → 29%. **Explica el 38-40% de realización en vivo sin apelar a ningún "edge".**
+
+⚠️ **Medir el MFE de las dos formas: hasta el cierre real Y a horizonte fijo. La diferencia ES el diagnóstico.** Si el MFE a horizonte fijo es mucho mayor, el culpable es el **stop**; si los dos son bajos, es el **TP**. ETH pasa de 0,59% (hasta el cierre) a **2,02%** (a 24 h): el movimiento está, la posición no vive para cobrarlo.
+
+#### ✅ ETH y ONDO re-parametrizados (`348e3a2`) — ver el commit para la evidencia completa
+
+| Par | Cambio | Queda | Cross-val |
+|---|---|---|---|
+| **ETH** | `tp` 0,044→0,025 · `sl_pct` 0,010→**0,018** | TP1 1,50% · SL 1,80% | sim **4/4** (+10,8 a +11,0) · replay real **3/3** |
+| **ONDO** | `tp` 0,044→0,025 | TP1 1,50% · SL 1,00% | sim **3/4** (regresión −0,19) · replay real **3/3** |
+
+Eran los dos pares con el stop **más ceñido** (1,0%) y el objetivo **más lejano** (2,64%) — la combinación que la tabla de geometría TP1/SL premiaba con el mejor ratio (2,64) **precisamente porque el numerador no se cobra nunca**. Es la falla del modelo de geometría, ahora con nombre.
+
+En ETH bajar el `tp` solo da **exactamente cero** en 30/60/90d (mismo n, mismo PnL): la prueba más limpia de que el cuello de botella es el stop. **Prueba de falsación superada**: BCH 1,8%→2,4% da −5 a −6 en las 4 ventanas y CFX 2/4, así que el sim no premia stops anchos en general.
+⚠️ Coste real: el riesgo por trade de ETH pasa de 0,38 a **0,68 USDT** (0,20%→0,36% del balance). Juzgar por los primeros **5-8 cierres**, no por calendario.
+
+#### ❌ Asignación de capital por rendimiento — SIMULADO y RECHAZADO
+
+Walk-forward sobre los trades **reales** (los pesos no cambian qué trades se toman, sólo su tamaño, así que el contrafactual es limpio). Restricción dura hallada primero: el tramo de TP es 33% del notional y BingX rechaza cierres <7 USDT → **por debajo de peso 0,113 el escalonamiento se rompe**.
+
+| Regla | PnL | control de mismo tamaño | **Δ del ranking** |
+|---|---|---|---|
+| equal weight (hoy) | −5,48 | −5,48 | 0 |
+| escalones 0,12/0,20/0,32 | −4,45 | −4,91 | +0,46 |
+| sólo castigo | −4,16 | −4,63 | +0,46 |
+| **PLACEBO al azar** | −4,96 | −5,09 | **+0,13** |
+
+**Casi toda la "mejora" es el efecto trivial de operar más chico en un período perdedor** — bajar todo un 15% da lo mismo sin rankear nada. El test de permutación sí da señal (p=0,010 y 0,037: recortar a los perdedores reales le gana a recortar al azar), **pero la alarma de concentración se dispara en las dos ventanas** (BNB 58%, DYDX 68%) y la regla castiga al que está por revertir (XMR aporta −0,75: lo recortó justo antes de que pasara de −0,20 a +1,27).
+
+**La razón de fondo para no hacerlo**: no hay con qué medir el rendimiento por par — ver "No hay instrumento para rankear pares" abajo.
+
+✅ **La versión que sí tiene sentido, pendiente de decisión**: **tamaño por confianza, no por rendimiento.** Un par con paramset nuevo o sin validar opera al piso (0,12) hasta acumular sus 5-8 cierres, y recién ahí pasa a 0,20. No exige rankear nada — sólo contar evidencia. Es lo que habría contenido a DYDX.
+
+#### 🔴 No hay instrumento para rankear pares
+
+| | Spearman |
+|---|---|
+| sim 30d vs sim 45d | +0,66 |
+| **sim 45d vs PnL real 45d** | **−0,31** |
+| sim 30d vs PnL real 45d | +0,02 |
+
+BNB y DYDX **cambian de signo** entre dos ventanas adyacentes del mismo simulador, y el sim abre de **1,5× a 12×** más trades que el bot real (LINK: 24 vs 2; DYDX: 17 simulados vs **1 orden real en 17 días**). El PnL real, por su lado, tiene **8 trades por par de mediana** — para detectar 0,15 USDT/trade harían falta entre 11 y 212.
+
+⚠️ El test de correlación **no distingue** "el sim se equivoca" de "la muestra real es muy chica". Lo que sí acusa al sim solo es que se contradice entre ventanas y que sobre-opera. **El sim sigue sirviendo para agregados y para comparar variantes DEL MISMO par** (que es como se decidió ETH/ONDO, y ahí el sesgo de nivel se cancela). No para ordenar pares ni para predecir cuánto va a operar uno.
+
+#### 🔴 DYDX: veredicto por imposibilidad, no por PnL
+
+Desde el cambio del 25/08, en 17 días: **una sola orden**, expirada sin llenar. Cero fills. La re-optimización endureció **seis filtros a la vez** (`adx_min` 18→22, `adx_slope_min` 0,2→0,6, `fresh_cross_max_bars` 7→3, `max_dist_emaslow` 0,015→0,012, `min_vol_ratio` 1,0→1,05, y `require_rsi_cross` False→**True**). A este ritmo los 5-8 cierres del criterio tardarían 4-8 meses: **el paramset es inmedible en producción.** Endurecer seis knobs de una vez es la firma de un sweep sobreajustado — al re-optimizar, mover pocos.
+
+### ✅ RESUELTO 19/09 — el TP1 se somete al 70%: un `* 0.70` hardcodeado
+
+**Medido sobre 75 posiciones reales desde el 01/08**, por dos caminos independientes:
+
+| | configurado | **efectivo** | ratio |
+|---|---|---|---|
+| TP1 (desde la entrada) | 1,74% | **1,24%** | **0,71** |
+| SL (desde la entrada) | 1,57% | 1,59% | 1,01 |
+| **TP1/SL** | **1,25** | **0,89** | **0,71** |
+
+Despejando el factor de la escalera, `f = (TP1_sometido/close − 1)/tp` da **0,403 de media, 0,417 de mediana** (σ 0,071) contra el **0,600** de `TP_FACTORS[0]`, **sin correlación con `tp`** (r=+0,13): es constante entre pares, no proporcional. 72 de 75 posiciones, cero coincidencias exactas, los 10 pares, ambos lados.
+
+**Consecuencia: cada tramo ganador se cobra ~29% más chico mientras la pérdida se paga entera.** Es una explicación cuantificada del **payoff 0,28-0,62** abierto desde el 03/07. Y los ratios de la tabla "La geometría TP1/SL" son **teóricos y no se ejecutan**: ETH 2,64→**2,01** · BCH 1,20→**0,86** · BNB 1,00→**0,70** · LINK 0,48→**0,39**.
+
+**Ya descartado**: la columna `TP1_L` del CSV es correcta (BCH 253,20 contra close 258,79 = 2,16% = 0,6×0,036 exacto; verificado también en reposo sobre 4 pares, factor 0,600 clavado) · `_sanitize_tp_limit_price` sólo recorta si el TP queda del lado equivocado del mercado · `tp_limit_offset_bps` está en 0 · `pkg/best_cfg.json` no existe. **La desviación nace entre leer la fila y someter la orden.**
+
+⚠️ **Corrección de un diagnóstico propio, el mismo día**: primero se atribuyó a un deslizamiento de entrada de +0,50%. **Era falso** — se había inferido el close de referencia *desde el propio precio de TP* (`c = TP1/(1+0,6·tp)`), que es circular. La alarma fue que el "deslizamiento" correlacionaba casi perfecto con `tp` sin mecanismo físico. Verificado: la entrada llena a ~0,05% del close. **Por eso NO se tocó `calc_slippage_rate`** — además se usa en las SALIDAS (`backtesting.py:1329`) y en el sweep (`:2263`), donde un 0,50% habría sido un error grande.
+
+#### ✅ La causa, con la telemetría en mano (19/09)
+
+20 eventos `tpN_submitted` entre el 15 y el 19/09 cerraron el diagnóstico:
+
+| | factor implícito `(ref_lvl/ref_close−1)/tp` | esperado |
+|---|---|---|
+| **TP1** (n=15) | **0,3984** media · 0,41 mediana · σ 0,037 | 0,600 |
+| **TP2** (n=5) | **1,0000** exacto · σ = 0 | 0,800 |
+
+Las tres hipótesis quedan resueltas de una vez:
+- `submitted_price` vs `ref_lvl`: **−0,57 bps de media** (máx 2,14) → sólo redondeo al tick. **Nada lo mueve aguas abajo.**
+- `ref_lvl` vs `ref_close`: **ahí nace la desviación, y sólo en TP1.**
+- `ref_bar` **sí es la vela en formación** (barra 06:55 sometida 06:59) — la deuda P5.1a es real, pero **no es la causa**: sólo aporta el ruido residual (σ 0,037), porque el ancla es el precio vivo y no el close de la barra.
+
+**La causa es una constante literal** en `pkg/monkey_bx.py` (LONG ~3523, SHORT ~3887):
+
+```python
+else:   # Fallback: TP1 más alcanzable por defecto (70% del camino)
+    desired_tps[0] = float(price) + (base - float(price)) * 0.70
+```
+
+Ningún par define `tp1_factor` ni `tp1_pct_override`, así que los 10 caen siempre al fallback: `0,60 × 0,70 = 0,42`, exactamente el factor medido.
+
+⚠️ **NO es un hueco de paridad.** `backtesting.py:116` define `TP1_DEFAULT_FACTOR = 0.70` y `_adjust_tp1` (`:1357`) lo aplica desde el camino de parity (`:1445`). Live y sim coinciden; la única diferencia de segundo orden es que el live ancla en el **precio vivo** y el sim en el **precio de entrada**. Por eso TP2 sale a factor 1,0 y no 0,8: `pkg/indicadores.py:25` define **`TP_FACTORS = (0.6, 1.0, 1.6)`** y el 0,70 se aplica **sólo al tramo 1**. El ladder efectivo real es **0,42·tp / 1,00·tp / 1,60·tp**.
+
+**Lo que sí queda**: la tabla "La geometría TP1/SL" está **inflada un 43%** (ver la corrección ahí). Y el 0,70 es un knob per-símbolo ya cableado en ambos motores (`tp1_factor`), así que se puede barrer por par **sin tocar código**.
+
+**Lección de método**: la sesión del 14/09 buscó el mecanismo en el dato (columnas, sanitizador, slippage) y no en el código que lo consume. Cuando un valor observado es un múltiplo limpio del esperado (0,70 exacto), buscar primero una **constante literal** en el camino de escritura — `grep` del factor antes que más medición.
+
+**🔬 Telemetría desplegada** (`842eb76`, 14/09): `tpN_submitted` ahora anota `ref_close`, `ref_bar` y `ref_lvl` (el nivel crudo, antes del sanitizador), en el evento y en el ledger. **No cambia comportamiento.** Hacía falta porque `latest_values` es la última fila = la vela EN FORMACIÓN (deuda P5.1a) y **eso no se puede confirmar con datos históricos**: al cerrar la vela su `close` se sobrescribe. Con 3-4 posiciones alcanza para decidir:
+- `ref_close` ≠ el close final de esa barra → **era la vela en formación**
+- `ref_lvl` ≠ `ref_close`×(1 ± 0,6·tp) → **la columna llegó mal**
+- `submitted_price` ≠ `ref_lvl` → **algo la movió aguas abajo**
+
+#### ✅ Bug CORREGIDO 19/09 (`591cafe`): el precio del TP1 se re-colocaba MÁS LEJOS
+
+Cuando el TP1 se vuelve a someter, su precio cambia — **7 de 7 veces, y siempre alejándose de la entrada** (drift medio 129 bps, máximo 302). Caso AVAX del 09/09: el precio atravesó el TP1 a las 09:45 y a las **09:53 el bot movió la orden de 7,922 a 7,890**, debajo del mercado; la posición cerró minutos después sin registrar el fill. El nivel se recalcula desde el indicador vivo en vez de anclarse a la entrada — es el residuo de **P5.1a** anotado en `get_last_take_profit_stop_loss`. Sólo afecta a 7 de 71 posiciones, así que no es la causa dominante del gap de realización, pero es un defecto real y de dirección sistemática.
+
+**Fix**: el ladder pasa a calcularse como `entry * (1 ± f_i · tp)` con la entrada tomada del `avgPrice` de la posición, que **no cambia en toda su vida** → el nivel es idempotente entre ciclos. Con la entrada de AVAX en 7,8265 el nivel anclado es **7,8758 constante**; el viejo derivaba **+30 a +111 bps** según dónde estuviera el close. El **SL sigue viniendo del indicador**: ese sí debe moverse. Si el precio ya pasó el TP anclado, `_sanitize_tp_limit_price` lo lleva a `ref+tick` y la orden **llena** — lo opuesto al bug. 35 tests nuevos, 314 en total.
+
+### ❌ Barrido de `tp1_factor` — 19/09: el 0,70 ya estaba en el pico
+
+Primer uso del knob desde que se identificó el `* 0.70`. Es per-símbolo y está cableado en los dos motores, así que se barre **sin tocar código ni desplegar**. 10 pares × 8 valores (0,30-0,99) × 6 ventanas. ⚠️ El código ignora valores fuera de `(0,1)`: **`1.0` cae al default 0,70**, usar 0,99 como tope.
+
+**1) El default global está en el máximo.** Con el mismo factor para los 10 pares:
+
+| factor | 30d | 60d | 90d | 120d | holdout |
+|---|---|---|---|---|---|
+| 0,50 | −18,66 | −18,40 | −8,97 | +4,37 | −39,88 |
+| 0,60 | −18,01 | −19,52 | −8,31 | +2,01 | −37,95 |
+| **0,70 (actual)** | **−17,09** | **−16,79** | **−4,14** | **+8,78** | **−34,83** |
+| 0,80 | −18,47 | −20,22 | −6,49 | +8,20 | −35,37 |
+| 0,90 | −20,11 | −26,07 | −12,54 | +2,41 | −36,85 |
+
+**Toda alternativa pierde 0/5** y la curva cae a los dos lados.
+
+**2) El ganador por par se falsó.** BNB parecía EL hallazgo: 0,80/0,90/0,99 ganaban **5/5** con meseta monótona (Σ +10,5 / +21,8 / +30,2 — no era un valor de filo). En una **segunda ventana de 50 d terminando el 22/02/2026, que no participó de la elección**, los tres pierden y **monótonamente al revés: −0,3 / −1,1 / −2,5.** *A mayor ganancia en selección, mayor pérdida en falsación.*
+
+Único superviviente de las 6 ventanas: **APT 0,80**, Σ +3,4 con falsación +0,7 → sobre un sim inflado ~5× son **~+0,8 USDT reales en 120 d**. No se aplicó. LINK (0,80/0,90/0,99, meseta, 5/5) y DYDX (0,90, 4/4) **no tienen ventana de falsación** — su historia empieza después del corte, así que quedan como *sin falsar*, no como validados. Los otros 6 pares: ningún factor gana todas.
+
+**3) El mecanismo sí es real y vale anotarlo.** Alejar TP1 **baja la winrate y sube el PnL**: BNB 120d pasa de 62,7% / +27,96 a 60,3% / +36,94; LINK de 62,8% / +5,41 a 60,4% / +7,75. **El runner que cobra el trailing vale más que el tercio cobrado temprano**, que es exactamente lo que dice la validación del ratchet de esta misma semana. **ONDO es el espejo**: acercar TP1 sube su winrate de 39,5% a 56,7% y gana las 4 ventanas recientes… y pierde el holdout. **La dirección óptima no es la misma para todos los pares**, así que no hay cambio global en ninguna dirección.
+
+**El ladder completo, por par** (`0,42 / 1,00 / 1,60 × tp`), contra el MFE mediano del portfolio de **1,23%**:
+
+| par | TP1 | TP2 | TP3 |
+|---|---|---|---|
+| LINK | 0,50% | 1,20% | 1,92% |
+| DYDX | 0,63% | 1,50% | 2,40% |
+| AVAX | 0,76% | 1,80% | 2,88% |
+| XMR | 0,92% | 2,20% | 3,52% |
+| APT / CFX | 1,01% | 2,40% | 3,84% |
+| ETH / ONDO | 1,05% | 2,50% | 4,00% |
+| BNB | 1,26% | 3,00% | 4,80% |
+| BCH | 1,51% | 3,60% | 5,76% |
+
+⚠️ **Lección de método, y es nueva**: la meseta NO alcanza como prueba de robustez. BNB tenía meseta, monotonía y 5/5, y se cayó igual. El error fue usar el holdout **también para elegir**. Al barrer un knob: elegir en las 4 ventanas recientes y **reservar el holdout entero para falsar**.
+
+### ❌ Barrido del ladder de TP (`tp_factors`) — 19/09: el remedio obvio es el peor
+
+Habilitado por el fix `591cafe`: `TP_FACTORS` estaba hardcodeado en `indicadores.py` y sólo el camino del **sweep** leía `tp_factors`; ahora live y parity lo respetan, así que el ladder es barrible por par **sin tocar código**. Verificado que no es un no-op silencioso: `[0.6,1.0,1.6]` reproduce el baseline exacto, `[0.4,0.8,1.2]` da −13,86 a 90d y un ladder desordenado cae al default.
+
+Protocolo corregido respecto del barrido de `tp1_factor`: **se eligió sólo con las 4 ventanas recientes**, dejando el holdout entero para falsar.
+
+| ladder | 30d | 60d | 90d | 120d | gana |
+|---|---|---|---|---|---|
+| **(0,6 1,0 1,6) actual** | −17,09 | −16,79 | −4,14 | +8,78 | — |
+| (0,4 0,8 1,2) *más cerca* | −16,28 | −18,50 | −13,86 | +4,54 | 1/4 |
+| (0,5 0,9 1,4) *más cerca* | −17,30 | −19,27 | −12,41 | +1,09 | 0/4 |
+| (0,6 1,0 1,2) *sólo TP3* | −15,78 | −20,22 | −7,57 | +9,45 | 2/4 |
+| (0,6 0,9 1,2) comprimido | −15,66 | −15,46 | −6,74 | +10,89 | 3/4 |
+| (0,6 1,2 1,8) *más lejos* | −15,76 | −13,27 | −7,00 | +10,66 | 3/4 |
+| (0,7 1,3 2,0) *más lejos* | −14,79 | −16,43 | −6,92 | +12,14 | 3/4 |
+
+**Ninguno gana 4/4 → no hay candidato y no se aplicó nada.** Los tres de 3/4 fallan **todos a 90d**.
+
+#### 🔎 Por qué fallan a 90d — respondido el 19/09: es UN mes de UN par
+
+El 90d (22/06→20/09) es la ventana **más corta que incluye el mes 22/06-22/07**. Aislando ese mes y el anterior:
+
+| mes aislado | base | comprimido | (0,6 1,2 1,8) | (0,7 1,3 2,0) |
+|---|---|---|---|---|
+| 23/05 → 22/06 | +13,95 | **+3,58** | **+3,72** | **+4,85** |
+| **22/06 → 22/07** | +12,67 | **−4,02** | **−6,52** | **−3,38** |
+
+En el mes 22/06-22/07 **el ladder actual es localmente óptimo y toda alternativa pierde**, con **AVAX explicando −1,82 / −3,98 / −2,68** de esos totales. A 60d el mes queda afuera y los candidatos ganan; a 120d entra pero lo diluye el mes previo, donde los tres ganan.
+
+**El test limpio lo confirma** — la misma comparación quitando AVAX:
+
+| ladder | 30d | 60d | 90d | 120d | gana |
+|---|---|---|---|---|---|
+| comprimido | +2,76 | +1,45 | −1,15 | +4,52 | 3/4 |
+| (0,6 1,2 1,8) | +0,96 | +2,85 | **−0,27** | +1,67 | 3/4 |
+| **(0,7 1,3 2,0)** | +1,31 | +3,22 | **+2,51** | +3,99 | **4/4** |
+
+O sea: **la comparación de ladders estaba midiendo el mes de AVAX más que el ladder.**
+
+⚠️ **Aun así NO se aplica el ladder ancho.** Quitar el par que disiente para que el resultado dé es exactamente la trampa de selección in-sample que ya está advertida en "¿hay edge?" (el subconjunto BCH/BNB/CFX). Y la decisión se tomaría sobre ventanas ya usadas para elegir. Queda como **hipótesis con evidencia parcial**, no como cambio: `tp_factors` es per-par, así que se puede probar barato cuando AVAX tenga historia real.
+
+#### 🔴 Lo que esto destapó: el edge simulado de AVAX es UN MES
+
+PnL por mes aislado de AVAX, params nuevos (desplegados el 19/09) contra los viejos:
+
+| mes | NUEVO | VIEJO |
+|---|---|---|
+| 23/04 → 23/05 | −10,36 (24tr) | +9,75 (23tr) |
+| 23/05 → 22/06 | +3,98 (32tr) | +33,97 (35tr) |
+| **22/06 → 22/07** | **+30,29** (30tr) | −23,76 (21tr) |
+| 22/07 → 21/08 | +8,57 (38tr) | −13,93 (33tr) |
+| 21/08 → 20/09 | −0,44 (37tr) | −19,76 (12tr) |
+
+**Casi todo el edge simulado de AVAX está en un solo mes**, y ese mes cae **dentro del entrenamiento** del sweep (train 23/04→31/07). Sin él, los otros cuatro meses suman ~+1,75.
+
+**Esto NO invalida el cambio, pero sí la magnitud esperada.** En los meses **fuera de muestra** (22/07→20/09) el paramset nuevo da **+8,13 contra −33,69** del viejo — una mejora real de ~+42 que además coincide con el holdout independiente (3 de 3 semillas). Lo que hay que bajar es la expectativa: **el +17,49 a 120d no es una expectativa razonable**, es el arrastre de un mes.
+
+✅ **XMR es el caso opuesto y más sano**: sus ganancias están en los meses de **test** (+4,39 y +5,68) y sus pérdidas en los de entrenamiento (−5,42 / −0,75 / −5,87). Contra el viejo mejora +32,9 y +22,6 en los dos meses fuera de muestra. Es la firma contraria al sobreajuste.
+
+⚠️ **Regla que sale de acá**: al re-optimizar un par, **mirar el PnL mes a mes, no sólo las 4 ventanas acumuladas**. Las ventanas acumuladas esconden que un solo mes explique todo — AVAX pasaba 4/4 y su edge es un mes.
+
+🎯 **Lo importante: acercar los tramos —la corrección que sugería el diagnóstico— es de lo peor que se puede hacer.** Post-hoc sobre el holdout (informativo, ninguno había pasado la selección): comprimido +4,03 · (0,6 1,2 1,8) +4,60 · (0,7 1,3 2,0) +6,39 · **(0,4 0,8 1,2) −2,25**. La dirección que paga es **alejar**, igual que en el barrido de `tp1_factor`, y por el mismo mecanismo: **el runner que cobra el trailing vale más que el tramo cobrado temprano**.
+
+**Conclusión operativa**: el ladder de hecho funciona como *"un TP + trailing"*. Que TP3 esté a 1,92%-5,76% contra un MFE mediano de 1,23% es raro de leer, pero **no es un defecto a parchear** — es la forma que tomó un sistema donde el trailing es quien captura. *(Según el exchange, TP3 llenó 3 veces en 103 posiciones —corrección 02/10—, así que la descripción se mantiene.)* Séptimo A/B global rechazado, con la misma lección.
+
+### 📅 PnL simulado mes a mes — 19/09: el edge está en mar-jul y se apagó en ago-sep
+
+Vista nueva, a partir de la lección de AVAX. **Portfolio completo**, params actuales, meses aislados (truncando `long.csv` y corriendo `--parity_days 30`):
+
+| mes | trades | PnL | winrate |
+|---|---|---|---|
+| feb22 → mar24 | 112 | **−38,14** | 48,2% |
+| mar24 → abr23 | 93 | +10,08 | 61,3% |
+| abr23 → may23 | 117 | +14,94 | 65,0% |
+| may23 → jun22 | 128 | +13,95 | 64,8% |
+| jun22 → jul22 | 98 | +12,67 | 65,3% |
+| jul22 → ago21 | 113 | +0,30 | 57,5% |
+| **ago21 → sep20** | 145 | **−17,09** | **51,7%** |
+
+**Cinco meses positivos seguidos (mar-jul, +51,6) y después se apaga.** La winrate cuenta la misma historia: 61-65% en los buenos, 57,5% y **51,7%** en los dos últimos. El sim ve el mismo deterioro que el PnL real, aunque más suave (−17,09 sobre capital 1000 = −1,7%, contra **−3,7%** real en el mismo mes: el sesgo optimista conocido, ver P5.2c).
+
+**Por par** (corridas aisladas, así que los totales no suman al portfolio; sirven para comparar meses DEL MISMO par):
+
+| par | meses+ | concentr. | últimos 3m | lectura |
+|---|---|---|---|---|
+| **ONDO** | 2/7 | 28% | **−43,06** | el peor, y **no es el paramset** (ver abajo) |
+| **CFX** | 2/7 | 39% | −12,29 | su total (+1,16) sale de un único mes de +20,85 |
+| **APT** | **1/7** | 38% | −7,59 | malo de forma consistente, y casi no opera |
+| ETH | 4/7 | 41% | −4,38 | ver abajo: el cambio del 11/09 **sí** sirvió |
+| BCH | 4/7 | 30% | −0,20 | −21,18 el último mes |
+| DYDX | 3/7 | 42% | +3,75 | |
+| XMR | 3/7 | 24% | +4,23 | la menos concentrada del portfolio |
+| BNB | 4/7 | 23% | +4,71 | +61,2 total, pero todo en abr-jul |
+| LINK | 4/7 | 50% | +4,92 | recuperándose de un −27,60 en may23 |
+| **AVAX** | 3/7 | 38% | **+38,74** | ⚠️ +30,57 es el mes de entrenamiento |
+
+#### ✅ ETH: el cambio del 11/09 queda validado por esta vista
+
+| | NUEVO (11/09) | VIEJO |
+|---|---|---|
+| total 6m | **+51,95** | −2,40 |
+| últimos 3m | **−4,34** | −35,03 |
+| último mes | **+4,94** | −24,18 |
+
+Es la mejor evidencia hasta ahora de ese cambio — **sigue sin cierres reales**, pero el sim es inequívoco.
+
+#### 🔴 ONDO: el problema es el par, no los parámetros
+
+| | NUEVO (11/09) | VIEJO |
+|---|---|---|
+| total 6m | −35,66 | −31,88 |
+| últimos 3m | −43,07 | −45,62 |
+
+Pierde **−16,79 / −9,33 / −16,95** en los últimos tres meses **con cualquiera de los dos paramsets**; bajarle el `tp` de 0,044 a 0,025 movió +2,55 en tres meses. **Re-optimizarlo otra vez no es el camino** — es candidato a recorte de peso o a rotación. Ojo con el precedente: rotar el peor par movió el problema en vez de resolverlo (DOT → DYDX).
+
+### 🔴 La pregunta que queda abierta: ¿hay edge?
+
+Con la ejecución ya correcta, el diagnóstico se desplaza de "el bot no hace lo que debería" a "lo que debería hacer, ¿gana?".
+
+**Medición del 18/08** (parity-sim, top-up de 160k velas del API — serie continua, 0 huecos —, `--symbols` explícito, ticks corregidos). Ojo con las magnitudes: el sim corre con capital 1000 y compounding mientras el balance real ronda los 194 USDT, así que están infladas ~5×. **Leer signos y proporciones, no USDT.**
+
+| Ventana | Trades | Bruto | Costos | **Neto** | Winrate | Payoff |
+|---|---|---|---|---|---|---|
+| 30d | 144 | −4,88 | 32,38 | −37,26 | 56,2% | 0,44 |
+| 60d | 282 | −5,32 | 66,44 | −71,76 | 54,3% | 0,48 |
+| 90d | 430 | +65,29 | 100,68 | −35,40 | 58,6% | 0,59 |
+| 120d | 552 | +121,43 | 130,70 | **−9,26** | 60,9% | 0,62 |
+
+Negativo en 4/4, consistente con la medición del 10/08 (que daba −47,5/−62,5/−23,9/−18,7). **El bruto es negativo en 30 y 60d**: en el período reciente no hay ni siquiera edge bruto.
+
+**El hallazgo accionable: 7 de 10 pares no generan bruto suficiente para pagar su propio costo.**
+
+| ¿bruto/trade > costo/trade? | ventanas que sí |
+|---|---|
+| **BCH** | **4/4** ✅ |
+| AVAX, BNB, CFX | 1/4 |
+| APT, DYDX, ETH, LINK, ONDO, XMR | **0/4** |
+
+- **LINK y XMR tienen bruto NEGATIVO** en 120d (−0,33 y −4,17): perderían aunque los costos fueran cero. No es un problema de costos, es que no tienen edge.
+- **El slippage es el 50% de los costos** (65,2 vs 61,5 de comisiones y 4,0 de funding). Es el componente más grande y el menos atacado.
+- Esto reencuadra por qué **5 de 6 A/B fallaron desde junio**: todos movían *qué* trades tomar, ninguno tocó la relación bruto/costo por trade.
+
+⚠️ **Trampa de selección detectada, no caer en ella**: el subconjunto "solo BCH/BNB/CFX" da −0,17/+4,73/+19,48/+40,78 en 30/60/90/120d. Se ve bien, pero **mejora monótonamente con la ventana** — la selección la manda el período más largo, o sea que es selección in-sample. Sólo BCH tiene perfil robusto (4/4). No usar esto como base de una rotación sin cross-val fuera de muestra.
+
+- El patrón de asimetría del 03/07 **persiste**: payoff 0,44-0,62 según ventana; los perdedores viven menos que los ganadores en el sim (277-321 vs 294-359 min), al revés que en el real.
+
+**🔄 Rehecho el 31/08 con el parity ya corregido** (fill conservador + reparto 33/33/34):
+
+| Ventana | Bruto | Costos | Neto |
+|---|---|---|---|
+| 30d | **−8,89** | 28,94 | −37,82 |
+| 60d | **−15,61** | 47,29 | −62,90 |
+| 90d | +19,32 | 72,27 | −52,95 |
+| 120d | +101,30 | 105,99 | −4,68 |
+
+**En los últimos 60 días el bruto es NEGATIVO**: pierde antes de pagar un solo costo. Ya no es "los costos se comen el edge" — en el período reciente no hay edge que comer.
+
+Cobertura de costos mejoró de **3/10 a 6/10** pares (cubren: BCH, BNB, CFX, AVAX, DYDX, LINK). No cubren: **APT, ETH, ONDO, XMR**. El peor es ahora **XMR** (−21,06 en 120d, bruto/trade **−0,40** = negativo).
+
+⚠️ **Y la geometría TP1/SL NO generaliza como ranking** (corrección del 31/08): LINK y AVAX tienen el peor ratio (0,48 y 0,50) y **sí** cubren su costo; los cuatro que no lo cubren tienen geometría buena (0,80 a 2,64). El modelo sirvió para diagnosticar DYDX, no para ordenar el portfolio. Se retira la recomendación de "LINK y AVAX son los siguientes".
+
+~~**La paradoja que queda abierta**~~ ⚠️ **Resuelta el 02/10** (ver "Edge a horizonte fijo — re-medido"): el +0,198% era de la ventana may-ago; en 10 meses es ~0 y fuera de muestra negativo. La señal tiene **+0,198% neto por señal** manteniendo 8h con el stop actual (ver "Revisión semanal 31/08"), y el sistema pierde. No lo explican el stop, ni el reparto de tramos, ni el time-exit. Candidatos vivos: el BE (pero es pair-specific) y la distancia entre "mantener a horizonte fijo" y "salir por TP/trailing".
+
+---
+
+### ✅ Revisión 19/09 — el TP1 resuelto, el ratchet validado, AVAX y XMR re-optimizados
+
+**PnL 7d −0,39 · 14d −2,80 · 30d −7,05 · 60d −11,33.** Balance **188,12**. Prod estable desde el deploy del 15/09, `NRestarts=0`, 0 errores.
+
+La semana está **plana**, no en verde: `REALIZED_PNL` +0,03 contra comisiones −0,43. Mejor que las tres previas, pero el bruto es nulo.
+
+#### ✅ El ratchet quedó validado por el resultado
+
+Los tres mejores cierres de la semana salieron por trailing tras dispararlo: **CFX +0,57 · BCH +0,48 · DYDX +0,38**. Y el candado de monotonía de `0a812e3` se ve actuando: el 13/09 DYDX subió 0,11489 → 0,11531 → 0,11539 → 0,11578 → 0,11588 **sin un solo retroceso**, contra el diente de sierra del 06/09 (752 → 749 → 743 → 744) que es de *antes* del fix.
+
+| razón de cierre (7d) | n | PnL medio |
+|---|---|---|
+| `trail_stop` | 4 | **+0,415** |
+| `be_stop` | 5 | +0,024 |
+| `stop_loss` | 3 | −0,560 |
+
+**El trailing es el que cobra; el BE protege sin aportar; el stop completo sigue siendo el sumidero** (63% de los cierres a 30d). Realización de TP1: 44% en 7d, 33% en 30d — en línea con el 38-40% histórico. **TP2 no llenó ni una vez en 14 días** y TP3 sigue en 0. *(⚠️ Medido con la telemetría del bot, que subcontaba; ver "Bug 01-02/10". Lo de TP2 lo confirma el exchange: 0 fills de TP2 en septiembre.)*
+
+#### 🔧 AVAX y XMR re-optimizados (`3daa85c`) — con holdout fuera de muestra
+
+Sweep de **6 pares × 3 semillas × 500 trials** con `--conservative_limit_fills`, entrenando 150d con `train_ratio 0.66`. Cada candidato validado por **dos** caminos: cross-val en 4 ventanas recientes **y un holdout de 60d terminando el 23/04/2026 — datos que el sweep nunca vio** (construido truncando `long.csv` antes de la ventana de entrenamiento).
+
+| | 30d | 60d | 90d | 120d | **holdout no visto** |
+|---|---|---|---|---|---|
+| antes | −33,49 | −55,46 | −62,05 | −38,66 | −57,26 |
+| **después** | **−17,09** | **−16,79** | **−4,14** | **+8,78** | **−34,83** |
+| Δ | +16,4 | +38,7 | +57,9 | +47,4 | **+22,4** |
+
+Ningún otro par se mueve más de ±0,5: la mejora es íntegramente de los dos que cambian.
+- **AVAX** −8,71 → **+17,49** (120d) · 102 → 136 trades · `cost_ratio` **1,79 → 0,60**
+- **XMR** −20,39 → **+1,40** (120d) · 29 → 23 trades · `cost_ratio` 0,62 → 0,79
+
+Ambos pasan a **cubrir su propio costo por trade**. Aun así el portfolio sigue negativo en 3 de 4 ventanas: **esto achica la pérdida, no crea edge.**
+
+**Por qué sólo 2 de los 6 perdedores reales a 60d** (BNB −4,19 · DYDX −4,08 · AVAX −4,03 · XMR −1,02 · BCH −0,99 · ETH −0,10):
+
+| Par | 4/4 reciente | gana en holdout | veredicto |
+|---|---|---|---|
+| **AVAX** | 2 de 3 semillas | **3 de 3** | ✅ aplicado |
+| **XMR** | 2 de 3 | 1 de 3 (sólo la 202) | ✅ aplicado |
+| BCH | 1 de 3 | 3 de 3, pero el caudal colapsa 24 → 5 trades | ❌ y el sim no lo da roto (+0,21/+3,21 en 90/120d) |
+| BNB | 0 de 3 | 1 de 3, contradice la cross-val | ❌ sim positivo en 90/120d |
+| ETH | 0 de 3 | **0 de 3** | ❌ los params del 11/09 le ganan a todo |
+| DYDX | 1 de 3 | sin historia para testear | ❌ ver abajo |
+
+🎯 **XMR es la demostración de por qué 3 semillas**: las semillas 101 y 303 se veían óptimas en reciente (+17,7 y +14,2 a 30d) y en el holdout dan **−29,9 y −26,4**. Sólo la 202 sobrevive. **Con una sola semilla se habría aplicado un sobreajuste.**
+
+❌ **DYDX: ningún candidato sirve, y la opción quirúrgica tampoco.** Ninguno revierte `require_rsi_cross` (la semilla 303 hasta endurece `adx_min` 22→26): lo dejarían igual de mudo o peor. Se probó además revertir **un solo knob** (`require_rsi_cross` → False): **1/4, con −3,3/−4,3/−7,2 en 60/90/120d.** Opera más y pierde más — la misma lección de P2.1, P2.1b, P1 y post-SL, ahora por quinta vez.
+
+#### Notas de método que valen para el próximo sweep
+
+- **El holdout truncando `long.csv` es barato y decisivo.** `--data_template <csv_truncado>` + `--parity_days N` da una ventana que el sweep no pudo ver. Separó AVAX (3/3) de XMR (1/3) y mató a ETH (0/3), cosa que la cross-val reciente sola no hacía.
+- ~~**Con `train_ratio 0.66` sobre 150d, las ventanas de 90 y 120d SOLAPAN el entrenamiento.** Sólo la de 30d es limpia.~~ ⚠️ **Falso (corregido 02/10)**: el sweep sólo opera y elige en el último 34%, así que **30d y 60d son las más contaminadas**. Ver "Candidatos 02/10".
+- El candidato aplicado de AVAX es el que **menos knobs mueve** (8) — coherente con la lección de DYDX del 25/08.
+
+## Estado al cierre del 19/09
+
+**Prod**: activo, `NRestarts=0`, 0 errores. `pkg/best_prod.json` md5 **`68c049c1`** coincidiendo local = HEAD = prod (verificado 23/09; `8ce9f80d` era el del 19/09, antes del `peso` de ONDO). Balance **188,12 USDT**.
+
+**Portfolio**: 10 pares. Cambios de params desde el 03/07: DYDX (25/08), ETH + ONDO (11/09) y **AVAX + XMR (19/09)**.
+- **AVAX**: `tp` 0,018 · `sl_pct` 0,018 · `adx_min` 14 · `fresh_cross` 3 — EN PRUEBA, juzgar por 5-8 cierres. Rollback md5 `d868c273`.
+- **XMR**: `tp` 0,022 · `sl_pct` **0,010** (era 0,018, menos riesgo por trade) — EN PRUEBA, juzgar por 5-8 cierres.
+- **ETH** (`tp` 0,025 · `sl_pct` 0,018) y **ONDO** (`tp` 0,025): **sin un solo cierre desde el 11/09**. El veredicto de 5-8 cierres sigue pendiente. El sweep del 19/09 confirmó que no hay que tocarlos (0 de 3 semillas les gana).
+- **DYDX**: sin veredicto y sin forma de obtenerlo — 2 cierres en 25 días (+0,38 / −0,46). Ver "Revisión 19/09".
+
+**PnL semanal**: 25-31/08 −4,79 · 01-09/09 −1,61 · 09-11/09 −1,06 · **12-19/09 −0,39** (12 cierres: 5 `be_stop`, 4 `trail_stop`, 3 `stop_loss`).
+
+**Configuración viva** (todo por flip de config, sin deploy):
+| Knob | Valor | Desde |
+|---|---|---|
+| `session.entry_hours_utc` | `[]` (24/7) | 18/08, validado |
+| `tp_mode` | `partial_limit_tp` | 03/07 |
+| `ratchet.enabled` | **`false`** | **24/09 — APAGADO**: la "validación" del 19/09 no se sostuvo (ver "Re-prueba del ratchet"); ninguna variante pasa el protocolo |
+| `break_even_after_tp1` | **`false`** | 11/09, revertido |
+| `htf_filter_enabled` + `htf_adx_min` | **`true` / 18,0 sobre 1h** | **20/09 — EN PRUEBA, juzgar por 20-25 cierres** |
+| `peso` de ONDO | **0,13** (era 0,20) | 20/09 |
+| `peso` del resto | **0,20 explícito** | 02/10 — con 8 pares el equal-weight subiría a 0,25 |
+| pares activos | **7** (AVAX, DYDX y ONDO a banca) | 02/10 |
+
+**Los 13 bugs corregidos**, todos de ejecución, datos o medición — **ninguno de parámetros**:
+
+| Bug | Commit | Efecto real |
+|---|---|---|
+| Cantidad de los TPs | `753ebd0` | remanente sin cobertura de TP |
+| El TP escalonado no escalonaba | `077951b` | los 3 tramos al precio de TP1, ~1 mes |
+| Velas en formación en el histórico | `723e5f7` | indicadores sobre closes falsos, meses |
+| Decisión sobre la vela en formación | `15b1e1b` | **0 órdenes en 3 días** |
+| Tick size ausente | `d895c7b`+`c0e453e` | backtest envenenado + ONDO/APT sin poder llenar |
+| Fill de TP por simple toque | `cc36b90` | 2 meses de A/B con fills fantasma |
+| Reparto de tramos hardcodeado | `cf61157` | los A/B de distribución eran no-op |
+| **BE al 16% (vela en formación)** | `3728bf1` | con BE 7/7 ganadoras, sin BE 8/15 |
+| **Ventana ciega de 9 h** | `ee89e1a` | **causa raíz del 16%** |
+| **Stop que retrocedía + reloj auto-bloqueante** | `0a812e3` | 743,25 → 756,47 |
+| **Recolocación en bucle por redondeo** | `c626ea1` | 11 cancel/post del mismo stop |
+| **Lectura fallida borraba todo el estado** | `b50fbb5` | un error transitorio destruía el ladder de todos los pares |
+| **Ratchet con stops inválidos + telemetría que mentía** | `7b5cf72` | registraba stops que el exchange rechazó |
+
+**Lo que se aprendió, y ya van seis veces**: cada bug se leía como una *conclusión sobre la estrategia* — "CFX no tiene edge", "ONDO y APT son mudos", "TP×2 gana 5/5", "el ratchet no funciona en BCH" — cuando era ejecución, datos o el instrumento de medición. **Y esta semana se agregó una variante peor: un bug que TAPABA una falla de diseño.** El BE roto dejaba correr las posiciones hasta TP1 por accidente; arreglarlo expuso la zona muerta que estaba ahí desde siempre.
+
+**Al retomar, en este orden**:
+1. **Evaluar AVAX y XMR** por sus primeros **5-8 cierres**, no por calendario. Rollback md5 `d868c273`. Dos alarmas tempranas distintas:
+   - **AVAX**: si no sube su caudal (el sim pasa de 102 a 136 trades en 120d) el paramset no se está realizando, como pasó con DYDX. **Y bajar la expectativa**: su edge simulado es un mes (ver "el edge simulado de AVAX es UN MES"); fuera de muestra da ~+8, no ~+17.
+   - **XMR**: perfil mucho más sano (gana en los meses de test, pierde en los de train). Es el que más chance tiene de realizarse.
+2. **Evaluar ETH y ONDO** — siguen en **0 cierres** desde el 11/09. Si en dos semanas más no producen, el problema no es el paramset sino que no generan señal. Rollback md5 `50a05c0a`.
+3. ~~**Decidir el 0,70 de TP1**~~ → ❌ **CERRADO 19/09: barrido hecho, NO cambiar nada.** Ver "Barrido de `tp1_factor`" abajo. El 0,70 resultó ser el **óptimo global** y el único ganador por par (BNB) **se falsó** en la ventana no usada para elegir.
+4. **Revisar el resto de la geometría con MFE a horizonte fijo**, ahora con los ratios REALES (tabla corregida en "La geometría TP1/SL"): **LINK** (0,34, el peor) y **BNB** (0,70 con TP1 a 1,26% contra MFE 1,10%) son los siguientes. Uno por vez.
+5. **DYDX**: decidir. Tras el 19/09 se sabe que **ni el sweep ni aflojar un filtro sirven** (la opción quirúrgica da 1/4 y pierde más). Las opciones reales son bajarle el peso al piso de confianza o aceptar que es un portfolio de 9.
+6. ~~**Bug del TP1 que se re-coloca más lejos**~~ → ✅ **CORREGIDO 19/09** (`591cafe`): el ladder se ancla al `avgPrice` de la posición. Cierra además el hueco de paridad y deja `tp_factors` como knob real.
+7. **Tamaño por confianza** (la parte salvable de la asignación de capital): peso 0,12 para paramsets sin validar, 0,20 al cumplir 5-8 cierres. **Respetar el piso duro de 0,113** o el escalonamiento de TP se rompe. Con 4 pares en prueba a la vez (AVAX, XMR, ETH, ONDO) es más relevante que nunca.
+8. **La paradoja del edge**: la señal da +0,198% neto por señal a 8 h y el sistema pierde. La medición del 11/09 aporta la mitad —el 59% no alcanza su TP1— y el 19/09 la otra mitad: **ese TP1 está un 43% más lejos de lo que decía la tabla**.
+9. ~~**El ladder inalcanzable**~~ → ❌ **CERRADO 19/09** (y el "falla a 90d" quedó explicado: es el mes de AVAX, ver abajo). **El diagnóstico era correcto, el remedio obvio NO.** Barrido de 9 ladders: **ninguno gana las 4 ventanas de selección**, y *acercar* los tramos —la corrección "evidente"— es de lo peor (1/4, y −2,25 en el holdout). Lo que ayuda es **alejarlos** (3/4 y +4,0 a +6,4 en holdout), pero falla siempre a 90d, así que no clasifica. **Conclusión práctica: el ladder funciona como "un TP + trailing", y eso no es un defecto a parchear — es lo que cobra** (`trail_stop` +0,415 contra `be_stop` +0,024). Infra lista para revisitarlo barato: `tp_factors` es knob por par en live y parity.
+10. **Ventana `legacy → partial`**: entre el cierre de una posición y el registro de la siguiente la fila vive con defaults. Es lo que arruinó a BCH el 06/09. Además hubo un pico de **100 `tp_state_row_recreated` el 09/09** en un solo día (BCH 58, ETH 29) que nadie miró.
+11. **Rehacer bruto/costos** con el parity corregido: las cifras de "¿hay edge?" son del 18/08 y ahora hay serie continua sin huecos de 150+ días para los 10 pares.
+
+**Sobre el proceso, y esto vale más que cualquier fix**: el usuario detectó, mirando el comportamiento real, cosas que las métricas escondían — que sí hubo posiciones llegando a TP3, que DYDX perdía, que hacía tiempo no corría la simulación, que el ratchet no disparaba en BNB, que BCH sí había llenado TP1 cuando el estado del bot decía que no, y el **11/09 que prod tenía 6 meses de velas** cuando esta guía afirmaba lo contrario. **Todas resultaron ciertas**, varias corrigieron una conclusión mía, una destapó un job muerto hacía 4,5 meses y la última destapó una afirmación falsa de esta misma guía que estaba limitando los análisis a ventanas de 45 días. **Contrastar siempre el número agregado contra lo que se ve operar — verificar contra el exchange, no contra el estado del bot, y desconfiar de las afirmaciones de este archivo que nunca se re-verificaron.**
+
+**Y la lección propia del 19/09**: el TP1 al 70% se buscó todo el 14/09 en los *datos* —columnas, sanitizador, slippage, velas en formación— y era **una constante literal en el código que consume esos datos**. Cuando un valor observado es un múltiplo limpio del esperado (0,70 exacto, σ chica), `grep` del factor antes que más medición. Y el corolario incómodo: **el backtest aplicaba el mismo 0,70 todo este tiempo**, así que no era un bug de paridad sino una decisión de diseño no documentada — que igual invalidó la tabla de geometría con la que se tomaron decisiones durante un mes.
+
+**Y una lección propia del 11/09, de método**: en la misma sesión di vuelta **dos** conclusiones por errores de medición míos, las dos del mismo tipo — *dejar que la política bajo estudio decida la ventana de medición*. (1) El A/B del break-even cortaba cada posición en su hora de cierre **real**, producida por la política vigente; con horizonte fijo el signo se invierte. (2) El MFE medido "hasta el cierre" decía que a ETH le sobraba TP; medido a 24 h fijas dice que le falta stop, que es el diagnóstico opuesto y llevó a un cambio distinto. **La ventana de medición tiene que ser independiente de lo que se está midiendo.**

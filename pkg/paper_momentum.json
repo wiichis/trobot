@@ -1,6 +1,6 @@
 {
   "_comment": "Prueba hacia adelante SIN DINERO de la variante V3 de momentum entre pares (02/10/2026; ver scripts/lab_momentum_cruzado.py y CLAUDE.md). Cada hold_h horas: cierra el libro anterior al precio del último cierre horario y arma uno nuevo, largo los n_largos pares con mayor retorno en lookback_h y corto los n_cortos con menor. No manda órdenes. Corre en el bot (job horario), con estado en disco.",
-  "enabled": true,
+  "enabled": false,
   "lookback_h": 168,
   "hold_h": 72,
   "n_largos": 5,
