@@ -17,7 +17,7 @@ El bot de 5 min multi-par sobre perpetuos se archivó porque no tiene edge medid
 | 0. Archivar el bot de 5 min y apagar los experimentos | ✅ 22/10 |
 | 1. Velas spot 1 h de BTC + reglas del exchange (mínimo, step, tick, retiro) | ✅ 22/10 — `scripts/btc_rangos_datos.py`, paridad Binance↔BingX ~0 bps |
 | 2. Backtest contra DCA puro, con selección 2021-2023 y validación 2024-2026 intacta | ❌ 22/10 — **no viable**: v0.1 0 de 5 finalistas, no le gana al placebo; v0.2 (sólo en ventana COMPRA) 0 de 5. Ver [docs/btc_rangos_fase2_informe.md](docs/btc_rangos_fase2_informe.md) |
-| 3. Bot live spot: papel → real, sólo si la Fase 2 pasa | ⛔ no se construye con la v0.1 |
+| 3. Bot en papel | 🟡 23/10 — **en papel desde el 23/10** con A · E4_0.5 · S4_0.75 · G4 y reposición parcial (`pkg/btc_rangos.py`, `pkg/btc_rangos.json`), elegido por el usuario aunque el backtest no pasa los criterios (ingreso realizado ~5 %/mes, neto ≈ 0 contra el DCA). Real: no implementado |
 
 Herramientas de la Fase 2: `pkg/btc_rangos_reglas.py` (señales), `pkg/btc_rangos_motor.py` (motor; el mismo que usaría el live), `scripts/btc_rangos_backtest.py` (grilla + validación + placebo, ~70 s) y `scripts/btc_acumulacion_backtest.py` (§13).
 
@@ -27,6 +27,7 @@ Los jobs se encienden en `pkg/jobs.json`. Cambiar un flag = editar + restart. Si
 
 | Job | Estado | Módulo |
 |---|---|---|
+| **Bot BTC por rangos en papel** | activo, :01 cada hora | `pkg/btc_rangos.py` — estado en `archivos/btc_rangos/papel/`; `dca_mensual_usdt` se ajusta en `pkg/btc_rangos.json` antes de cada día 3 |
 | Resumen diario (BTC + S&P + Dow) | activo | `pkg/daily_digest.py` |
 | Alerta de ventana de compra/venta de BTC | activo | `pkg/btc_alertas.py` (su gate `alerta_ventana` está en `pkg/btc_bots.json`) |
 | Bot de 5 min multi-par | apagado | `pkg/monkey_bx.py` y compañía |
