@@ -50,6 +50,10 @@ la vela ANTERIOR (sin mirar el futuro).
   S4_f  TP = entrada × (1 + max(f × R, 0,6 %)), recalculado con el R vigente.
   S5    trailing: se arma en entrada × (1 + max(0,5 R, 0,6 %)) y vende si retrocede 0,2 R.
   Modo B con `escalon_r > 0`: el slot k entra a −k × escalon_r × R de la entrada del slot 1.
+
+Venta anual del holding (`venta_anual`, 22/10/2026, pedido del usuario): en el cierre mensual
+de enero (día 3) se vende esa fracción del holding, a ese precio y con los mismos costos, en
+el mundo con bot y en los dos benchmarks. Los USDT de las ventas se acumulan aparte.
 """
 from __future__ import annotations
 
@@ -90,6 +94,7 @@ class Config:
     intrabar: bool = True
     cierre_forzado: bool = True  # False = v0.3: los slots atrapados esperan, sin reposición
     escalon_r: float = 0.0       # > 0: escalón del modo B en múltiplos del rango diario R
+    venta_anual: float = 0.0     # fracción del holding que se vende cada 3 de enero
     comision: float = COMISION
     slippage: float = SLIPPAGE
     min_orden: float = MIN_ORDEN_USDT
@@ -126,6 +131,10 @@ class Motor:
     holding_btc: float = 0.0
     usdt_para_holding: float = 0.0
     bench_btc: float = 0.0
+    bench_b_btc: float = 0.0          # los 200 USDT del benchmark B comprados el primer día
+    ventas_usdt: float = 0.0          # USDT obtenidos vendiendo holding (mundo con bot)
+    bench_ventas_usdt: float = 0.0    # ídem, DCA puro
+    bench_b_ventas_usdt: float = 0.0  # ídem, la parte extra del benchmark B
     ciclo: Optional[str] = None
     n_cierres: int = 0
     ultimo_dia_entrada: Optional[str] = None
@@ -216,6 +225,15 @@ class Motor:
         self.usdt_para_holding = 0.0
         qty_b, _ = self._comprar_bench(dca, precio)
         self.bench_btc += qty_b
+        if self.cfg.venta_anual > 0 and t.month == 1:
+            neto = precio * (1 - self.cfg.slippage) * (1 - self.cfg.comision)
+            f = self.cfg.venta_anual
+            self.ventas_usdt += self.holding_btc * f * neto
+            self.bench_ventas_usdt += self.bench_btc * f * neto
+            self.bench_b_ventas_usdt += self.bench_b_btc * f * neto
+            self.holding_btc *= 1 - f
+            self.bench_btc *= 1 - f
+            self.bench_b_btc *= 1 - f
         self.mes.update({"ciclo": self.ciclo, "cierre": t, "precio_cierre": precio, "dca": dca,
                          "repuesto": repuesto, "compra_holding": compra_holding,
                          "slots_apagados": sum(not s.activo for s in self.slots),
@@ -382,7 +400,7 @@ class Resultado:
 
     @property
     def bench_b_btc(self) -> float:
-        return self.motor.bench_btc + self.bench_b_extra_btc
+        return self.motor.bench_btc + self.motor.bench_b_btc
 
 
 def simular(velas: pd.DataFrame, senal: pd.Series, atr: pd.Series, cfg: Config,
@@ -397,9 +415,10 @@ def simular(velas: pd.DataFrame, senal: pd.Series, atr: pd.Series, cfg: Config,
                   else np.full(len(sl), np.nan))
     m = Motor(cfg=cfg, dca=dca)
     o_, h_, l_, c_ = (sl[k].to_numpy() for k in ("open", "high", "low", "close"))
+    p0 = float(o_[0])
+    bench_b = _redondear(cfg.capital * (1 - cfg.comision) / (p0 * (1 + cfg.slippage)))
+    m.bench_b_btc = bench_b
     for j, t in enumerate(sl.index):
         m.vela(t, o_[j], h_[j], l_[j], c_[j], bool(sen[j]), float(atr_prev[j]), float(rango_prev[j]))
     m.finalizar(sl.index[-1] + pd.Timedelta(hours=1), float(c_[-1]))
-    p0 = float(o_[0])
-    bench_b = _redondear(cfg.capital * (1 - cfg.comision) / (p0 * (1 + cfg.slippage)))
     return Resultado(motor=m, precio_inicio=p0, precio_fin=float(c_[-1]), bench_b_extra_btc=bench_b)

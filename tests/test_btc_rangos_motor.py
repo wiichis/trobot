@@ -262,3 +262,16 @@ def test_s5_trailing_en_rangos_y_escalon_variable():
     m.vela(T0 + pd.Timedelta(hours=4), 98.8, 98.8, 98.5, 98.6, False, np.nan, 0.02)  # stop 99 × 0,996 = 98,604
     assert not s.abierto
     assert m.operaciones[-1]["salida"] == pytest.approx(99 * (1 - 0.2 * 0.02))
+
+
+def test_venta_anual_del_holding_en_enero():
+    m = motor(salida="S1_3", venta_anual=0.1, dca=lambda k: 100.0)
+    m.bench_b_btc = 2.0
+    m.vela(pd.Timestamp("2023-12-03 00:00"), 100, 100, 100, 100, False, np.nan)
+    m.vela(pd.Timestamp("2024-01-03 00:00"), 100, 100, 100, 100, False, np.nan)   # cierre de enero
+    assert m.holding_btc == pytest.approx(0.9, abs=1e-6)       # compró 1 BTC con el DCA y vende 10 %
+    assert m.bench_btc == pytest.approx(0.9, abs=1e-6)
+    assert m.bench_b_btc == pytest.approx(1.8)
+    assert m.ventas_usdt == pytest.approx(10, abs=1e-3) and m.bench_b_ventas_usdt == pytest.approx(20)
+    m.vela(pd.Timestamp("2024-02-03 00:00"), 100, 100, 100, 100, False, np.nan)   # febrero: no vende
+    assert m.ventas_usdt == pytest.approx(10, abs=1e-3)

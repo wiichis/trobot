@@ -207,3 +207,28 @@ Mejor combinación en validación (A · E4 0,5 · S4 0,75, DCA 400), en USDT:
 **Conclusión de las cuatro versiones**:
 - Un bot que sólo compra BTC y nunca vende con pérdida **no puede ser una fuente de ingreso diversificada**. El ingreso que genera es el precio de quedarse con los peores lotes, y ese precio, medido, cuesta lo mismo que el ingreso.
 - Un ingreso que no dependa de BTC tiene que venir de algo que no esté comprado en BTC, como el carry de funding o un rendimiento en USDT.
+
+### v0.4 con venta anual del 10 % del holding (22/10/2026)
+
+**Planteo del usuario**: el costo de las atrapadas sólo se hace efectivo al vender BTC, y vende ~10 % del holding por año.
+
+**Cómo se midió**:
+- Cada 3 de enero se vende el 10 % del holding, en los dos mundos: con bot, sin bot (A) y también la parte extra de B.
+- Se compara el valor total al final: BTC × precio + USDT del bot + USDT de las ventas.
+- Script: `scripts/btc_rangos_venta_anual.py`; las 5 finalistas de la v0.4, sin cambios.
+
+**Simulación continua 2021-2026, mejor combinación (A · E4 0,5 · S4 0,75), DCA 400** (valores en USDT):
+
+| | con bot | sin bot (A) | diferencia |
+|---|---|---|---|
+| ganancia realizada del bot | 1.138 | — | |
+| USDT de las ventas anuales del holding | 11.308 | 11.480 | −172 |
+| BTC al final | 0,460 | 0,460 | 0 |
+| **valor total** | **50.253** | **50.598** | **−345** |
+
+- **Con DCA 400 y aleatorio**: las 5 finalistas pierden contra A, entre −345 y −1.173 USDT.
+- **Con DCA 100**: ganan contra A entre +154 y +241, porque los slots atrapados no se reponen, quedan apagados y el bot opera poco (ganancia de ~115 USDT en 6 años). Contra B pierden igual, entre −11 y −97.
+
+Vender más tarde no borra el costo. Los lotes atrapados entran al holding a un precio peor que el del DCA, y esa diferencia se arrastra a las ventas futuras y al BTC que queda.
+
+⚠️ **Corrección**: la cifra "1.551 USDT en 5 años y 9 meses" sumaba dos simulaciones separadas, cada una arrancando con 200 USDT. En la simulación continua 2021-2026 la ganancia realizada es de **1.138 USDT**.
