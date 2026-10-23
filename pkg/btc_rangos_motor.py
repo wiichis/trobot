@@ -94,7 +94,8 @@ class Config:
     intrabar: bool = True
     cierre_forzado: bool = True  # False = v0.3: los slots atrapados esperan, sin reposición
     escalon_r: float = 0.0       # > 0: escalón del modo B en múltiplos del rango diario R
-    venta_anual: float = 0.0     # fracción del holding que se vende cada 3 de enero
+    venta_anual: float = 0.0     # fracción del holding que se vende en el cierre de enero
+    dia_cierre: int = 3          # día del mes del cierre mensual / DCA (1-28)
     comision: float = COMISION
     slippage: float = SLIPPAGE
     min_orden: float = MIN_ORDEN_USDT
@@ -114,9 +115,9 @@ class Slot:
     entro_en_vela: bool = False
 
 
-def ciclo_de(t: pd.Timestamp) -> str:
-    """Ciclo mensual al que pertenece la vela: empieza el día 3 a las 00:00 UTC."""
-    return (t - pd.Timedelta(days=2)).strftime("%Y-%m")
+def ciclo_de(t: pd.Timestamp, dia: int = 3) -> str:
+    """Ciclo mensual al que pertenece la vela: empieza el día `dia` (3 por defecto) a las 00:00 UTC."""
+    return (t - pd.Timedelta(days=dia - 1)).strftime("%Y-%m")
 
 
 def _redondear(q: float) -> float:
@@ -350,7 +351,7 @@ class Motor:
              rango_prev: float = float("nan")):
         """Procesa una vela cerrada completa. `senal` es la señal calculada con ESTA vela
         (se ejecuta en la siguiente); `atr_prev` es el ATR de la vela anterior."""
-        ciclo = ciclo_de(t)
+        ciclo = ciclo_de(t, self.cfg.dia_cierre)
         if self.ciclo is None:
             self.ciclo = ciclo
         elif ciclo != self.ciclo:

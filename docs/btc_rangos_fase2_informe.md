@@ -232,3 +232,17 @@ Mejor combinación en validación (A · E4 0,5 · S4 0,75, DCA 400), en USDT:
 Vender más tarde no borra el costo. Los lotes atrapados entran al holding a un precio peor que el del DCA, y esa diferencia se arrastra a las ventas futuras y al BTC que queda.
 
 ⚠️ **Corrección**: la cifra "1.551 USDT en 5 años y 9 meses" sumaba dos simulaciones separadas, cada una arrancando con 200 USDT. En la simulación continua 2021-2026 la ganancia realizada es de **1.138 USDT**.
+
+### ¿Depende del día del DCA? (22/10/2026, objeción del usuario)
+
+**Objeción**: "no siempre compro barato; muchas veces compro caro".
+
+**Respuesta**: el DCA compra el día de cierre al precio que haya, igual con bot y sin bot, así que la comparación aísla lo que hace el bot. Para descartar que el día 3 lo favoreciera, se repitió con el DCA en **cada día del 1 al 28** (`scripts/btc_rangos_dia_dca.py`; 2021-2026, venta anual del 10 %, las 5 finalistas de la v0.4).
+
+| DCA | días en que el bot le gana al DCA puro (A) | diferencia mediana | rango |
+|---|---|---|---|
+| 400 | **2 a 4 de 28** | −415 a −651 USDT | −1.148 a +797 |
+| 100 | 28 de 28 | +159 a +208 USDT | +85 a +269 |
+
+- **Con DCA 400 el resultado no depende del día**: pierde en 24-26 de los 28 días posibles.
+- **Con DCA 100 gana siempre contra A, pero no por operar**: el bot gana ~120 USDT en 6 años. Lo que pasa es que sus 200 USDT terminan convertidos en BTC (los atrapados que no se reponen pasan a holding), y en 2021-2026 BTC le ganó a guardar USDT. Contra B, que compra esos 200 en BTC el primer día, pierde en 26-28 de los 28 días, salvo una combinación que gana en 10 días con mediana −19.

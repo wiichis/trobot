@@ -275,3 +275,9 @@ def test_venta_anual_del_holding_en_enero():
     assert m.ventas_usdt == pytest.approx(10, abs=1e-3) and m.bench_b_ventas_usdt == pytest.approx(20)
     m.vela(pd.Timestamp("2024-02-03 00:00"), 100, 100, 100, 100, False, np.nan)   # febrero: no vende
     assert m.ventas_usdt == pytest.approx(10, abs=1e-3)
+
+
+def test_dia_de_cierre_configurable():
+    assert mm.ciclo_de(pd.Timestamp("2024-02-14 23:00"), 15) == "2024-01"
+    assert mm.ciclo_de(pd.Timestamp("2024-02-15 00:00"), 15) == "2024-02"
+    assert mm.ciclo_de(pd.Timestamp("2024-02-01 00:00"), 1) == "2024-02"
