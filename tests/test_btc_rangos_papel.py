@@ -116,3 +116,13 @@ def test_estado_ida_y_vuelta_por_json():
     assert m2.slots[1].desde == pd.Timestamp("2024-01-05 03:00") and m2.slots[1].abierto
     assert m2.mes["realizado"] == 3.5 and m2.pendientes == [2] and m2.ciclo == "2024-01"
     assert np.isnan(m2.rango)
+
+
+def test_mensaje_de_inicio_sin_guiones_bajos(entorno):
+    t = pd.Timestamp("2024-02-10 00:30", tz="UTC")
+    br.run_btc_rangos(t, fuente(serie(), t))
+    cat, _, kw = entorno["avisos"][-1]
+    assert cat == "btc_rangos_inicio"
+    assert "_" not in kw["mensaje_md"].replace("_Modo papel: sin dinero real._", "")
+    assert "compra tras caer 0,5 × rango diario" in kw["mensaje_md"]
+    assert "vende en +0,75 × rango" in kw["mensaje_md"]

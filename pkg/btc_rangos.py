@@ -192,6 +192,22 @@ def objetivo_venta(cfg: Dict, s: mm.Slot, rango: float) -> float:
     return float("nan")
 
 
+def describir_combo(cfg: Dict) -> str:
+    """La combinación en palabras (los códigos tipo `E4_0.5` rompen el Markdown de Telegram)."""
+    e, sa = rr.ENTRADAS[cfg["entrada"]], mm.SALIDAS[cfg["salida"]]
+    slots = "slots independientes" if cfg["slots"] == "A" else "slots escalonados"
+    if e["tipo"] == "E4":
+        compra = f"compra tras caer {_n(e['g'], 2).rstrip('0').rstrip(',')} × rango diario"
+    else:
+        compra = f"entrada {cfg['entrada']}"
+    if sa["tipo"] == "S4":
+        vende = f"vende en +{_n(sa['f'], 2).rstrip('0').rstrip(',')} × rango (mínimo +0,6 %)"
+    else:
+        vende = f"salida {cfg['salida']}"
+    reinv = int(round(mm.GANANCIA[cfg["ganancia"]] * 100))
+    return f"{slots} · {compra} · {vende} · {reinv} % de la ganancia queda en el bot"
+
+
 def mensaje_operaciones_md(eventos: List[Dict]) -> str:
     lineas = ["_Modo papel: sin dinero real._", ""]
     for e in eventos:
@@ -287,7 +303,7 @@ def run_btc_rangos(ahora: Optional[datetime] = None, fuentes: Optional[Dict[str,
             _guardar_estado(estado)
             _emitir("btc_rangos_inicio", "INFO", mensaje_md=(
                 f"_Modo papel: sin dinero real._ Arranca con {_n(mcfg.capital, 0)} USDT en {mcfg.n_slots} slots. "
-                f"Combinación {cfg['slots']} · {cfg['entrada']} · {cfg['salida']} · {cfg['ganancia']}. "
+                f"{describir_combo(cfg)}. "
                 f"Opera desde la vela que abre a las {(v.index[-1] + pd.Timedelta(hours=1)):%H:%M} UTC."))
             return {"nuevo": True, "procesadas": 0}
         if estado.get("combo") != combo:
