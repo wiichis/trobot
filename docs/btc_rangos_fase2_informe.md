@@ -158,3 +158,52 @@ Las otras 4 finalistas también pierden contra B en la validación (entre −21 
 - El ingreso medio es de 3,6-5 USDT por mes, pero concentrado en las fases alcistas.
 
 **Por qué gana contra A y pierde contra B**: le gana a guardar USDT porque pasa parte del tiempo comprado en BTC (slots atrapados y BTC comprado con ganancias) en un período alcista. El placebo, entrando al azar, saca +35 % de mediana por la misma razón. Pero está menos tiempo expuesto que quien simplemente compra BTC, y vender cada subida de +3 % le hace perder los tramos grandes.
+
+---
+
+## v0.4 — objetivos variables según el día (22/10/2026): mucho ingreso realizado, pero lo pagan las atrapadas
+
+**Pedido del usuario**:
+- La ganancia se calcula según cómo está el día, con una meta modesta del 1-2 % mensual.
+- El bot arranca con 200 USDT.
+- Cuando el usuario compra BTC (DCA, §3 y §13), ese dinero repone primero los slots atrapados, que pasan a su holding.
+- La ganancia se reparte 90 % al bot y 10 % a holding (G4).
+
+**Regla, fijada antes de correr** (`scripts/btc_rangos_v04.py`, salidas en `archivos/btc_rangos/backtest_v04/`):
+- **R**: rango diario típico, la mediana de 14 días cerrados de (máximo − mínimo) / cierre.
+- **Entrada**: caída de g × R desde el máximo de 24 h, con g = 0,5 o 1.
+- **Salidas**:
+  - TP en entrada × (1 + f × R), con f = 0,25, 0,5 o 0,75, recalculado con el R vigente y con piso de +0,6 %;
+  - o un trailing que se arma en +0,5 R y vende si retrocede 0,2 R.
+- **Slots**: A, o B escalonado cada 1 R. Son 16 combinaciones.
+- **Selección**: por ingreso neto mensual con DCA 400.
+- **Viable si, en validación**:
+  - el neto mensual es ≥ 1 %;
+  - termina con BTC ≥ DCA puro;
+  - la mayoría de los años son positivos;
+  - le gana al percentil 90 del placebo;
+  - ningún ciclo explica más del 50 % del neto total.
+
+**Resultado: 0 de 5 viables.** Ninguna llega al 1 % neto mensual en validación. La mejor da +0,53 % y las otras cuatro entre −1,03 % y −0,05 %.
+
+**Lo importante es la descomposición.** El ingreso realizado sí aparece, y es alto: **3-5 % del capital por mes**, entre 150 y 210 ventas por período con +2-3 % cada una. Pero el costo de las atrapadas se lleva casi todo.
+
+Mejor combinación en validación (A · E4 0,5 · S4 0,75, DCA 400), en USDT:
+
+| año | ingreso realizado | costo de atrapadas | neto |
+|---|---|---|---|
+| 2021 | 374 | 356 | +18 |
+| 2022 | 212 | 508 | **−296** |
+| 2023 | 359 | 126 | +233 |
+| 2024 | 299 | 200 | +99 |
+| 2025 | 203 | 223 | −21 |
+| 2026 | 104 | 170 | **−66** |
+
+**El mecanismo** (el mismo de todas las versiones, ahora más visible): el bot **vende el BTC que sube** (a +f × R) y **se queda con el BTC que baja**. Ese BTC atrapado lo termina pagando el DCA del usuario a un precio peor que el de mercado.
+- Por eso el capital del bot "crece" de 200 a 742-1.008 USDT: el DCA repone las atrapadas al precio de compra del bot, así que parte de ese crecimiento es plata del DCA que entró al bot, no ganancia.
+- Neto, queda ≈ 0, con años muy malos cuando BTC cae (2022, 2026).
+- Contra comprar los 200 USDT en BTC el primer día (B) pierde en todas, entre −1,4 % y −3 % de BTC.
+
+**Conclusión de las cuatro versiones**:
+- Un bot que sólo compra BTC y nunca vende con pérdida **no puede ser una fuente de ingreso diversificada**. El ingreso que genera es el precio de quedarse con los peores lotes, y ese precio, medido, cuesta lo mismo que el ingreso.
+- Un ingreso que no dependa de BTC tiene que venir de algo que no esté comprado en BTC, como el carry de funding o un rendimiento en USDT.

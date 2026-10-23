@@ -15,6 +15,8 @@ Señales (al cierre de la vela t; el motor ejecuta en la apertura de t+1):
   R   régimen (v0.2, 22/10/2026): sólo se abren slots si el último cierre DIARIO completo
       está sobre su media simple de 100 días. Es la ventana COMPRA de `pkg/btc_alertas.py`
       (regla T1 de `pkg/btc_reglas.py`). Lo abierto se sigue gestionando igual.
+  E4  (v0.4) caída variable: close <= máximo de 24 velas × (1 − g × R), g = 0,5 o 1, donde
+      R es el rango diario típico (`rango_diario`, debe venir en `ind["rango"]`).
 
 Parámetros fijados el 22/10/2026 a partir de la especificación, sin optimizar.
 """
@@ -38,7 +40,10 @@ ENTRADAS = {
     "E2": {"tipo": "E2"},
     "E3_7": {"tipo": "E3", "dias": 7},
     "E3_14": {"tipo": "E3", "dias": 14},
+    "E4_0.5": {"tipo": "E4", "g": 0.5},
+    "E4_1": {"tipo": "E4", "g": 1.0},
 }
+N_RANGO = 14
 
 
 def _wilder(x: pd.Series, n: int) -> pd.Series:
@@ -99,6 +104,8 @@ def senal_entrada(h: pd.DataFrame, ind: pd.DataFrame, entrada: str, filtro: bool
         s = (c < ind["bb_inf"]) & (ind["rsi"] < E2_RSI_MAX)
     elif p["tipo"] == "E3":
         s = c <= ind[f"min_{p['dias']}d"] * (1 + E3_MARGEN)
+    elif p["tipo"] == "E4":
+        s = c <= ind["max_24"] * (1 - p["g"] * ind["rango"])
     else:  # pragma: no cover - ENTRADAS es cerrado
         raise ValueError(entrada)
     if filtro:
@@ -116,3 +123,13 @@ def regimen_compra(cierre_diario: pd.Series, index_1h: pd.DatetimeIndex) -> pd.S
     ok = cierre_diario > cierre_diario.rolling(N_REGIMEN).mean()
     dia = (index_1h + pd.Timedelta(hours=1)).floor("D") - pd.Timedelta(days=1)
     return pd.Series(ok.reindex(dia).fillna(False).to_numpy(dtype=bool), index=index_1h)
+
+
+def rango_diario(diario: pd.DataFrame, index_1h: pd.DatetimeIndex, n: int = N_RANGO) -> pd.Series:
+    """R: mediana de los últimos `n` días CERRADOS de (máximo − mínimo) / cierre, por vela 1 h.
+
+    `diario` (open/high/low/close) va indexado por la fecha de apertura del día. Misma regla de
+    frontera que `regimen_compra`: la vela 1 h que abre en t ve hasta el día floor(t + 1 h) − 1 d."""
+    r = ((diario["high"] - diario["low"]) / diario["close"]).rolling(n).median()
+    dia = (index_1h + pd.Timedelta(hours=1)).floor("D") - pd.Timedelta(days=1)
+    return pd.Series(r.reindex(dia).to_numpy(dtype=float), index=index_1h)

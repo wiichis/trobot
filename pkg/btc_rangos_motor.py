@@ -43,6 +43,13 @@ cierre mensual NO se atrapa nada: un slot abierto espera, sin plazo, a poder ven
 ganancia. El cierre sólo compra BTC de holding con la ganancia reservada y registra la
 pérdida latente de los slots abiertos (`latente` = Σ (entrada − precio) × cantidad), que es lo
 que reemplaza al costo de atrapadas para calcular el neto del mes.
+
+v0.4 (22/10/2026): objetivos variables según el día. R = rango diario típico (mediana de 14
+días cerrados de (máximo − mínimo) / cierre, ver `pkg/btc_rangos_reglas.rango_diario`), el de
+la vela ANTERIOR (sin mirar el futuro).
+  S4_f  TP = entrada × (1 + max(f × R, 0,6 %)), recalculado con el R vigente.
+  S5    trailing: se arma en entrada × (1 + max(0,5 R, 0,6 %)) y vende si retrocede 0,2 R.
+  Modo B con `escalon_r > 0`: el slot k entra a −k × escalon_r × R de la entrada del slot 1.
 """
 from __future__ import annotations
 
@@ -63,7 +70,12 @@ SALIDAS = {
     "S1_3": {"tipo": "S1", "tp": 0.03},
     "S2": {"tipo": "S2", "activa": 0.015, "retroceso": 0.006},
     "S3": {"tipo": "S3", "activa": 0.015, "atr_mult": 0.5},
+    "S4_0.25": {"tipo": "S4", "f": 0.25},
+    "S4_0.5": {"tipo": "S4", "f": 0.5},
+    "S4_0.75": {"tipo": "S4", "f": 0.75},
+    "S5": {"tipo": "S5", "activa_r": 0.5, "retroceso_r": 0.2},
 }
+MIN_OBJETIVO = 0.006  # piso de las salidas por rango: cubre ~0,3 % de costos ida y vuelta
 GANANCIA = {"G1": 0.0, "G2": 1.0, "G3": 0.5, "G4": 0.9}  # fracción que se reinvierte en slots
 
 
@@ -77,6 +89,7 @@ class Config:
     n_slots: int = 3
     intrabar: bool = True
     cierre_forzado: bool = True  # False = v0.3: los slots atrapados esperan, sin reposición
+    escalon_r: float = 0.0       # > 0: escalón del modo B en múltiplos del rango diario R
     comision: float = COMISION
     slippage: float = SLIPPAGE
     min_orden: float = MIN_ORDEN_USDT
@@ -121,6 +134,7 @@ class Motor:
     meses: List[Dict] = field(default_factory=list)
     mes: Dict = field(default_factory=dict)
     comisiones: float = 0.0
+    rango: float = float("nan")  # R de la vela anterior (v0.4)
 
     def __post_init__(self):
         if not self.slots:
@@ -248,8 +262,12 @@ class Motor:
                 o_, h_, l_ = c, c, c
             else:
                 o_, h_, l_ = o, h, l
-            if p["tipo"] == "S1":
-                tp = max(s.entrada * (1 + p["tp"]), piso)
+            if p["tipo"] in ("S1", "S4"):
+                if p["tipo"] == "S1":
+                    objetivo = p["tp"]
+                else:
+                    objetivo = MIN_OBJETIVO if np.isnan(self.rango) else max(p["f"] * self.rango, MIN_OBJETIVO)
+                tp = max(s.entrada * (1 + objetivo), piso)
                 if o_ >= tp:
                     self._cerrar(i, t, o_, "tp")
                 elif h_ >= tp:
@@ -259,6 +277,8 @@ class Motor:
             if s.armado and not s.entro_en_vela:
                 if p["tipo"] == "S2":
                     stop = s.maximo * (1 - p["retroceso"])
+                elif p["tipo"] == "S5":
+                    stop = s.maximo * (1 - p["retroceso_r"] * self.rango)
                 else:
                     stop = s.maximo - p["atr_mult"] * atr_prev
                 if np.isnan(stop):  # ATR todavía sin calentar: no hay nivel de trailing
@@ -273,7 +293,11 @@ class Motor:
                     self._cerrar(i, t, stop, "trailing")
                     continue
             s.maximo = max(s.maximo, h_)
-            if not s.armado and s.maximo >= s.entrada * (1 + p["activa"]):
+            if p["tipo"] == "S5":
+                activa = MIN_OBJETIVO if np.isnan(self.rango) else max(p["activa_r"] * self.rango, MIN_OBJETIVO)
+            else:
+                activa = p["activa"]
+            if not s.armado and s.maximo >= s.entrada * (1 + activa):
                 s.armado = True
 
     def _senales(self, t_sig: pd.Timestamp, c: float, senal: bool):
@@ -293,12 +317,19 @@ class Motor:
             if senal and s1.activo:
                 self.pendientes = [0]
             return
+        if self.cfg.escalon_r > 0:
+            if np.isnan(self.rango):
+                return
+            escalon = self.cfg.escalon_r * self.rango
+        else:
+            escalon = self.cfg.escalon
         for k in range(1, len(self.slots)):
             s = self.slots[k]
-            if not s.abierto and s.activo and c <= s1.entrada * (1 - k * self.cfg.escalon):
+            if not s.abierto and s.activo and c <= s1.entrada * (1 - k * escalon):
                 self.pendientes.append(k)
 
-    def vela(self, t: pd.Timestamp, o: float, h: float, l: float, c: float, senal: bool, atr_prev: float):
+    def vela(self, t: pd.Timestamp, o: float, h: float, l: float, c: float, senal: bool, atr_prev: float,
+             rango_prev: float = float("nan")):
         """Procesa una vela cerrada completa. `senal` es la señal calculada con ESTA vela
         (se ejecuta en la siguiente); `atr_prev` es el ATR de la vela anterior."""
         ciclo = ciclo_de(t)
@@ -312,6 +343,7 @@ class Motor:
         for i in self.pendientes:
             self._entrar(i, t, o)
         self.pendientes = []
+        self.rango = rango_prev
         self._salidas(t, o, h, l, c, atr_prev)
         self._senales(t, c, senal)
 
@@ -354,16 +386,19 @@ class Resultado:
 
 
 def simular(velas: pd.DataFrame, senal: pd.Series, atr: pd.Series, cfg: Config,
-            dca: Callable[[int], float], desde: pd.Timestamp, hasta: pd.Timestamp) -> Resultado:
+            dca: Callable[[int], float], desde: pd.Timestamp, hasta: pd.Timestamp,
+            rango: Optional[pd.Series] = None) -> Resultado:
     """Corre el motor sobre [desde, hasta). `senal` y `atr` deben estar calculados sobre la
     serie completa (los indicadores sólo miran hacia atrás) e indexados como `velas`."""
     sl = velas.loc[(velas.index >= desde) & (velas.index < hasta)]
     sen = senal.reindex(sl.index).fillna(False).to_numpy()
     atr_prev = atr.shift(1).reindex(sl.index).to_numpy()
+    rango_prev = (rango.shift(1).reindex(sl.index).to_numpy() if rango is not None
+                  else np.full(len(sl), np.nan))
     m = Motor(cfg=cfg, dca=dca)
     o_, h_, l_, c_ = (sl[k].to_numpy() for k in ("open", "high", "low", "close"))
     for j, t in enumerate(sl.index):
-        m.vela(t, o_[j], h_[j], l_[j], c_[j], bool(sen[j]), float(atr_prev[j]))
+        m.vela(t, o_[j], h_[j], l_[j], c_[j], bool(sen[j]), float(atr_prev[j]), float(rango_prev[j]))
     m.finalizar(sl.index[-1] + pd.Timedelta(hours=1), float(c_[-1]))
     p0 = float(o_[0])
     bench_b = _redondear(cfg.capital * (1 - cfg.comision) / (p0 * (1 + cfg.slippage)))

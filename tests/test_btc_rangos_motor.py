@@ -215,3 +215,50 @@ def test_sin_cierre_forzado_el_slot_espera_y_la_ganancia_compra_btc():
     m.vela(pd.Timestamp("2024-03-03 00:00"), 110, 110, 110, 110, False, np.nan)
     assert m.holding_btc == pytest.approx(g / 110, abs=1e-6)  # qty al step de 1e-6
     assert m.capital_bot_nominal() == pytest.approx(200)
+
+
+def test_rango_diario_usa_solo_dias_cerrados():
+    dias = pd.date_range("2024-01-01", periods=15, freq="D")
+    d = pd.DataFrame({"open": 100.0, "high": 102.0, "low": 98.0, "close": 100.0}, index=dias)
+    d.iloc[-1, d.columns.get_loc("high")] = 130.0      # el día 15 tiene un rango enorme
+    idx = pd.date_range(dias[-1], dias[-1] + pd.Timedelta(hours=23), freq="h")
+    r = rr.rango_diario(d, idx)
+    assert r.iloc[0] == pytest.approx(0.04) and np.isnan(rr.rango_diario(d, idx - pd.Timedelta(days=1)).iloc[0])
+    assert r.iloc[-2] == pytest.approx(0.04)           # 22:00: el día 15 todavía no cerró
+    assert r.iloc[-1] == pytest.approx(0.04)           # mediana de 14 días: un día raro no la mueve
+
+
+def test_e4_caida_en_rangos():
+    idx = pd.date_range("2024-01-01", periods=30, freq="h")
+    c = pd.Series(100.0, index=idx)
+    c.iloc[-1] = 98.9
+    h = pd.DataFrame({"open": c, "high": c, "low": c, "close": c})
+    ind = rr.indicadores(h)
+    ind["rango"] = 0.02
+    assert rr.senal_entrada(h, ind, "E4_0.5", False).iloc[-1]        # −1,1 % ≥ 0,5 × 2 %
+    assert not rr.senal_entrada(h, ind, "E4_1", False).iloc[-1]      # pide −2 %
+
+
+def test_s4_objetivo_variable_con_piso():
+    m = motor(salida="S4_0.5")
+    paso(m, 0, 100, 100, 100, 100, senal=True)
+    m.vela(T0 + pd.Timedelta(hours=1), 100, 100, 100, 100, False, np.nan, 0.04)   # entra a 100
+    m.vela(T0 + pd.Timedelta(hours=2), 100, 101.9, 100, 101, False, np.nan, 0.04)  # TP 102: no toca
+    assert m.slots[0].abierto
+    m.vela(T0 + pd.Timedelta(hours=3), 100.2, 101.7, 100, 101, False, np.nan, 0.01)  # R cae: TP = 100,6
+    assert not m.slots[0].abierto
+    assert m.operaciones[-1]["salida"] == pytest.approx(100.6)        # piso del 0,6 % (0,5 × 1 % = 0,5 %)
+
+
+def test_s5_trailing_en_rangos_y_escalon_variable():
+    m = motor(slots="B", escalon_r=1.0, salida="S5")
+    paso(m, 0, 100, 100, 100, 100, senal=True)
+    m.vela(T0 + pd.Timedelta(hours=1), 100, 100, 100, 97.9, False, np.nan, 0.02)  # entra; −2,1 % ≥ 1 R
+    m.vela(T0 + pd.Timedelta(hours=2), 97.9, 98, 97, 97.5, False, np.nan, 0.02)
+    assert m.slots[1].abierto and m.slots[1].entrada == 97.9
+    s = m.slots[1]
+    m.vela(T0 + pd.Timedelta(hours=3), 97.5, 99.0, 97.5, 98.8, False, np.nan, 0.02)  # máx 99 ≥ 97,9 × 1,01: arma
+    assert s.armado
+    m.vela(T0 + pd.Timedelta(hours=4), 98.8, 98.8, 98.5, 98.6, False, np.nan, 0.02)  # stop 99 × 0,996 = 98,604
+    assert not s.abierto
+    assert m.operaciones[-1]["salida"] == pytest.approx(99 * (1 - 0.2 * 0.02))
