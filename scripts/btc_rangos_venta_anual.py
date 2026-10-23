@@ -10,11 +10,15 @@ Al final se compara el valor total en USDT:
   B (DCA puro, 200 USDT comprados en BTC el día 1) = BTC × precio + USDT de las ventas
 Combinaciones: las 5 finalistas de la v0.4 (elegidas en la selección, sin cambios).
 
-Uso: python3 scripts/btc_rangos_venta_anual.py
+`--parcial`: reposición parcial de los slots (`Config.reposicion_parcial`).
+
+Uso: python3 scripts/btc_rangos_venta_anual.py [--parcial]
 """
 from __future__ import annotations
 
+import argparse
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -36,7 +40,8 @@ VENTA = 0.10
 
 def uno(combo, escenario, periodo) -> dict:
     (s, x), e, sa = combo
-    cfg = mm.Config(slots=s, escalon_r=x, salida=sa, ganancia="G4", venta_anual=VENTA)
+    cfg = mm.Config(slots=s, escalon_r=x, salida=sa, ganancia="G4", venta_anual=VENTA,
+                    reposicion_parcial=v4.parcial())
     r = mm.simular(v4._V, v4._SEN[e], v4._IND["atr"], cfg, bt.dca_fn(escenario), *periodo, rango=v4._IND["rango"])
     m, p = r.motor, r.precio_fin
     con = (m.holding_btc + m.btc_en_slots()) * p + m.usdt_bot() + m.usdt_para_holding + m.ventas_usdt
@@ -49,6 +54,10 @@ def uno(combo, escenario, periodo) -> dict:
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--parcial", action="store_true")
+    if ap.parse_args().parcial:
+        os.environ["TROBOT_REPOSICION_PARCIAL"] = "1"
     v4._init()
     filas = []
     for combo in FINALISTAS:
@@ -60,7 +69,7 @@ def main() -> None:
             for esc_n, val in (("DCA 100", res["fijo100"]), ("DCA 400", res["fijo400"]), ("DCA aleatorio", aleat)):
                 filas.append({"combo": nombre, "periodo": per_n, "dca": esc_n, **dict(val)})
     df = pd.DataFrame(filas)
-    out = REPO / "archivos" / "btc_rangos" / "backtest_v04" / "venta_anual_10.csv"
+    out = REPO / "archivos" / "btc_rangos" / "backtest_v04" / f"venta_anual_10{'_parcial' if v4.parcial() else ''}.csv"
     df.to_csv(out, index=False)
     pd.set_option("display.width", 250)
     cols = ["ingreso_bot", "ventas_con_bot", "ventas_sin_bot", "btc_con_bot", "btc_sin_bot", "total_con_bot",

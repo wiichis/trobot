@@ -26,7 +26,10 @@ FIJADO ANTES DE CORRER:
       probabilidad, mismas salidas, 50 semillas, DCA 400);
   (5) ningún ciclo explica más del 50 % del neto total.
 
-Uso: python3 scripts/btc_rangos_v04.py [--procesos 8]
+`--parcial` (22/10/2026): reposición parcial de los slots (ver `Config.reposicion_parcial`);
+salidas en `archivos/btc_rangos/backtest_v04_parcial/`.
+
+Uso: python3 scripts/btc_rangos_v04.py [--procesos 8] [--parcial]
 """
 from __future__ import annotations
 
@@ -34,6 +37,7 @@ import argparse
 import importlib.util
 import itertools
 import json
+import os
 import sys
 import time
 from multiprocessing import Pool
@@ -55,6 +59,11 @@ SLOTS = [("A", 0.0), ("B", 1.0)]
 ENTRADAS = ["E4_0.5", "E4_1"]
 SALIDAS = ["S4_0.25", "S4_0.5", "S4_0.75", "S5"]
 N_PLACEBO = 50
+
+
+def parcial() -> bool:
+    """Se pasa por variable de entorno para que llegue a los procesos del Pool."""
+    return os.environ.get("TROBOT_REPOSICION_PARCIAL") == "1"
 
 _V = _IND = None
 _SEN: dict = {}
@@ -81,7 +90,7 @@ def _init():
 
 def correr(args) -> dict:
     (slots, esc_r), entrada, salida, escenario, periodo, placebo = args
-    cfg = mm.Config(slots=slots, escalon_r=esc_r, salida=salida, ganancia="G4")
+    cfg = mm.Config(slots=slots, escalon_r=esc_r, salida=salida, ganancia="G4", reposicion_parcial=parcial())
     sen = _SEN[entrada]
     if placebo is not None:
         en = (sen.index >= periodo[0]) & (sen.index < periodo[1])
@@ -101,7 +110,12 @@ def correr(args) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--procesos", type=int, default=8)
+    ap.add_argument("--parcial", action="store_true", help="reposición parcial de los slots")
     args = ap.parse_args()
+    global OUT
+    if args.parcial:
+        os.environ["TROBOT_REPOSICION_PARCIAL"] = "1"
+        OUT = OUT.parent / "backtest_v04_parcial"
     OUT.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     combos = list(itertools.product(SLOTS, ENTRADAS, SALIDAS))

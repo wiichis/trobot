@@ -246,3 +246,21 @@ Vender más tarde no borra el costo. Los lotes atrapados entran al holding a un 
 
 - **Con DCA 400 el resultado no depende del día**: pierde en 24-26 de los 28 días posibles.
 - **Con DCA 100 gana siempre contra A, pero no por operar**: el bot gana ~120 USDT en 6 años. Lo que pasa es que sus 200 USDT terminan convertidos en BTC (los atrapados que no se reponen pasan a holding), y en 2021-2026 BTC le ganó a guardar USDT. Contra B, que compra esos 200 en BTC el primer día, pierde en 26-28 de los 28 días, salvo una combinación que gana en 10 días con mediana −19.
+
+### ⚠️ Corrección: con la regla estricta de reposición el bot moría (22/10/2026)
+
+**El problema**: con la §3 al pie de la letra ("en orden 1 → 2 → 3; los no repuestos quedan apagados"), cuando la reinversión del 90 % hace crecer cada slot por encima del DCA (~408 contra 400), un slot atrapado ya no se puede reponer nunca, y el orden estricto apaga a los que siguen. En la simulación continua 2021-2026 con DCA 400, **el bot quedó muerto desde abril de 2024**. Eso afectaba las cifras de "venta anual" y "día del DCA" de arriba.
+
+**La corrección**: `Config.reposicion_parcial`, que se activa con `--parcial` en `btc_rangos_v04.py`, `btc_rangos_venta_anual.py` y `btc_rangos_dia_dca.py`. El DCA repone lo que alcanza, en orden, y el slot sigue operando más chico con lo que tiene.
+
+**Resultados con reposición parcial**:
+- **v0.4, selección y validación**: 0 de 5 viables. Las finalistas son las mismas. La ganancia realizada en validación es de 3,6-5,9 % mensual, con un neto de entre −1,2 % y +0,1 %.
+- **Ganancia mensual del bot**, A · E4 0,5 · S4 0,75, 2021-2026, DCA 400:
+  - media **7,3 %**, mediana **5,1 %** sobre el capital del bot al inicio de cada mes (~335-500 USDT);
+  - el 91 % de los meses da ≥ 1 %;
+  - total: 2.155 USDT realizados en 69 meses.
+  - **Pero el neto con atrapadas es −0,03 % mensual**: 2022 −6,4 %, 2025 −1,5 % y 2026 −2,3 % al mes.
+- **Venta anual del 10 %, 2021-2026**: con DCA 400, las 5 finalistas pierden contra el DCA puro, entre −554 y −1.228 USDT. Con DCA 100 van de +67 a −120.
+- **Día del DCA (1 a 28)**: con DCA 400, el bot le gana al DCA puro en 1 a 5 de los 28 días.
+
+La conclusión no cambia, y con el bot operando todo el tiempo es más clara: **la ganancia realizada del bot es grande, y el costo de las atrapadas la iguala**.

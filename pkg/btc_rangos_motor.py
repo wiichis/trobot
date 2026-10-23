@@ -96,6 +96,11 @@ class Config:
     escalon_r: float = 0.0       # > 0: escalón del modo B en múltiplos del rango diario R
     venta_anual: float = 0.0     # fracción del holding que se vende en el cierre de enero
     dia_cierre: int = 3          # día del mes del cierre mensual / DCA (1-28)
+    # Reposición parcial (22/10/2026): con la regla estricta de la §3, si un slot crece por
+    # reinversión por encima del DCA, nunca se repone y apaga a los que siguen para siempre (el
+    # bot quedó muerto desde abr-24 en la simulación continua). Con True, el DCA repone lo que
+    # alcanza en orden 1 → 2 → 3 y el slot sigue operando más chico con lo que tiene.
+    reposicion_parcial: bool = False
     comision: float = COMISION
     slippage: float = SLIPPAGE
     min_orden: float = MIN_ORDEN_USDT
@@ -217,6 +222,15 @@ class Motor:
                 disponible -= falta
                 repuesto += falta
                 s.activo, s.costo = True, 0.0
+            elif self.cfg.reposicion_parcial:
+                # lo que alcance, en orden; el slot sigue operando más chico con lo que tiene
+                aporte = min(max(disponible, 0.0), falta)
+                nuevo_nominal = s.nominal - (falta - aporte)
+                if nuevo_nominal >= self.cfg.min_orden:
+                    disponible -= aporte
+                    repuesto += aporte
+                    s.nominal, s.costo, s.activo = nuevo_nominal, 0.0, True
+                cortado = True
             else:
                 cortado = True
         compra_holding = disponible + self.usdt_para_holding

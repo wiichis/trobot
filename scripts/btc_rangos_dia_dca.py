@@ -5,13 +5,14 @@ el día 3 haya sido un día "barato" que favorece al DCA puro, se repite la comp
 cierre y el DCA en cada día del 1 al 28. Mismo escenario que `btc_rangos_venta_anual.py`: las
 5 finalistas de la v0.4, 2021-01-03 → 2026-10-03, venta anual del 10 % del holding.
 
-Uso: python3 scripts/btc_rangos_dia_dca.py [--procesos 8]
+Uso: python3 scripts/btc_rangos_dia_dca.py [--procesos 8] [--parcial]
 """
 from __future__ import annotations
 
 import argparse
 import importlib.util
 import itertools
+import os
 import sys
 from multiprocessing import Pool
 from pathlib import Path
@@ -30,7 +31,8 @@ PERIODO = (bt.SEL[0], bt.VAL[1])
 def correr(args):
     combo, dia, esc = args
     (s, x), e, sa = combo
-    cfg = mm.Config(slots=s, escalon_r=x, salida=sa, ganancia="G4", venta_anual=va.VENTA, dia_cierre=dia)
+    cfg = mm.Config(slots=s, escalon_r=x, salida=sa, ganancia="G4", venta_anual=va.VENTA, dia_cierre=dia,
+                    reposicion_parcial=v4.parcial())
     r = mm.simular(v4._V, v4._SEN[e], v4._IND["atr"], cfg, bt.dca_fn(esc), *PERIODO, rango=v4._IND["rango"])
     m, p = r.motor, r.precio_fin
     con = (m.holding_btc + m.btc_en_slots()) * p + m.usdt_bot() + m.usdt_para_holding + m.ventas_usdt
@@ -44,11 +46,14 @@ def correr(args):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--procesos", type=int, default=8)
+    ap.add_argument("--parcial", action="store_true")
     args = ap.parse_args()
+    if args.parcial:
+        os.environ["TROBOT_REPOSICION_PARCIAL"] = "1"
     tareas = list(itertools.product(va.FINALISTAS, range(1, 29), ["fijo100", "fijo400"]))
     with Pool(args.procesos, initializer=v4._init) as pool:
         df = pd.DataFrame(pool.map(correr, tareas, chunksize=4))
-    out = REPO / "archivos" / "btc_rangos" / "backtest_v04" / "dia_dca.csv"
+    out = REPO / "archivos" / "btc_rangos" / "backtest_v04" / f"dia_dca{'_parcial' if v4.parcial() else ''}.csv"
     df.to_csv(out, index=False)
     pd.set_option("display.width", 200)
     g = df.groupby(["combo", "dca"]).agg(

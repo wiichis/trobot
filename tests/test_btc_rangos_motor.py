@@ -281,3 +281,23 @@ def test_dia_de_cierre_configurable():
     assert mm.ciclo_de(pd.Timestamp("2024-02-14 23:00"), 15) == "2024-01"
     assert mm.ciclo_de(pd.Timestamp("2024-02-15 00:00"), 15) == "2024-02"
     assert mm.ciclo_de(pd.Timestamp("2024-02-01 00:00"), 1) == "2024-02"
+
+
+def test_reposicion_parcial_mantiene_al_bot_operando():
+    def armar(parcial):
+        m = motor(slots="B", escalon=0.02, salida="S1_3", dca=lambda k: 50.0, reposicion_parcial=parcial)
+        paso(m, 0, 100, 100, 100, 100, senal=True)
+        paso(m, 1, 100, 100, 100, 97.9)
+        paso(m, 2, 97.9, 97.9, 96, 96)
+        paso(m, 3, 96, 96, 95, 95)
+        m.vela(pd.Timestamp("2024-02-03 00:00"), 90, 90, 90, 90, False, np.nan)
+        return m
+    estricta = armar(False)
+    assert [s.activo for s in estricta.slots] == [False, False, False]   # 50 < 66,67: nadie se repone
+    m = armar(True)
+    nominal = 200 / 3
+    assert m.slots[0].activo and m.slots[0].nominal == pytest.approx(50.0)   # repuso lo que alcanzó
+    assert not m.slots[1].activo and not m.slots[2].activo                    # sin plata y sin sobrante
+    assert m.meses[-1]["repuesto"] == pytest.approx(50.0)
+    assert m.usdt_bot() == pytest.approx(50.0)
+    assert m.slots[1].costo == pytest.approx(nominal)                         # sigue esperando reposición
