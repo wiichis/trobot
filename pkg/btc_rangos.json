@@ -1,0 +1,20 @@
+{
+  "_comentario": "Bot BTC por rangos en modo PAPEL (22/10/2026): no manda órdenes. Combinación v0.4 elegida por el usuario: A · E4_0.5 · S4_0.75 · G4 con reposición parcial (docs/btc_rangos_fase2_informe.md). dca_mensual_usdt se lee en cada cierre mensual (día 3): ajustarlo antes si el DCA del mes es otro. Cambiar la combinación exige archivar archivos/btc_rangos/papel/. El modo 'real' no está implementado y se rechaza.",
+  "enabled": true,
+  "modo": "papel",
+  "symbol": "BTC-USDT",
+  "capital": 200.0,
+  "slots": "A",
+  "escalon_r": 0.0,
+  "entrada": "E4_0.5",
+  "filtro": false,
+  "salida": "S4_0.75",
+  "ganancia": "G4",
+  "reposicion_parcial": true,
+  "dia_cierre": 3,
+  "dca_mensual_usdt": 400.0,
+  "comision": 0.001,
+  "slippage": 0.0005,
+  "min_orden_usdt": 15.0,
+  "hora_resumen_utc": 12
+}

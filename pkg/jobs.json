@@ -5,5 +5,6 @@
   "paper_momentum": false,
   "funding_monitor": false,
   "btc_alertas": true,
-  "daily_digest": true
+  "daily_digest": true,
+  "btc_rangos": true
 }
