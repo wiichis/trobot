@@ -32,6 +32,7 @@ from hashlib import sha256
 from typing import Callable, Dict, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
 
 API = "https://open-api.bingx.com"
 
@@ -98,12 +99,28 @@ def orden_desde_json(d: Dict) -> Orden:
 Transporte = Callable[[str, str, Dict[str, str], bool], Dict]
 
 
+class _AdaptadorIPv4(HTTPAdapter):
+    """Conecta sólo por IPv4. El server tiene IPv6 y lo prefiere, pero la whitelist de la clave
+    spot es la IPv4 fija (98.81.217.194): por IPv6 BingX responde 100419 (24/10/2026)."""
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["source_address"] = ("0.0.0.0", 0)
+        super().init_poolmanager(*args, **kwargs)
+
+
+def _sesion_ipv4() -> requests.Session:
+    s = requests.Session()
+    s.mount("https://", _AdaptadorIPv4())
+    return s
+
+
 class ClienteSpot:
     """`transporte(metodo, path, params, firmado) -> dict` se inyecta en los tests."""
 
     def __init__(self, api_key: str = "", secret: str = "", transporte: Optional[Transporte] = None, timeout: int = 15):
         self.api_key, self.secret, self.timeout = api_key, secret, timeout
         self._transporte = transporte or self._http
+        self._sesion = None if transporte else _sesion_ipv4()
 
     @classmethod
     def desde_credenciales(cls) -> "ClienteSpot":
@@ -124,7 +141,7 @@ class ClienteSpot:
         if firmado:
             url += "&signature=" + hmac.new(self.secret.encode(), qs.encode(), sha256).hexdigest()
             headers["X-BX-APIKEY"] = self.api_key
-        r = requests.request(metodo, url, headers=headers, timeout=self.timeout)
+        r = self._sesion.request(metodo, url, headers=headers, timeout=self.timeout)
         return json.loads(r.text)
 
     def _llamar(self, metodo: str, path: str, params: Dict[str, str], firmado: bool = True) -> Dict:
