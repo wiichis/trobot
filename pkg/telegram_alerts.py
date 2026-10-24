@@ -364,6 +364,12 @@ class TelegramAlerter:
         "btc_rangos_resumen": "Bot BTC por rangos: resumen diario",
         "btc_rangos_estado_ilegible": "Bot BTC por rangos: estado ilegible",
         "btc_rangos_modo_rechazado": "Bot BTC por rangos: no corre",
+        "btc_real_inicio": "Bot BTC REAL: inicio",
+        "btc_real_operaciones": "Bot BTC REAL: operaciones",
+        "btc_real_cierre_mensual": "Bot BTC REAL: cierre mensual",
+        "btc_real_resumen": "Bot BTC REAL: resumen diario",
+        "btc_real_recordatorio_dca": "Bot BTC REAL: depositar el DCA",
+        "btc_real_alerta": "Bot BTC REAL: alerta",
         "entries_paused": "Entradas pausadas",
         "tp_mode_changed": "Cambio de modo de TP",
         "tp_state_cleared": "Estado de TP borrado",
@@ -389,6 +395,11 @@ class TelegramAlerter:
         "btc_rangos_operaciones": "🎯",
         "btc_rangos_cierre_mensual": "🗓️",
         "btc_rangos_resumen": "📅",
+        "btc_real_inicio": "💵",
+        "btc_real_operaciones": "💵",
+        "btc_real_cierre_mensual": "🗓️",
+        "btc_real_resumen": "📅",
+        "btc_real_recordatorio_dca": "⏰",
     }
 
     def _build_header(self, *, severity: str, category: str, ts_utc: str) -> str:

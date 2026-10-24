@@ -1,0 +1,22 @@
+{
+  "_comentario": "Bot BTC por rangos en modo REAL (24/10/2026): manda órdenes a BingX spot. Misma combinación que el papel (A · E4_0.5 · S4_0.75 · G4, reposición parcial), elegida por el usuario aunque el backtest no pasa los criterios; hitos en docs/btc_rangos_real_hitos.md. El DCA es el USDT que el usuario deposita en spot antes de cada día 3 (tope dca_maximo_usdt; el exceso queda aparte). pausar_entradas=true frena las compras (las ventas siguen). Cambiar la combinación exige archivar archivos/btc_rangos/real/.",
+  "enabled": false,
+  "modo": "real",
+  "symbol": "BTC-USDT",
+  "capital": 180.0,
+  "slots": "A",
+  "escalon_r": 0.0,
+  "entrada": "E4_0.5",
+  "filtro": false,
+  "salida": "S4_0.75",
+  "ganancia": "G4",
+  "reposicion_parcial": true,
+  "dia_cierre": 3,
+  "dca_maximo_usdt": 500.0,
+  "pausa_si_neto_menor_usdt": -45.0,
+  "pausar_entradas": false,
+  "comision": 0.001,
+  "slippage": 0.0005,
+  "min_orden_usdt": 15.0,
+  "hora_resumen_utc": 12
+}

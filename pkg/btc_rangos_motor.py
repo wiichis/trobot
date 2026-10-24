@@ -198,6 +198,15 @@ class Motor:
         """Precio de mercado mínimo al que vender devuelve el costo del slot."""
         return s.costo / (s.qty * (1 - self.cfg.slippage) * (1 - self.cfg.comision))
 
+    def precio_tp(self, s: Slot) -> float:
+        """TP de las salidas S1/S4 con el R vigente, nunca debajo del piso."""
+        p = SALIDAS[self.cfg.salida]
+        if p["tipo"] == "S1":
+            objetivo = p["tp"]
+        else:
+            objetivo = MIN_OBJETIVO if np.isnan(self.rango) else max(p["f"] * self.rango, MIN_OBJETIVO)
+        return max(s.entrada * (1 + objetivo), self.piso(s))
+
     # --- pasos de la vela -----------------------------------------------------------
     def cierre_mensual(self, t: pd.Timestamp, precio: float):
         self.n_cierres += 1
@@ -265,14 +274,22 @@ class Motor:
         if s.abierto or not s.activo or s.nominal < self.cfg.min_orden:
             return
         qty, fill = self._comprar(s.nominal, precio)
-        s.abierto, s.costo, s.qty, s.entrada, s.maximo = True, s.nominal, qty, fill, fill
+        self.entrar_con_fill(i, t, s.nominal, qty, fill)
+
+    def entrar_con_fill(self, i: int, t: pd.Timestamp, costo: float, qty: float, fill: float):
+        """Abre el slot con un fill ya ocurrido (simulado o real). `costo` son los USDT gastados."""
+        s = self.slots[i]
+        s.abierto, s.costo, s.qty, s.entrada, s.maximo = True, costo, qty, fill, fill
         s.armado, s.desde, s.entro_en_vela = False, t, True
         self.ultimo_dia_entrada = t.strftime("%Y-%m-%d")
         self.mes["entradas"] += 1
 
     def _cerrar(self, i: int, t: pd.Timestamp, precio: float, motivo: str):
+        self.cerrar_con_fill(i, t, self._vender(self.slots[i].qty, precio), precio, motivo)
+
+    def cerrar_con_fill(self, i: int, t: pd.Timestamp, neto: float, precio: float, motivo: str):
+        """Cierra el slot con una venta ya ocurrida. `neto` son los USDT recibidos, comisión descontada."""
         s = self.slots[i]
-        neto = self._vender(s.qty, precio)
         ganancia = neto - s.costo
         reinv = ganancia * GANANCIA[self.cfg.ganancia] if ganancia > 0 else 0.0
         self.usdt_para_holding += ganancia - reinv
@@ -282,6 +299,24 @@ class Motor:
         self.mes["realizado"] += ganancia
         self.mes["ciclos"] += 1
         s.abierto, s.qty, s.costo, s.armado = False, 0.0, 0.0, False
+        for x in self.slots:
+            x.nominal += reinv / len(self.slots)
+
+    def venta_parcial(self, i: int, t: pd.Timestamp, neto: float, qty: float, precio: float, motivo: str):
+        """Sólo modo real: una orden límite que se llenó en parte. Realiza la parte vendida (con
+        su parte del costo) igual que `cerrar_con_fill` y el slot sigue abierto con el resto."""
+        s = self.slots[i]
+        frac = min(qty / s.qty, 1.0) if s.qty > 0 else 1.0
+        costo_parte = s.costo * frac
+        ganancia = neto - costo_parte
+        reinv = ganancia * GANANCIA[self.cfg.ganancia] if ganancia > 0 else 0.0
+        self.usdt_para_holding += ganancia - reinv
+        self.operaciones.append({"slot": i + 1, "entrada_t": s.desde, "salida_t": t, "entrada": s.entrada,
+                                 "salida": precio, "qty": qty, "costo": costo_parte, "neto": neto,
+                                 "ganancia": ganancia, "motivo": motivo})
+        self.mes["realizado"] += ganancia
+        s.qty = max(s.qty - qty, 0.0)
+        s.costo -= costo_parte
         for x in self.slots:
             x.nominal += reinv / len(self.slots)
 
@@ -296,11 +331,7 @@ class Motor:
             else:
                 o_, h_, l_ = o, h, l
             if p["tipo"] in ("S1", "S4"):
-                if p["tipo"] == "S1":
-                    objetivo = p["tp"]
-                else:
-                    objetivo = MIN_OBJETIVO if np.isnan(self.rango) else max(p["f"] * self.rango, MIN_OBJETIVO)
-                tp = max(s.entrada * (1 + objetivo), piso)
+                tp = self.precio_tp(s)
                 if o_ >= tp:
                     self._cerrar(i, t, o_, "tp")
                 elif h_ >= tp:

@@ -13,6 +13,7 @@ import pkg.funding_monitor
 import pkg.light_mode
 import pkg.daily_digest
 import pkg.btc_rangos
+import pkg.btc_rangos_real
 import schedule
 import time
 import threading
@@ -33,6 +34,7 @@ JOBS_DEFAULT = {
     "btc_alertas": True,
     "daily_digest": True,
     "btc_rangos": False,
+    "btc_rangos_real": False,
 }
 
 
@@ -227,6 +229,10 @@ if __name__ == '__main__':
         # Monitor del carry de funding (pkg/funding_monitor.py): no opera, avisa si el funding
         # de los mejores pares entra al régimen alto. Mide una vez por día UTC.
         schedule.every().hour.at(":07").do(pkg.funding_monitor.run_funding_monitor_async)
+    if jobs["btc_rangos_real"]:
+        # Bot BTC por rangos en REAL (pkg/btc_rangos_real.json): órdenes en BingX spot. Se registra
+        # antes que el papel para que la compra salga lo más cerca posible de la apertura.
+        schedule.every().hour.at(":01").do(pkg.btc_rangos_real.run_btc_rangos_real)
     if jobs["btc_rangos"]:
         # Bot BTC por rangos en PAPEL (pkg/btc_rangos.json): procesa cada vela 1 h cerrada de
         # BingX spot con el mismo motor del backtest. No manda órdenes.
