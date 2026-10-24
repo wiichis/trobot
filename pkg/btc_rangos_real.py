@@ -1,6 +1,6 @@
 """Bot BTC por rangos en modo REAL (24/10/2026): manda órdenes a BingX spot.
 
-Misma combinación y mismo motor que el bot en papel (`pkg/btc_rangos.py`), con 180 USDT. El
+Misma combinación y mismo motor que el bot en papel (`pkg/btc_rangos.py`), con 186,65 USDT (todo el saldo spot al 24/10). El
 usuario eligió pasar a real aunque el backtest no pasa los criterios de viabilidad; los hitos
 para medirlo están fijados en `docs/btc_rangos_real_hitos.md`.
 

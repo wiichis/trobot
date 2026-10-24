@@ -3,7 +3,7 @@
 ## Qué se prueba
 
 - **Combinación**: A · E4 0,5 · S4 0,75 · G4, con reposición parcial. Es la misma del papel.
-- **Capital**: 180 USDT en BingX spot.
+- **Capital**: 186,65 USDT en BingX spot (todo el saldo; el usuario pidió usarlo entero en vez de 180).
 - **Decisión del usuario**: pasar a real sin esperar meses de papel, porque el monto es chico, e ir midiendo.
 - **Lo que dice el backtest**: no pasa los criterios. En 69 meses de 2021-2026, la ganancia realizada fue de ~5 %/mes y el neto, con el costo de las atrapadas, de −0,03 %/mes. Ver [btc_rangos_fase2_informe.md](btc_rangos_fase2_informe.md).
 - **Para qué sirve la prueba en real**: confirmar o refutar eso con plata de verdad, y medir lo que el backtest no puede: deslizamiento, comisiones, rechazos.
@@ -11,7 +11,7 @@
 ## Cómo se mide (definiciones fijas)
 
 - **Neto** = ganancia realizada − costo de las atrapadas en cada cierre − pérdida latente de lo que siga abierto el día de la evaluación. **La ganancia realizada sola no cuenta**: en el backtest superó el 1 % mensual en el 100 % de las ventanas de 3, 6 y 12 meses, porque un bot que nunca vende con pérdida siempre muestra ganancia.
-- **BTC contra el DCA puro**: (holding + BTC en slots + USDT del bot ÷ precio) contra el DCA comprado el mismo día de cierre con los 180 USDT guardados.
+- **BTC contra el DCA puro**: (holding + BTC en slots + USDT del bot ÷ precio) contra el DCA comprado el mismo día de cierre con el capital inicial guardado en USDT.
 - **Costo de ejecución**:
   - deslizamiento de cada compra contra el mejor precio de venta del libro al mandarla (`ordenes.csv`);
   - ganancia real contra la del papel en las mismas operaciones;
@@ -49,7 +49,7 @@ Cada cierre mensual compara el neto real con la fila que le corresponde. Si BTC 
 
 ## Cortes automáticos (el bot pausa las compras, las ventas siguen y avisa)
 
-- El **neto acumulado** baja de **−45 USDT** (25 % del capital), medido en cada cierre (`pausa_si_neto_menor_usdt`).
+- El **neto acumulado** baja de **−45 USDT** (~25 % del capital), medido en cada cierre (`pausa_si_neto_menor_usdt`).
 - La cuenta spot tiene menos BTC que los slots abiertos, o menos USDT que lo que el bot cree tener en un cierre.
 - Una compra queda sin confirmar.
 - Una comisión aparece cobrada en un activo desconocido.

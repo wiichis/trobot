@@ -32,7 +32,7 @@ def serie(dias=75, semilla=7):
 
 
 class BingxSpotFalso:
-    def __init__(self, usdt=186.66, slippage=0.0005, fee=0.001):
+    def __init__(self, usdt=186.66, slippage=0.0005, fee=0.001):  # el saldo spot real al 24/10
         self.usdt, self.usdt_lock, self.btc, self.btc_lock = usdt, 0.0, 0.0, 0.0
         self.precio = 40_000.0
         self.slip, self.fee = slippage, fee
@@ -182,7 +182,7 @@ def test_arranque_exige_capital_en_spot(entorno):
     entorno["ex"].usdt = 186.66
     assert r.correr()["nuevo"]
     est = json.loads((entorno["dir"] / "estado.json").read_text())
-    assert est["usdt_ajeno"] == pytest.approx(6.66)
+    assert est["usdt_ajeno"] == pytest.approx(186.66 - CFG["capital"])
     assert entorno["avisos"][-1][0] == "btc_real_inicio"
 
 

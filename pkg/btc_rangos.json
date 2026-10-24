@@ -1,9 +1,9 @@
 {
-  "_comentario": "Bot BTC por rangos en modo PAPEL (22/10/2026): no manda órdenes. Desde el 24/10 corre como SOMBRA del bot real (pkg/btc_rangos_real.json), con el mismo capital de 180 USDT: la diferencia entre los dos es el costo de ejecución real. La corrida del 23/10 con 200 USDT quedó en archivos/btc_rangos/papel_200_20261023/. Combinación v0.4: A · E4_0.5 · S4_0.75 · G4 con reposición parcial. dca_mensual_usdt se lee en cada cierre (día 3): ponerle lo mismo que se deposite en spot para el real. Cambiar la combinación exige archivar archivos/btc_rangos/papel/.",
+  "_comentario": "Bot BTC por rangos en modo PAPEL (22/10/2026): no manda órdenes. Desde el 24/10 corre como SOMBRA del bot real (pkg/btc_rangos_real.json), con el mismo capital de 186,65 USDT (todo el saldo spot al 24/10): la diferencia entre los dos es el costo de ejecución real. La corrida del 23/10 con 200 USDT quedó en archivos/btc_rangos/papel_200_20261023/. Combinación v0.4: A · E4_0.5 · S4_0.75 · G4 con reposición parcial. dca_mensual_usdt se lee en cada cierre (día 3): ponerle lo mismo que se deposite en spot para el real. Cambiar la combinación exige archivar archivos/btc_rangos/papel/.",
   "enabled": true,
   "modo": "papel",
   "symbol": "BTC-USDT",
-  "capital": 180.0,
+  "capital": 186.65,
   "slots": "A",
   "escalon_r": 0.0,
   "entrada": "E4_0.5",
