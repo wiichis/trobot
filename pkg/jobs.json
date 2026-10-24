@@ -7,5 +7,5 @@
   "btc_alertas": true,
   "daily_digest": true,
   "btc_rangos": true,
-  "btc_rangos_real": false
+  "btc_rangos_real": true
 }
