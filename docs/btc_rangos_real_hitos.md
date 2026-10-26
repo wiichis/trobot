@@ -60,3 +60,13 @@ La pausa la levanta una persona, después de revisar.
 
 - **La combinación**: el bot rechaza correr si la config cambia contra el estado guardado.
 - **El monto del DCA**: el usuario deposita lo que quiera antes de cada día 3, con un tope que toma el bot de 500 USDT. Queda registrado en `mensual.csv` como `deposito_detectado`.
+
+## Bitácora
+
+| Fecha (UTC) | Qué pasó |
+|---|---|
+| 24/10 | Clave spot verificada: permisos de lectura y trading spot, sin futuros, sin retiro, IP 98.81.217.194. El server sale por IPv6, así que `bingx_spot` fuerza IPv4. Prueba de humo OK: orden límite creada, hallada por `clientOrderID` y cancelada. |
+| 25/10 00:01 | Arranque con 186,65 USDT (deja aparte 0,009 USDT como `usdt_ajeno`). La sombra en papel arranca en la misma vela. El aviso dice "187" por el redondeo al mostrarlo. |
+| 26/10 02:01 | **H0, primera compra ✅.** Slot 1: 0,000781 BTC por 62,21 USDT, precio medio 79.650,02, contra un ask de 79.660,47 al mandarla, o sea −1,3 bps: mejor que los +5 bps que supone el backtest. Comisión 0,000000781 BTC (0,1 %). Quedan 0,000780 BTC tras redondear al step; el polvo de 0,00000022 BTC pasa a holding. Venta límite al TP en 81.222,08. Los saldos de BingX coinciden exactos con el bot: 124,4524144 USDT libres, 0,00078 BTC bloqueados en la orden de venta y 0,00000022 BTC libres. El papel tomó la misma decisión, en el slot 1 a 79.796, y la registra a las 03:01. |
+| pendiente | **H0, primera venta**: verificar el fill de la orden de venta (comisión en USDT, maker) y la ganancia real contra la del papel. |
+| antes del 03/11 00:00 | **El usuario deposita el DCA en spot**, y se pone el mismo monto en `dca_mensual_usdt` de `pkg/btc_rangos.json`, que hoy está en 400. **H1** el 03/11: el depósito detectado, la reposición de slots y la compra de holding se verifican contra los saldos de BingX. |
