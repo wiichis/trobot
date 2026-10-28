@@ -22,6 +22,8 @@ El bot de 5 min multi-par sobre perpetuos se archivó porque no tiene edge medid
 
 Herramientas de la Fase 2: `pkg/btc_rangos_reglas.py` (señales), `pkg/btc_rangos_motor.py` (motor; el mismo que usaría el live), `scripts/btc_rangos_backtest.py` (grilla + validación + placebo, ~70 s) y `scripts/btc_acumulacion_backtest.py` (§13).
 
+Lotes de ciclos y mejoras contra el DCA (27-28/10): `scripts/btc_rangos_lotes_sim.py`, informe en [docs/btc_rangos_lotes_informe.md](docs/btc_rangos_lotes_informe.md). 0 de 8 variantes le ganan al DCA; la mejor es 1 ciclo por lote (−0,65 %). Decisión: el real sigue como está y se observa.
+
 ## Qué corre en el server
 
 Los jobs se encienden en `pkg/jobs.json`. Cambiar un flag = editar + restart. Si el archivo falta, valen los defaults de `main.py`, con el bot de 5 min apagado.
