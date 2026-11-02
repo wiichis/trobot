@@ -1,0 +1,114 @@
+{
+ "inicio": "2026-10-25 00:01:00.898060+00:00",
+ "modo": "real",
+ "combo": {
+  "slots": "A",
+  "escalon_r": 0.0,
+  "entrada": "E4_0.5",
+  "filtro": false,
+  "salida": "S4_0.75",
+  "ganancia": "G4",
+  "reposicion_parcial": true,
+  "dia_cierre": 3,
+  "capital": 186.65
+ },
+ "ultima_barra": "2026-11-02 16:00:00",
+ "ultimo_resumen": "2026-11-02",
+ "ultimo_recordatorio": "2026-11-02",
+ "ordenes": {
+  "1": {
+   "order_id": "2117044279716085760",
+   "client_id": "BRS12611020001",
+   "precio": "82012.70",
+   "qty": "0.000776",
+   "desde": "2026-11-02 00:01:00.526016+00:00"
+  },
+  "2": {
+   "order_id": "2117044284745056256",
+   "client_id": "BRS22611020001",
+   "precio": "79017.24",
+   "qty": "0.000809",
+   "desde": "2026-11-02 00:01:00.526016+00:00"
+  },
+  "3": {
+   "order_id": "2117210370950037504",
+   "client_id": "BRS32611021101",
+   "precio": "79221.45",
+   "qty": "0.000810",
+   "desde": "2026-11-02 11:01:00.132839+00:00"
+  }
+ },
+ "compra_en_curso": null,
+ "pausa": null,
+ "usdt_ajeno": 0.009080019999998967,
+ "comisiones_cuenta": {
+  "taker": 0.001,
+  "maker": 0.001
+ },
+ "meses_pendientes": [],
+ "motor": {
+  "holding_btc": 1.4439999999999679e-06,
+  "usdt_para_holding": 0.36202035660900045,
+  "bench_btc": 0.0,
+  "bench_b_btc": 0.0,
+  "ventas_usdt": 0.0,
+  "bench_ventas_usdt": 0.0,
+  "bench_b_ventas_usdt": 0.0,
+  "ciclo": "2026-10",
+  "n_cierres": 0,
+  "ultimo_dia_entrada": "2026-11-02",
+  "pendientes": [],
+  "mes": {
+   "realizado": 3.620203566090005,
+   "atrapadas_costo": 0.0,
+   "n_atrapadas": 0,
+   "ciclos": 4,
+   "entradas": 7,
+   "comisiones": 0.0,
+   "capital_inicio": 186.65,
+   "latente": 0.0
+  },
+  "comisiones": 0.0,
+  "rango": 0.020588514086046693,
+  "slots": [
+   {
+    "nominal": 63.30272773649367,
+    "abierto": true,
+    "activo": true,
+    "costo": 62.75484012,
+    "qty": 0.000776,
+    "entrada": 80765.56,
+    "maximo": 80765.56,
+    "armado": false,
+    "desde": "2026-10-28T13:00:00",
+    "entro_en_vela": false
+   },
+   {
+    "nominal": 63.30272773649367,
+    "abierto": true,
+    "activo": true,
+    "costo": 63.03067649999999,
+    "qty": 0.000809,
+    "entrada": 77815.65,
+    "maximo": 77815.65,
+    "armado": false,
+    "desde": "2026-10-30T00:00:00",
+    "entro_en_vela": false
+   },
+   {
+    "nominal": 63.30272773649367,
+    "abierto": true,
+    "activo": true,
+    "costo": 63.27159235999999,
+    "qty": 0.00081,
+    "entrada": 78016.76,
+    "maximo": 78016.76,
+    "armado": false,
+    "desde": "2026-11-02T11:00:00",
+    "entro_en_vela": false
+   }
+  ]
+ },
+ "actualizado": "2026-11-02 17:01:00.257969+00:00",
+ "precio_cierre_anterior": 80877.24
+}

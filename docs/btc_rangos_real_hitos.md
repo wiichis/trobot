@@ -1,6 +1,91 @@
-# Bot BTC por rangos en real — hitos y criterios (fijados el 24/10/2026, antes de operar)
+# Bot BTC por rangos en real — hitos y criterios
 
-## Qué se prueba
+Dos versiones, cada una con sus reglas fijadas antes de operar:
+- **v0.4** (24/10/2026 → la migración): A · E4 0,5 · S4 0,75 · G4 con reposición parcial y cierre forzado el día 3. Lo que sigue en la sección "v0.4" quedó como estaba.
+- **Lotes de 3 ciclos** (desde la migración, decidida el 02/11/2026): lo que rige ahora.
+
+## Lotes de 3 ciclos (fijado el 02/11/2026, antes de desplegar)
+
+### Qué se prueba
+
+- **Reglas** (`pkg/btc_rangos_lotes.py`, las mismas de la simulación de lotes, variante B):
+  - **Depósitos**: cada depósito de USDT en spot es un lote, repartido en tercios entre los 3 slots. Cada tramo hace 3 ciclos (compra → venta al TP) y después su capital compra BTC de holding.
+  - **Ganancia**: 90 % queda en el bot y 10 % compra BTC de holding.
+  - **Atrapados**: un slot queda atrapado si cae −10 % desde su entrada o lleva 30 días abierto. Espera con su venta al TP. Lo reemplaza el primer depósito que cubra su costo, y entonces su BTC pasa a holding. Si el depósito no lo cubre, el USDT opera como un 4.º slot.
+  - **El día 3**: no hay cierre forzado. Es sólo un corte contable.
+  - **Entrada y salida**: las mismas de v0.4.
+- **Capital**: los 186,65 USDT de v0.4. Los 3 slots abiertos pasan a ser tramos del lote inicial, con 0 ciclos contados desde la migración.
+- **Decisión del usuario (02/11)**: no deposita hasta mediados de mes. Con v0.4, el cierre del 03/11 sin depósito dejaba al bot quieto un mes.
+- **Lo que dice la simulación** (200 calendarios de depósitos al azar, 2021-2026; [btc_rangos_lotes_informe.md](btc_rangos_lotes_informe.md)):
+  - **BTC contra el DCA puro**: −1,20 % (gana en el 6 % de los calendarios). Con 2021-2023 da −0,88 % y con 2024-2026 −1,99 %.
+  - **Contra la regla v0.4**: con los mismos depósitos, v0.4 da −1,30 % en todo el período y +0,23 % en 2024-2026.
+  - **Neto del trading**: +232 USDT en 6 años. Es positivo, pero lo come el USDT quieto (25 % del tiempo).
+  - **Criterios**: pasa 1 de 4 (sólo el d).
+
+### Cómo se mide (definiciones fijas)
+
+- **Neto del ciclo** (corte del día 3, `mensual.csv`) = ganancia realizada − costo de las atrapadas reemplazadas en el ciclo − el aumento de la pérdida latente de lo abierto.
+  - El % es sobre el capital del bot al empezar el ciclo.
+  - **La ganancia realizada sola no cuenta.**
+  - El primer corte va desde el arranque del 25/10 hasta el primer día 3 posterior a la migración, e incluye lo realizado con v0.4.
+- **BTC contra el DCA puro**: holding + BTC en slots + USDT del bot ÷ precio, contra el DCA puro.
+  - El DCA puro compra BTC con cada depósito en la hora en que llega, con los mismos costos.
+  - Al capital inicial lo compra al precio del arranque (80.877,24, el 25/10), igual que la simulación.
+- **Costo de ejecución**: igual que en v0.4, más la ganancia real contra la de la sombra en papel, que recibe los mismos depósitos (`depositos.csv` del real).
+- **Tablero**: `python3 scripts/btc_rangos_hitos.py`.
+
+### Lo que la simulación espera, para no confundir suerte con ventaja
+
+El neto del ciclo sigue al precio de BTC (correlación 0,77). Medianas de 3.350 ciclos, de 50 calendarios de 2021-2026 (`scripts/btc_rangos_lotes_sim.py --mensual 3`):
+
+| BTC en el ciclo | neto mediano | ciclos con neto ≥ 0 |
+|---|---|---|
+| cae más de 5 % | −9,8 % | 5 % |
+| entre −5 % y +5 % | +1,1 % | 61 % |
+| sube más de 5 % | +9,6 % | 97 % |
+
+El neto medio es de +0,68 % por ciclo. Cada corte compara el neto real con la fila que le corresponde, y el aviso de Telegram lo muestra. Si BTC sube, el bot va a ganar: eso no prueba nada.
+
+### Hitos
+
+| Hito | Fecha | Qué se mira | Qué decide |
+|---|---|---|---|
+| M0: migración | la primera corrida después del deploy | Respaldo en `real_v04_<fecha>/`. Las 3 órdenes de venta siguen vivas. Se contrastan contra BingX directo: BTC = slots + holding, y USDT = bot + `usdt_ajeno`. | Si no coinciden, se apaga (`enabled: false`) y se corrige |
+| M1: primer depósito | ~15/11/2026 | El depósito detectado en `depositos.csv`, y si reemplaza a un atrapado o va en tercios, todo contra los saldos de BingX. La sombra lo aplica en la misma hora. | Lo mismo |
+| M2: primer corte | 03/12/2026 | La fila de `mensual.csv` contra un cálculo independiente con `operaciones.csv` y los precios | Lo mismo |
+| H2: lectura intermedia | 03/02/2027 | El tablero completo | Nada, salvo fallas técnicas |
+| **H3: veredicto** | **03/06/2027** (6 ciclos completos desde el 03/12) | Los cuatro criterios de abajo | Seguir, ajustar el monto o apagar |
+| Extensión | 03/12/2027 | Si al 03/06 no hubo al menos 2 ciclos con BTC −5 % o peor, el criterio c no se puede evaluar y la prueba se alarga | |
+
+### Criterios del veredicto (H3): funciona si cumple todos
+
+Los mismos de v0.4:
+- **a.** Neto medio de al menos **+1 % al mes** sobre los ciclos completos. La simulación da +0,68 %.
+- **b.** BTC total **igual o mayor** que con el DCA puro. La simulación da −1,20 %.
+- **c.** En los ciclos en que BTC cae más de 5 %, el neto medio **no es negativo**. En la simulación, sólo el 5 % de esos ciclos tienen neto ≥ 0.
+- **d.** Ningún ciclo explica más del 50 % del neto.
+
+### Cortes automáticos (el bot pausa las compras, las ventas siguen y avisa)
+
+- El **neto acumulado** de los cortes baja de **−45 USDT** (`pausa_si_neto_menor_usdt`).
+- **Cada hora**:
+  - la cuenta spot tiene menos BTC que los slots abiertos, descontando lo ya vendido de una venta llena en parte;
+  - o tiene menos USDT que lo que el bot cree tener, más `usdt_ajeno`.
+- Una compra queda sin confirmar, o una comisión aparece cobrada en un activo desconocido.
+
+La pausa también frena la compra de holding. La levanta una persona, después de revisar.
+
+### Lo que no se toca durante la prueba
+
+- **La combinación**: el bot rechaza correr si la config cambia contra el estado guardado.
+- **Los depósitos**:
+  - el usuario deposita lo que quiera y cuando quiera;
+  - **todo USDT que aparezca en spot es del bot**, desde 15 USDT (lo menor se acumula hasta llegar);
+  - el tope es de 500 USDT por depósito, y el exceso queda aparte en `usdt_ajeno`.
+
+## v0.4 (fijado el 24/10/2026, antes de operar; vigente hasta la migración)
+
+### Qué se prueba
 
 - **Combinación**: A · E4 0,5 · S4 0,75 · G4, con reposición parcial. Es la misma del papel.
 - **Capital**: 186,65 USDT en BingX spot (todo el saldo; el usuario pidió usarlo entero en vez de 180).
@@ -8,7 +93,7 @@
 - **Lo que dice el backtest**: no pasa los criterios. En 69 meses de 2021-2026, la ganancia realizada fue de ~5 %/mes y el neto, con el costo de las atrapadas, de −0,03 %/mes. Ver [btc_rangos_fase2_informe.md](btc_rangos_fase2_informe.md).
 - **Para qué sirve la prueba en real**: confirmar o refutar eso con plata de verdad, y medir lo que el backtest no puede: deslizamiento, comisiones, rechazos.
 
-## Cómo se mide (definiciones fijas)
+### Cómo se mide (definiciones fijas)
 
 - **Neto** = ganancia realizada − costo de las atrapadas en cada cierre − pérdida latente de lo que siga abierto el día de la evaluación. **La ganancia realizada sola no cuenta**: en el backtest superó el 1 % mensual en el 100 % de las ventanas de 3, 6 y 12 meses, porque un bot que nunca vende con pérdida siempre muestra ganancia.
 - **BTC contra el DCA puro**: (holding + BTC en slots + USDT del bot ÷ precio) contra el DCA comprado el mismo día de cierre con el capital inicial guardado en USDT.
@@ -18,7 +103,7 @@
   - comisiones cobradas.
 - **Tablero**: `python3 scripts/btc_rangos_hitos.py`.
 
-## Lo que el backtest espera, para no confundir suerte con ventaja
+### Lo que el backtest espera, para no confundir suerte con ventaja
 
 En unos pocos meses, el neto se mueve casi igual que el precio de BTC (correlación 0,92). Neto mensual mediano en 2021-2026:
 
@@ -30,7 +115,7 @@ En unos pocos meses, el neto se mueve casi igual que el precio de BTC (correlaci
 
 Cada cierre mensual compara el neto real con la fila que le corresponde. Si BTC sube, el bot va a ganar: eso no prueba nada.
 
-## Hitos
+### Hitos
 
 | Hito | Fecha | Qué se mira | Qué decide |
 |---|---|---|---|
@@ -40,14 +125,14 @@ Cada cierre mensual compara el neto real con la fila que le corresponde. Si BTC 
 | **H3: veredicto** | **03/05/2027** (6 ciclos completos) | Los cuatro criterios de abajo | Seguir, ajustar el monto o apagar |
 | Extensión | 03/11/2027 | Si al 03/05 no hubo al menos 2 ciclos con BTC −5 % o peor, el criterio c no se puede evaluar y la prueba se alarga | |
 
-## Criterios del veredicto (H3): funciona si cumple todos
+### Criterios del veredicto (H3): funciona si cumple todos
 
 - **a.** Neto medio de al menos **+1 % al mes** sobre los ciclos completos. Es la meta del usuario.
 - **b.** BTC total **igual o mayor** que con el DCA puro.
 - **c.** En los ciclos en que BTC cae más de 5 %, el neto medio **no es negativo**. Es el criterio que distingue una fuente de ingreso aparte de una apuesta a que BTC sube; en el backtest no se cumplió nunca.
 - **d.** Ningún ciclo explica más del 50 % del neto.
 
-## Cortes automáticos (el bot pausa las compras, las ventas siguen y avisa)
+### Cortes automáticos (el bot pausa las compras, las ventas siguen y avisa)
 
 - El **neto acumulado** baja de **−45 USDT** (~25 % del capital), medido en cada cierre (`pausa_si_neto_menor_usdt`).
 - La cuenta spot tiene menos BTC que los slots abiertos, o menos USDT que lo que el bot cree tener en un cierre.
@@ -56,7 +141,7 @@ Cada cierre mensual compara el neto real con la fila que le corresponde. Si BTC 
 
 La pausa la levanta una persona, después de revisar.
 
-## Lo que no se toca durante la prueba
+### Lo que no se toca durante la prueba
 
 - **La combinación**: el bot rechaza correr si la config cambia contra el estado guardado.
 - **El monto del DCA**: el usuario deposita lo que quiera antes de cada día 3, con un tope que toma el bot de 500 USDT. Queda registrado en `mensual.csv` como `deposito_detectado`.

@@ -1,0 +1,81 @@
+{
+ "inicio": "2026-10-25 00:01:02.914096+00:00",
+ "modo": "papel",
+ "combo": {
+  "slots": "A",
+  "escalon_r": 0.0,
+  "entrada": "E4_0.5",
+  "filtro": false,
+  "salida": "S4_0.75",
+  "ganancia": "G4",
+  "reposicion_parcial": true,
+  "dia_cierre": 3,
+  "capital": 186.65
+ },
+ "ultima_barra": "2026-11-02 16:00:00",
+ "ultimo_resumen": "2026-11-02",
+ "motor": {
+  "holding_btc": 0.0,
+  "usdt_para_holding": 0.3421463933030252,
+  "bench_btc": 0.0,
+  "bench_b_btc": 0.0,
+  "ventas_usdt": 0.0,
+  "bench_ventas_usdt": 0.0,
+  "bench_b_ventas_usdt": 0.0,
+  "ciclo": "2026-10",
+  "n_cierres": 0,
+  "ultimo_dia_entrada": "2026-11-02",
+  "pendientes": [],
+  "mes": {
+   "realizado": 3.421463933030253,
+   "atrapadas_costo": 0.0,
+   "n_atrapadas": 0,
+   "ciclos": 4,
+   "entradas": 7,
+   "comisiones": 0.6930711486835284,
+   "capital_inicio": 186.65,
+   "latente": 0.0
+  },
+  "comisiones": 0.6930711486835284,
+  "rango": 0.020588514086046693,
+  "slots": [
+   {
+    "nominal": 63.243105846575745,
+    "abierto": true,
+    "activo": true,
+    "costo": 62.76109019898013,
+    "qty": 0.000776,
+    "entrada": 80790.15488999999,
+    "maximo": 80790.15488999999,
+    "armado": false,
+    "desde": "2026-10-28T13:00:00",
+    "entro_en_vela": false
+   },
+   {
+    "nominal": 63.243105846575745,
+    "abierto": true,
+    "activo": true,
+    "costo": 63.000923652838395,
+    "qty": 0.000806,
+    "entrada": 78030.865935,
+    "maximo": 78030.865935,
+    "armado": false,
+    "desde": "2026-10-30T00:00:00",
+    "entro_en_vela": false
+   },
+   {
+    "nominal": 63.243105846575745,
+    "abierto": true,
+    "activo": true,
+    "costo": 63.243105846575745,
+    "qty": 0.0008089999999999999,
+    "entrada": 78013.01701499999,
+    "maximo": 78013.01701499999,
+    "armado": false,
+    "desde": "2026-11-02T11:00:00",
+    "entro_en_vela": false
+   }
+  ]
+ },
+ "actualizado": "2026-11-02 17:01:02.247881+00:00"
+}

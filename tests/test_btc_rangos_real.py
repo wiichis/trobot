@@ -1,4 +1,4 @@
-"""Bot BTC por rangos en modo real (24/10/2026) contra un BingX spot falso.
+"""Bot BTC por rangos en modo real (24/10/2026; lotes desde el 02/11) contra un BingX spot falso.
 
 El exchange falso responde con la forma real de BingX spot (ids numéricos, cantidades como
 texto, fee negativo y en BTC en la compra, en USDT en la venta) y llena las órdenes límite de
@@ -6,6 +6,8 @@ venta cuando el máximo de la vela llega al precio, que es la regla del backtest
 """
 import json
 import math
+import shutil
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -14,11 +16,16 @@ import requests
 
 import pkg.btc_rangos as papel
 import pkg.btc_rangos_real as br
+from pkg import btc_rangos_lotes as ml
 from pkg import btc_rangos_motor as mm
 from pkg.bingx_spot import ClienteSpot
 
 CFG = json.loads(br.CONFIG_PATH.read_text(encoding="utf-8"))
 STEP = 1e-6
+PROD = Path(__file__).parent / "datos" / "btc_rangos_v04_20261102"
+# el 22/02 hay un atrapado (desde el 19/02): 80 USDT lo reemplazan; 30 y 100 van en tercios
+DEPOSITOS = {pd.Timestamp("2024-02-22 07:00"): [(80.0, 1)], pd.Timestamp("2024-02-26 10:00"): [(30.0, 2)],
+             pd.Timestamp("2024-03-08 09:00"): [(100.0, 3)]}
 
 
 def serie(dias=75, semilla=7):
@@ -172,6 +179,25 @@ class Reloj:
         self.e["ex"].jugar_vela(float(self.full["high"].iloc[self.k]))
 
 
+def motor(entorno):
+    est = json.loads((entorno["dir"] / "estado.json").read_text())
+    return est, ml.MotorLotes.desde_dict(est["motor"], papel.config_motor(entorno["cfg"]))
+
+
+def cuentas_cuadran(entorno):
+    """USDT y BTC del exchange contra la contabilidad del bot, y cada slot abierto con su venta."""
+    ex = entorno["ex"]
+    est, m = motor(entorno)
+    assert ex.usdt + ex.usdt_lock == pytest.approx(m.usdt_bot() + est["usdt_ajeno"], abs=0.05)
+    assert ex.btc + ex.btc_lock == pytest.approx(m.btc_en_slots() + m.holding_btc, abs=1e-6)
+    for i, s in enumerate(m.slots, 1):
+        if s.abierto:
+            o = ex.ordenes[int(est["ordenes"][str(i)]["order_id"])]
+            assert o["status"] == "NEW" and o["origQty"] == pytest.approx(s.qty)
+            assert o["price"] >= m.piso(s)
+    return est, m
+
+
 def test_arranque_exige_capital_en_spot(entorno):
     entorno["ex"].usdt = 50.0
     full = serie()
@@ -183,13 +209,16 @@ def test_arranque_exige_capital_en_spot(entorno):
     assert r.correr()["nuevo"]
     est = json.loads((entorno["dir"] / "estado.json").read_text())
     assert est["usdt_ajeno"] == pytest.approx(186.66 - CFG["capital"])
+    assert est["reglas"] == "lotes"
+    deps = pd.read_csv(entorno["dir"] / "depositos.csv")
+    assert deps["lote"].tolist() == [0] and deps["monto"].iloc[0] == CFG["capital"]
     assert entorno["avisos"][-1][0] == "btc_real_inicio"
 
 
-def test_decisiones_iguales_al_backtest_y_cuentas_cuadradas(entorno):
-    """Mismas compras y ventas (slot, hora de entrada, hora de salida) que `mm.simular` sobre las
-    mismas velas, cruzando un cierre mensual con DCA depositado en spot. Y la contabilidad del
-    bot cuadra con los saldos del exchange."""
+def test_decisiones_iguales_a_la_simulacion_y_cuentas_cuadradas(entorno):
+    """Mismas compras y ventas (slot, hora de entrada, hora de salida) que `MotorLotes.vela` sobre
+    las mismas velas y los mismos depósitos, con un atrapado reemplazado por un depósito, tramos
+    que cumplen sus 3 ciclos y un corte del día 3. Y la contabilidad cuadra con el exchange."""
     full = serie()
     ex = entorno["ex"]
     k0 = int(np.searchsorted(full.index, pd.Timestamp("2024-02-10 00:00"))) - 1  # última cerrada: 09/02 23:00
@@ -198,57 +227,133 @@ def test_decisiones_iguales_al_backtest_y_cuentas_cuadradas(entorno):
     fin = pd.Timestamp("2024-03-15 00:00")
     while full.index[reloj.k + 1] < fin:
         reloj.avanzar()
-        if full.index[reloj.k + 1] == pd.Timestamp("2024-03-03 00:00"):
-            ex.usdt += 400.0  # el usuario deposita el DCA antes del cierre
+        for monto, _ in DEPOSITOS.get(full.index[reloj.k + 1], ()):
+            ex.usdt += monto  # el usuario deposita en spot durante esa hora
         res = reloj.correr()
         assert res is not None and not res["pausa"], entorno["avisos"][-1]
+        cuentas_cuadran(entorno)
     datos = papel.preparar(full, entorno["cfg"])
-    cfg_m = papel.config_motor(entorno["cfg"])
-    sim = mm.simular(full, datos["senal"], datos["atr_prev"].shift(-1), cfg_m, lambda k: 400.0,
-                     pd.Timestamp("2024-02-10 00:00"), full.index[reloj.k + 1], rango=datos["rango"])
-    s_ops = pd.DataFrame(sim.motor.operaciones)
+    sim = papel.motor_nuevo(entorno["cfg"])
+    sim.depositar(CFG["capital"], 0, pd.Timestamp("2024-02-10 00:00"), 40_000.0)
+    for t, f in datos[(datos.index >= pd.Timestamp("2024-02-10")) & (datos.index < full.index[reloj.k + 1])].iterrows():
+        sim.vela(t, f["open"], f["high"], f["low"], f["close"], bool(f["senal"]), float(f["atr_prev"]),
+                 float(f["rango_prev"]), DEPOSITOS.get(t, ()))
+    assert sim.st["reemplazos_deposito"] == 1 and sim.st["usdt_sale_ciclos"] > 0, sim.st
+    s_ops = pd.DataFrame(sim.operaciones)
     r_ops = pd.read_csv(entorno["dir"] / "operaciones.csv", parse_dates=["entrada_t", "salida_t"])
     assert len(s_ops) > 5
     # la venta real se registra en la corrida siguiente a la vela en que se llenó (+1 h)
-    abiertas_sim = s_ops[s_ops["salida_t"] <= full.index[reloj.k]]
-    assert len(r_ops) == len(abiertas_sim)
-    assert (r_ops["slot"].to_numpy() == abiertas_sim["slot"].to_numpy()).all()
-    assert (r_ops["entrada_t"].to_numpy() == abiertas_sim["entrada_t"].to_numpy()).all()
+    cerradas_sim = s_ops[s_ops["salida_t"] <= full.index[reloj.k]]
+    assert len(r_ops) == len(cerradas_sim)
+    assert (r_ops["slot"].to_numpy() == cerradas_sim["slot"].to_numpy()).all()
+    assert (r_ops["entrada_t"].to_numpy() == cerradas_sim["entrada_t"].to_numpy()).all()
     # (si la vela abre sobre el TP, la orden se llena al colocarla: misma hora que el backtest)
-    assert (r_ops["salida_t"] - abiertas_sim["salida_t"].to_numpy()).isin([pd.Timedelta(0), pd.Timedelta(hours=1)]).all()
-    assert np.allclose(r_ops["ganancia"], abiertas_sim["ganancia"], rtol=0.05, atol=0.02)
+    assert (r_ops["salida_t"] - cerradas_sim["salida_t"].to_numpy()).isin([pd.Timedelta(0), pd.Timedelta(hours=1)]).all()
+    assert np.allclose(r_ops["ganancia"], cerradas_sim["ganancia"], rtol=0.05, atol=0.02)
 
-    est = json.loads((entorno["dir"] / "estado.json").read_text())
-    m = papel.motor_desde_dict(est["motor"], cfg_m, lambda k: 0.0)
-    assert m.n_cierres == 1
+    est, m = cuentas_cuadran(entorno)
+    assert m.st["reemplazos_deposito"] == 1 and m.n_cierres == 1
+    deps = pd.read_csv(entorno["dir"] / "depositos.csv")
+    assert deps["lote"].tolist() == [0, 1, 2, 3]
+    assert np.allclose(deps["monto"].iloc[1:], [80.0, 30.0, 100.0])
+    assert str(deps["reemplaza"].iloc[1]) not in ("", "nan")
+    ordenes = pd.read_csv(entorno["dir"] / "ordenes.csv")
+    assert (ordenes["motivo"] == "reemplazo_atrapado").sum() >= 1
+    assert (ordenes["motivo"] == "holding").sum() >= 1          # tramos que cumplieron 3 ciclos
+    assert m.holding_btc == pytest.approx(sim.holding_btc, rel=0.02)
     mensual = pd.read_csv(entorno["dir"] / "mensual.csv")
-    assert mensual["deposito_detectado"].iloc[0] == pytest.approx(400.0, abs=0.01)
-    assert mensual["compra_holding_btc"].iloc[0] > 0
-    # cuentas: USDT del exchange = USDT del bot + reservado para holding + ajeno
-    usdt_ex = ex.usdt + ex.usdt_lock
-    assert usdt_ex == pytest.approx(m.usdt_bot() + m.usdt_para_holding + est["usdt_ajeno"], abs=0.05)
-    # BTC del exchange = slots abiertos + holding (incluye el polvo bajo el step)
-    assert ex.btc + ex.btc_lock == pytest.approx(m.btc_en_slots() + m.holding_btc, abs=1e-6)
-    # cada slot abierto tiene su orden de venta en el exchange, por su cantidad exacta
-    for i, s in enumerate(m.slots, 1):
-        if s.abierto:
-            o = ex.ordenes[int(est["ordenes"][str(i)]["order_id"])]
-            assert o["status"] == "NEW" and o["origQty"] == pytest.approx(s.qty)
-            assert o["price"] >= m.piso(s)
+    assert len(mensual) == 1 and mensual["depositado"].iloc[0] == pytest.approx(CFG["capital"] + 110, abs=0.01)
     cats = [a[0] for a in entorno["avisos"]]
     assert "btc_real_operaciones" in cats and "btc_real_cierre_mensual" in cats and "btc_real_resumen" in cats
-    assert "btc_real_recordatorio_dca" in cats
     assert not any(a[1] == "CRITICAL" for a in entorno["avisos"])
 
 
-def _hasta_primera_compra(entorno, full, reloj, limite=400):
-    for _ in range(limite):
+def test_el_corte_del_dia_3_no_toca_ordenes(entorno):
+    full = serie()
+    k = int(np.searchsorted(full.index, pd.Timestamp("2024-02-26 00:00")))
+    reloj = Reloj(entorno, full, k)
+    reloj.correr()
+    while full.index[reloj.k + 1] < pd.Timestamp("2024-03-03 00:00"):
         reloj.avanzar()
         reloj.correr()
-        est = json.loads((entorno["dir"] / "estado.json").read_text())
-        if est["ordenes"]:
-            return est
-    raise AssertionError("no hubo compra")
+    est, _ = motor(entorno)
+    antes = dict(est["ordenes"])
+    n = len(pd.read_csv(entorno["dir"] / "ordenes.csv"))
+    reloj.avanzar()
+    reloj.correr()                       # la vela que abre el 03/03 00:00
+    est, m = motor(entorno)
+    nuevas = pd.read_csv(entorno["dir"] / "ordenes.csv", dtype={"order_id": str}).iloc[n:]
+    assert antes and not nuevas["motivo"].isin(["cierre_mensual", "reemplazo_atrapado", "holding"]).any()
+    for k, od in antes.items():  # cada venta sigue viva, salvo que se haya llenado o cambiado con el R, como cualquier hora
+        sigue = est["ordenes"].get(k, {}).get("order_id") == od["order_id"]
+        assert sigue or nuevas[nuevas["order_id"] == od["order_id"]]["motivo"].isin(["tp_lleno", "tp_reemplazo"]).any()
+    mensual = pd.read_csv(entorno["dir"] / "mensual.csv")
+    assert len(mensual) == 1 and m.n_cierres == 1 and m.ciclo == "2024-03"
+    for _ in range(3):
+        reloj.avanzar()
+        reloj.correr()
+    assert len(pd.read_csv(entorno["dir"] / "mensual.csv")) == 1
+    cuentas_cuadran(entorno)
+
+
+def test_deposito_que_no_cubre_al_atrapado_va_al_cuarto_slot(entorno):
+    full = serie()
+    ex = entorno["ex"]
+    k = int(np.searchsorted(full.index, pd.Timestamp("2024-02-10 00:00"))) - 1
+    reloj = Reloj(entorno, full, k)
+    reloj.correr()
+    while full.index[reloj.k + 1] < pd.Timestamp("2024-02-22 07:00"):
+        reloj.avanzar()
+        reloj.correr()
+    _, m = motor(entorno)
+    assert any(m.atrapado)
+    reloj.avanzar()
+    ex.usdt += 30.0
+    reloj.correr()
+    est, m = cuentas_cuadran(entorno)
+    assert any(m.atrapado) and m.st["reemplazos_deposito"] == 0
+    cuarto = sum(x["usdt"] for x in m.tr[3] + m.esp[3]) + (m.slots[3].costo if m.slots[3].abierto else 0.0)
+    assert cuarto == pytest.approx(30.0, abs=0.5)
+    for _ in range(120):                 # el 4.º slot opera con su señal, como un slot más
+        reloj.avanzar()
+        reloj.correr()
+        cuentas_cuadran(entorno)
+    assert any(o["clientOrderID"].startswith("BRB4") for o in ex.ordenes.values())
+
+
+def test_usdt_que_falta_en_la_cuenta_pausa(entorno):
+    full = serie()
+    reloj = Reloj(entorno, full, 40 * 24)
+    reloj.correr()
+    entorno["ex"].usdt -= 10.0  # alguien retiró USDT que era del bot
+    reloj.avanzar()
+    reloj.correr()
+    est = json.loads((entorno["dir"] / "estado.json").read_text())
+    assert est["pausa"] and "USDT" in est["pausa"]["motivo"]
+
+
+def test_llenado_parcial_del_atrapado_y_reemplazo(entorno):
+    """La venta del atrapado se llenó en parte y llega un depósito: al cancelarla se realiza la
+    parte vendida, el resto pasa a holding y las cuentas cuadran."""
+    full = serie()
+    ex = entorno["ex"]
+    k = int(np.searchsorted(full.index, pd.Timestamp("2024-02-10 00:00"))) - 1
+    reloj = Reloj(entorno, full, k)
+    reloj.correr()
+    while full.index[reloj.k + 1] < pd.Timestamp("2024-02-22 07:00"):
+        reloj.avanzar()
+        reloj.correr()
+    est, m = motor(entorno)
+    i = next(i for i in range(3) if m.atrapado[i])
+    o = ex.ordenes[int(est["ordenes"][str(i + 1)]["order_id"])]
+    ex._llenar_venta(o, o["price"], round(o["origQty"] / 2, 6))
+    reloj.avanzar()
+    ex.usdt += 80.0
+    reloj.correr()
+    ops = pd.read_csv(entorno["dir"] / "operaciones.csv")
+    assert (ops["motivo"] == "tp_parcial").sum() == 1
+    est, m = cuentas_cuadran(entorno)
+    assert m.st["reemplazos_deposito"] == 1 and not m.atrapado[i]
 
 
 def test_timeout_al_comprar_se_recupera_por_client_id(entorno):
@@ -272,9 +377,8 @@ def test_timeout_al_comprar_se_recupera_por_client_id(entorno):
     assert entorno["avisos"][-1][1] == "CRITICAL"
     reloj.avanzar()
     reloj.correr()
-    est = json.loads((entorno["dir"] / "estado.json").read_text())
+    est, m = motor(entorno)
     assert est["compra_en_curso"] is None
-    m = papel.motor_desde_dict(est["motor"], papel.config_motor(entorno["cfg"]), lambda k: 0.0)
     assert sum(s.abierto for s in m.slots) == 1 and est["ordenes"]
     assert ex.btc + ex.btc_lock == pytest.approx(m.btc_en_slots() + m.holding_btc, abs=1e-6)
 
@@ -290,9 +394,8 @@ def test_orden_rechazada_no_abre_el_slot(entorno):
         reloj.correr()
         if ex.rechazar is None:
             break
-    est = json.loads((entorno["dir"] / "estado.json").read_text())
+    est, m = motor(entorno)
     assert est["compra_en_curso"] is None and not est["ordenes"]
-    m = papel.motor_desde_dict(est["motor"], papel.config_motor(entorno["cfg"]), lambda k: 0.0)
     assert not any(s.abierto for s in m.slots)
     assert entorno["avisos"][-1][1] == "CRITICAL"
 
@@ -316,33 +419,14 @@ def test_btc_que_falta_en_la_cuenta_pausa_las_compras(entorno):
     assert not compras
 
 
-def test_llenado_parcial_al_cierre_mensual(entorno):
-    """La venta del slot se llena en parte y llega el cierre: la parte vendida se realiza y el resto
-    pasa a holding."""
-    full = serie()
-    ex = entorno["ex"]
-    k = int(np.searchsorted(full.index, pd.Timestamp("2024-03-02 06:00")))
-    reloj = Reloj(entorno, full, k)
-    reloj.correr()
-    est = _hasta_primera_compra(entorno, full, reloj, limite=17)
-    oid = int(est["ordenes"]["1"]["order_id"]) if "1" in est["ordenes"] else int(next(iter(est["ordenes"].values()))["order_id"])
-    o = ex.ordenes[oid]
-    ex._llenar_venta(o, o["price"], round(o["origQty"] / 2, 6))
-    assert o["status"] == "PARTIALLY_FILLED"
-    while full.index[reloj.k + 1] < pd.Timestamp("2024-03-03 00:00"):
+def _hasta_primera_compra(entorno, full, reloj, limite=400):
+    for _ in range(limite):
         reloj.avanzar()
         reloj.correr()
-        if o["status"] == "FILLED":
-            pytest.skip("la serie llenó la orden entera antes del cierre")
-    reloj.avanzar()
-    reloj.correr()
-    ops = pd.read_csv(entorno["dir"] / "operaciones.csv")
-    assert (ops["motivo"] == "tp_parcial").sum() == 1
-    mensual = pd.read_csv(entorno["dir"] / "mensual.csv")
-    assert mensual["n_atrapadas"].iloc[0] >= 1
-    est = json.loads((entorno["dir"] / "estado.json").read_text())
-    m = papel.motor_desde_dict(est["motor"], papel.config_motor(entorno["cfg"]), lambda k: 0.0)
-    assert ex.btc + ex.btc_lock == pytest.approx(m.btc_en_slots() + m.holding_btc, abs=1e-6)
+        est = json.loads((entorno["dir"] / "estado.json").read_text())
+        if est["ordenes"]:
+            return est
+    raise AssertionError("no hubo compra")
 
 
 def test_estado_ilegible_no_opera(entorno):
@@ -379,7 +463,6 @@ def test_redondeo_al_step_y_al_tick():
 def test_compra_que_nunca_llego_al_exchange_se_descarta(entorno):
     """Corte de red ANTES de que BingX reciba la orden: no existe (100404) y se limpia sin pausar."""
     full = serie()
-    ex = entorno["ex"]
     reloj = Reloj(entorno, full, 40 * 24)
     reloj.correr()
     est = json.loads((entorno["dir"] / "estado.json").read_text())
@@ -400,29 +483,66 @@ def test_cliente_sin_clave_spot_no_usa_la_de_perpetuos(monkeypatch):
         ClienteSpot.desde_credenciales()
 
 
-def test_si_falla_la_compra_de_holding_el_cierre_no_se_repite(entorno):
+def test_si_falla_la_compra_de_holding_se_reintenta_sin_perder_el_usdt(entorno):
     full = serie()
     ex = entorno["ex"]
-    k = int(np.searchsorted(full.index, pd.Timestamp("2024-03-02 20:00")))
-    reloj = Reloj(entorno, full, k)
+    reloj = Reloj(entorno, full, 40 * 24)
     reloj.correr()
-    while full.index[reloj.k + 2] < pd.Timestamp("2024-03-03 00:00"):
-        reloj.avanzar()
-        reloj.correr()
-    reloj.avanzar()            # la corrida que sigue es la del cierre (vela que abre el 03/03 00:00)
-    ex.usdt += 400.0
-    ex.rechazar = 100400       # la primera orden del cierre es la compra de holding
+    est, m = motor(entorno)
+    m.reserva = 20.0          # como si 10 % de ganancias y tramos retirados sumaran 20 USDT
+    est["motor"] = m.a_dict()
+    (entorno["dir"] / "estado.json").write_text(json.dumps(est), encoding="utf-8")
+    ex.usdt += 20.0
+    reloj.avanzar()
+    ex.rechazar = 100400      # la primera orden de la corrida es la compra de holding
     assert reloj.correr() is None
-    est = json.loads((entorno["dir"] / "estado.json").read_text())
-    m = papel.motor_desde_dict(est["motor"], papel.config_motor(entorno["cfg"]), lambda k: 0.0)
-    assert m.n_cierres == 1 and m.ciclo == "2024-03"
-    assert m.usdt_para_holding > 300   # el DCA quedó reservado en USDT para el próximo cierre
-    for _ in range(3):
+    est, m = motor(entorno)
+    assert m.monto_holding() == pytest.approx(20.0) and not est["compra_en_curso"]
+    reloj.avanzar()
+    reloj.correr()
+    est, m = cuentas_cuadran(entorno)
+    assert m.monto_holding() < 0.01 and m.holding_btc > 0
+    assert any(o["clientOrderID"].startswith("BRH") and o["status"] == "FILLED" for o in ex.ordenes.values())
+
+
+def test_migra_el_estado_v04_de_prod_sin_tocar_las_ordenes(entorno):
+    """La copia del estado real en prod del 02/11 (v0.4, 3 slots abiertos con su venta en BingX)
+    contra un exchange con esos mismos saldos y órdenes: se migra con respaldo, las órdenes vivas
+    siguen y las cuentas cuadran."""
+    shutil.copytree(PROD / "real", entorno["dir"])
+    antes = json.loads((entorno["dir"] / "estado.json").read_text())
+    ex = entorno["ex"]
+    ex.usdt, ex.btc, ex.btc_lock = 1.22217460609, 1.444e-06, 0.002395   # saldos leídos de BingX el 02/11
+    for k, od in antes["ordenes"].items():
+        oid = int(od["order_id"])
+        ex.ordenes[oid] = {"orderId": oid, "clientOrderID": od["client_id"], "side": "SELL", "type": "LIMIT",
+                           "price": float(od["precio"]), "origQty": float(od["qty"]), "executedQty": 0.0,
+                           "cummulativeQuoteQty": 0.0, "fee": 0.0, "feeAsset": "", "status": "NEW"}
+    full = serie() * (77_500 / 40_000)
+    full.index = pd.date_range("2026-09-26 00:00", periods=len(full), freq="h")
+    k = int(np.searchsorted(full.index, pd.Timestamp("2026-11-02 17:00")))  # la corrida de las 18:01
+    reloj = Reloj(entorno, full, k)
+    r = reloj.correr()
+    assert r is not None and not r["pausa"], entorno["avisos"][-3:]
+    est, m = cuentas_cuadran(entorno)
+    assert est["reglas"] == "lotes" and Path(est["respaldo_v04"]).exists()
+    assert json.loads((Path(est["respaldo_v04"]) / "estado.json").read_text()) == antes
+    assert est["precio_inicio"] == pytest.approx(80877.24)
+    assert m.bench_btc == mm._redondear(186.65 * 0.999 / (80877.24 * 1.0005))
+    for i in range(3):
+        assert m.slots[i].abierto and m.slots[i].qty == antes["motor"]["slots"][i]["qty"]
+    assert m.usdt_bot() + est["usdt_ajeno"] == pytest.approx(1.22217460609, abs=0.01)
+    assert m.st["realizado"] == pytest.approx(3.62020357, abs=1e-6) and m.ciclo == "2026-10"
+    assert entorno["avisos"][0][0] == "btc_real_inicio" and "lotes de 3 ciclos" in entorno["avisos"][0][2]["mensaje_md"]
+    for _ in range(36):       # sigue operando, cruza el corte del 03/11 sin tocar los slots
         reloj.avanzar()
         reloj.correr()
-    est = json.loads((entorno["dir"] / "estado.json").read_text())
-    m = papel.motor_desde_dict(est["motor"], papel.config_motor(entorno["cfg"]), lambda k: 0.0)
-    assert m.n_cierres == 1
+        cuentas_cuadran(entorno)
+    est, m = motor(entorno)
     mensual = pd.read_csv(entorno["dir"] / "mensual.csv")
-    assert len(mensual) == 1 and mensual["deposito_detectado"].iloc[0] == pytest.approx(400.0, abs=0.01)
-    assert ex.usdt + ex.usdt_lock == pytest.approx(m.usdt_bot() + m.usdt_para_holding + est["usdt_ajeno"], abs=0.05)
+    assert len(mensual) == 1 and mensual["realizado"].iloc[0] >= 3.62 - 1e-6
+    # cada CSV se puede leer entero (las columnas de equity cambian: el viejo queda aparte)
+    for f in entorno["dir"].glob("*.csv"):
+        pd.read_csv(f)
+    assert len(pd.read_csv(entorno["dir"] / "equity_v04.csv")) == len(pd.read_csv(PROD / "real" / "equity.csv"))
+    assert "latente" in pd.read_csv(entorno["dir"] / "equity.csv")

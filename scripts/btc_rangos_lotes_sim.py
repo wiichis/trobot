@@ -36,7 +36,7 @@ FIJADO ANTES DE CORRER (respuestas del usuario del 27/10):
 - Costos: comisión 0,1 % y slippage 0,05 % por lado; step 1e-6 BTC.
 
 MEJORAS (28/10/2026), fijadas antes de correr (plan aprobado por el usuario):
-- Ciclos por lote ∈ {1, 2, 4} (`b1`, `b2`, `b4`; `b4` = variante B). Motivo: medido contra el
+- Ciclos por lote ∈ {1, 2, 4} (`b1`, `b2`, `b4`; `b4` = variante B). `b3` se agregó el 02/11, cuando el usuario eligió 3 ciclos para el real (informativo, no decide). Motivo: medido contra el
   precio del día de su depósito, la entrada atrapada sale igual que el DCA en la 1.ª compra del
   dinero (−0,1 %) y empeora con cada ciclo previo (+2,6 / +4,9 / +8,8 % tras 1 / 2 / 3).
 - Filtro de tendencia a los depósitos (`fb1`, `fb2`, `fb4`): ventana COMPRA si el último cierre
@@ -53,7 +53,7 @@ MEJORAS (28/10/2026), fijadas antes de correr (plan aprobado por el usuario):
   mediana supera al percentil 90 de su placebo en el continuo; (4) ningún mes explica más del
   50 % de los aumentos de ventaja (mediana entre calendarios).
 
-Uso: python3 scripts/btc_rangos_lotes_sim.py [--procesos 8] [--semillas 200] [--prueba]
+Uso: python3 scripts/btc_rangos_lotes_sim.py [--procesos 8] [--semillas 200] [--prueba] [--mensual 3]
 """
 from __future__ import annotations
 
@@ -75,12 +75,11 @@ v04 = importlib.util.module_from_spec(_spec)
 sys.modules["v04"] = v04
 _spec.loader.exec_module(v04)
 rr, mm = v04.rr, v04.mm
+ml = v04.bt._cargar("btc_rangos_lotes")  # el motor de lotes, el mismo del papel y del real
+MotorLotes, PERM = ml.MotorLotes, ml.PERM
 
 ENTRADA, SALIDA = "E4_0.5", "S4_0.75"
-MAX_CICLOS = 4
-CAIDA_ATRAPADO = 0.10
-DIAS_ATRAPADO = 30
-REINV = mm.GANANCIA["G4"]
+MAX_CICLOS = 4  # el default del laboratorio; el real usa 3 (`ciclos_por_lote`)
 PERIODOS = {
     "continuo": (pd.Timestamp("2021-01-03"), pd.Timestamp("2026-10-03")),
     "2021-2023": (pd.Timestamp("2021-01-03"), pd.Timestamp("2024-01-03")),
@@ -92,222 +91,7 @@ PERIODOS_D = {  # velas diarias, sólo para `dca_filtro`; la media de 100 días 
     "d_2021-2023": (pd.Timestamp("2021-01-03"), pd.Timestamp("2024-01-03")),
     "d_2024-2026": (pd.Timestamp("2024-01-03"), pd.Timestamp("2026-10-03")),
 }
-COSTO_COMPRA = (1 + mm.SLIPPAGE) / (1 - mm.COMISION)  # precio efectivo por BTC = precio × COSTO_COMPRA
 N_PLACEBO = 50
-PERM = -1  # lote de los tramos de ganancia reinvertida: no tienen límite de ciclos
-
-
-class MotorLotes(mm.Motor):
-    """Slots 0-2 fijos y el 3 temporal. Cada slot guarda tramos {lote, usdt, ciclos, t0}."""
-
-    def __init__(self, cfg: mm.Config, max_ciclos: float = MAX_CICLOS, atrapar: bool = True,
-                 espera_cuenta: bool = False):
-        super().__init__(cfg=cfg, dca=lambda k: 0.0)
-        self.max_ciclos, self.atrapar, self.espera_cuenta = max_ciclos, atrapar, espera_cuenta
-        self.tr = [[] for _ in range(4)]
-        self.esp = [[] for _ in range(4)]
-        self.atrapado = [False] * 4
-        self.pend_holding = 0.0
-        self.reserva = 0.0
-        self.reserva_filtro: list = []  # depósitos que esperan la ventana COMPRA: (monto, lote, t, precio)
-        self.bench_btc = 0.0
-        self.st = {"atr_usdt": 0.0, "atr_btc_bot": 0.0, "atr_btc_dca": 0.0,"depositado": 0.0, "realizado": 0.0, "atrapadas_costo": 0.0, "n_atrapadas": 0,
-                   "reemplazos_deposito": 0, "reemplazos_4": 0, "holding_gastado": 0.0, "base_atrapadas": 0.0,
-                   "usdt_sale_ciclos": 0.0, "usdt_sale_atrapado": 0.0, "ocioso": 0.0, "total": 0.0,
-                   "ventas_4": 0}
-        self.dias_4_ciclos: list = []
-
-    # --- tramos -------------------------------------------------------------------
-    def _sync(self, i: int):
-        if not self.slots[i].abierto:
-            self.slots[i].nominal = sum(x["usdt"] for x in self.tr[i])
-
-    def _add(self, i: int, tramo: dict):
-        dest = self.esp[i] if self.slots[i].abierto else self.tr[i]
-        if tramo["lote"] == PERM:
-            for x in dest:
-                if x["lote"] == PERM:
-                    x["usdt"] += tramo["usdt"]
-                    self._sync(i)
-                    return
-        dest.append(tramo)
-        self._sync(i)
-
-    def _tercios(self, tramo: dict):
-        for k in range(3):
-            self._add(k, {**tramo, "usdt": tramo["usdt"] / 3})
-
-    def _atrapados(self):
-        return sorted((i for i in range(3) if self.atrapado[i]), key=lambda i: self.slots[i].costo)
-
-    def _reemplazar(self, i: int, nuevos: list, t: pd.Timestamp, precio: float, via: str):
-        s = self.slots[i]
-        for x in self.tr[i]:
-            if x["lote"] != PERM:  # el dinero de depósitos atrapado, contra comprarlo el día que llegó
-                self.st["atr_usdt"] += x["usdt"]
-                self.st["atr_btc_bot"] += x["usdt"] / s.costo * s.qty
-                self.st["atr_btc_dca"] += x["usdt"] / (x["p0"] * COSTO_COMPRA)
-        self.holding_btc += s.qty
-        self.st["atrapadas_costo"] += s.costo - s.qty * precio
-        self.st["base_atrapadas"] += s.costo
-        self.st["usdt_sale_atrapado"] += sum(x["usdt"] for x in self.tr[i] if x["lote"] != PERM)
-        self.st[f"reemplazos_{via}"] += 1
-        s.abierto, s.qty, s.costo, s.armado = False, 0.0, 0.0, False
-        self.atrapado[i] = False
-        self.tr[i], viejos = [], self.esp[i]
-        self.esp[i] = []
-        for x in nuevos + viejos:
-            self._add(i, x)
-
-    # --- pasos --------------------------------------------------------------------
-    def registrar(self, usdt: float, precio: float):
-        """El depósito llega: cuenta como depositado y el DCA puro lo compra a este precio."""
-        self.st["depositado"] += usdt
-        self.bench_btc += self._comprar_bench(usdt, precio)[0]
-
-    def depositar(self, usdt: float, lote: int, t: pd.Timestamp, precio: float):
-        self.registrar(usdt, precio)
-        self.asignar(usdt, lote, t, precio, t, precio)
-
-    def asignar(self, usdt: float, lote: int, t: pd.Timestamp, precio: float, t0: pd.Timestamp, p0: float):
-        """El USDT entra al bot ahora (`t`, `precio`); `t0` y `p0` son los del día del depósito."""
-        resto = usdt
-        for i in self._atrapados():
-            costo = self.slots[i].costo
-            if resto + 1e-9 >= costo:
-                self._reemplazar(i, [{"lote": lote, "usdt": costo, "ciclos": 0, "t0": t0, "p0": p0}], t, precio,
-                                 "deposito")
-                resto -= costo
-        if resto <= 1e-9:
-            return
-        tramo = {"lote": lote, "usdt": resto, "ciclos": 0, "t0": t0, "p0": p0}
-        if self._atrapados():
-            self._add(3, tramo)
-        else:
-            self._tercios(tramo)
-
-    def chequear_cuarto(self, t: pd.Timestamp, precio: float):
-        s4 = self.slots[3]
-        if self.espera_cuenta and s4.abierto:
-            if not self.esp[3]:
-                return
-            caja = sum(x["usdt"] for x in self.esp[3])
-            atr = self._atrapados()
-            for i in atr:
-                if caja + 1e-9 >= self.slots[i].costo:
-                    tramos, self.esp[3] = self.esp[3], []
-                    self._reemplazar(i, tramos, t, precio, "4")
-                    return
-            if not atr:
-                tramos, self.esp[3] = self.esp[3], []
-                for x in tramos:
-                    self._tercios(x)
-            return
-        if s4.abierto or not self.tr[3]:
-            return
-        caja = sum(x["usdt"] for x in self.tr[3])
-        atr = self._atrapados()
-        if atr:
-            for i in atr:
-                if caja + 1e-9 >= self.slots[i].costo:
-                    tramos, self.tr[3] = self.tr[3], []
-                    self._sync(3)
-                    self._reemplazar(i, tramos, t, precio, "4")
-                    return
-            return
-        tramos, self.tr[3] = self.tr[3], []
-        self._sync(3)
-        for x in tramos:
-            self._tercios(x)
-
-    def comprar_holding(self, precio: float):
-        monto = self.pend_holding + self.reserva
-        if monto + 1e-9 >= self.cfg.min_orden:
-            qty, _ = self._comprar(monto, precio)
-            self.holding_btc += qty
-            self.st["holding_gastado"] += monto
-            self.pend_holding = self.reserva = 0.0
-
-    def _entrar(self, i: int, t: pd.Timestamp, precio: float):
-        s = self.slots[i]
-        self._sync(i)
-        if s.abierto or s.nominal < self.cfg.min_orden:
-            return
-        qty, fill = self._comprar(s.nominal, precio)
-        self.entrar_con_fill(i, t, s.nominal, qty, fill)
-
-    def cerrar_con_fill(self, i: int, t: pd.Timestamp, neto: float, precio: float, motivo: str):
-        s = self.slots[i]
-        ganancia = neto - s.costo
-        base = sum(x["usdt"] for x in self.tr[i])
-        quedan = []
-        for x in self.tr[i]:
-            if ganancia < 0:
-                x["usdt"] += ganancia * x["usdt"] / base
-            if x["lote"] == PERM:
-                quedan.append(x)
-                continue
-            x["ciclos"] += 1
-            if x["ciclos"] >= self.max_ciclos:
-                self.pend_holding += x["usdt"]
-                self.st["usdt_sale_ciclos"] += x["usdt"]
-                self.dias_4_ciclos.append((t - x["t0"]).total_seconds() / 86400)
-            else:
-                quedan.append(x)
-        self.operaciones.append({"slot": i + 1, "entrada_t": s.desde, "salida_t": t, "entrada": s.entrada,
-                                 "salida": precio, "qty": s.qty, "costo": s.costo, "neto": neto,
-                                 "ganancia": ganancia, "motivo": motivo})
-        self.st["realizado"] += ganancia
-        if i == 3:
-            self.st["ventas_4"] += 1
-        s.abierto, s.qty, s.costo, s.armado = False, 0.0, 0.0, False
-        self.atrapado[i] = False
-        self.tr[i], espera = quedan, self.esp[i]
-        self.esp[i] = []
-        for x in espera:
-            self._add(i, x)
-        self._sync(i)
-        if ganancia > 0:
-            reinv = ganancia * REINV
-            self.reserva += ganancia - reinv
-            self._tercios({"lote": PERM, "usdt": reinv, "ciclos": 0, "t0": t, "p0": precio})
-
-    def marcar_atrapados(self, t_cierre: pd.Timestamp, c: float):
-        if not self.atrapar:
-            return
-        for i in range(3):
-            s = self.slots[i]
-            if s.abierto and not self.atrapado[i] and (
-                    c <= s.entrada * (1 - CAIDA_ATRAPADO) or t_cierre - s.desde >= pd.Timedelta(days=DIAS_ATRAPADO)):
-                self.atrapado[i] = True
-                self.st["n_atrapadas"] += 1
-
-    def _senales(self, t_sig: pd.Timestamp, c: float, senal: bool):
-        self.pendientes = []
-        if not senal or self.ultimo_dia_entrada == (t_sig + pd.Timedelta(hours=1)).strftime("%Y-%m-%d"):
-            return
-        for i, s in enumerate(self.slots):
-            if not s.abierto and s.nominal >= self.cfg.min_orden:
-                self.pendientes = [i]
-                return
-
-    # --- contabilidad ---------------------------------------------------------------
-    def caja(self) -> float:
-        return (sum(x["usdt"] for i in range(4) if not self.slots[i].abierto for x in self.tr[i])
-                + sum(x["usdt"] for e in self.esp for x in e) + self.pend_holding + self.reserva
-                + sum(r[0] for r in self.reserva_filtro))
-
-    def invertido(self) -> float:
-        return sum(s.costo for s in self.slots if s.abierto)
-
-    def valor_btc(self, precio: float) -> float:
-        return self.holding_btc + sum(s.qty for s in self.slots if s.abierto) + self.caja() / precio
-
-    def conservacion(self) -> float:
-        """depositado + realizado = caja + invertido + holding gastado + base de atrapadas."""
-        st = self.st
-        return (st["depositado"] + st["realizado"]
-                - (self.caja() + self.invertido() + st["holding_gastado"] + st["base_atrapadas"]))
 
 
 def calendario(index: pd.DatetimeIndex, desde: pd.Timestamp, hasta: pd.Timestamp, rng) -> dict:
@@ -356,40 +140,19 @@ def _fin_de_ciclo(index: pd.DatetimeIndex) -> np.ndarray:
 def correr_lotes(sl: pd.DataFrame, sen: np.ndarray, atr_prev: np.ndarray, rango_prev: np.ndarray, deps: dict,
                  max_ciclos: float = MAX_CICLOS, atrapar: bool = True, espera_cuenta: bool = False,
                  regimen: np.ndarray | None = None) -> tuple[MotorLotes, list]:
-    cfg = mm.Config(slots="A", salida=SALIDA, ganancia="G4", capital=0.0, n_slots=4, cierre_forzado=False)
+    cfg = ml.config(salida=SALIDA)
     m = MotorLotes(cfg, max_ciclos=max_ciclos, atrapar=atrapar, espera_cuenta=espera_cuenta)
     o_, h_, l_, c_ = (sl[k].to_numpy() for k in ("open", "high", "low", "close"))
     fin = _fin_de_ciclo(sl.index)
     fotos = []
     hora = pd.Timedelta(hours=1)
     for j, t in enumerate(sl.index):
-        o = float(o_[j])
-        for s in m.slots:
-            s.entro_en_vela = False
-        m.comprar_holding(o)
-        compra = regimen is None or bool(regimen[j])
-        if compra and m.reserva_filtro:
-            for monto, lote, t0, p0 in m.reserva_filtro:
-                m.asignar(monto, lote, t, o, t0, p0)
-            m.reserva_filtro = []
-        for monto, lote in deps.get(j, ()):
-            if compra:
-                m.depositar(monto, lote, t, o)
-            else:
-                m.registrar(monto, o)
-                m.reserva_filtro.append((monto, lote, t, o))
-        m.chequear_cuarto(t, o)
-        for i in m.pendientes:
-            m._entrar(i, t, o)
-        m.pendientes = []
-        m.rango = float(rango_prev[j])
-        m._salidas(t, o, h_[j], l_[j], c_[j], float(atr_prev[j]))
         c = float(c_[j])
-        m.marcar_atrapados(t + hora, c)
+        m.vela(t, float(o_[j]), h_[j], l_[j], c, bool(sen[j]), float(atr_prev[j]), float(rango_prev[j]),
+               deps.get(j, ()), compra=regimen is None or bool(regimen[j]))
         caja = m.caja()
         m.st["ocioso"] += caja
         m.st["total"] += caja + m.invertido()
-        m._senales(t, c, bool(sen[j]))
         if fin[j]:
             fotos.append((t + hora, m.valor_btc(c), m.bench_btc, c))
     return m, fotos
@@ -497,6 +260,49 @@ def correr(args) -> dict:
     return out
 
 
+# --- neto mes a mes con el corte del real ---------------------------------------------
+def mensual_lotes(args) -> list:
+    """Los cortes del día 3 de `MotorLotes.corte_mensual` (los mismos que escribe el real) en el
+    continuo, para un calendario. El % del ciclo es sobre el capital del bot al empezarlo."""
+    semilla, max_ciclos = args
+    desde, hasta = PERIODOS["continuo"]
+    sl = _V.loc[(_V.index >= desde) & (_V.index < hasta)]
+    cal = calendario(sl.index, desde, hasta, np.random.default_rng([semilla, 0]))
+    sen = _SEN.reindex(sl.index).fillna(False).to_numpy()
+    atr_prev = _IND["atr"].shift(1).reindex(sl.index).to_numpy()
+    rango_prev = _IND["rango"].shift(1).reindex(sl.index).to_numpy()
+    m = MotorLotes(ml.config(salida=SALIDA), max_ciclos=max_ciclos, espera_cuenta=True)
+    o_, h_, l_, c_ = (sl[k].to_numpy() for k in ("open", "high", "low", "close"))
+    m.iniciar_cortes(0.0, float(o_[0]))
+    for j, t in enumerate(sl.index):
+        ciclo = mm.ciclo_de(t, 3)
+        if m.ciclo is not None and ciclo != m.ciclo:
+            m.corte_mensual(t, float(o_[j]))
+        m.ciclo = ciclo
+        m.vela(t, float(o_[j]), h_[j], l_[j], float(c_[j]), bool(sen[j]), float(atr_prev[j]), float(rango_prev[j]),
+               cal["deps"].get(j, ()))
+    return [{**f, "semilla": semilla} for f in m.meses]
+
+
+def informe_mensual(max_ciclos: int, procesos: int, semillas: int = 50) -> None:
+    with Pool(procesos, initializer=_init) as pool:
+        filas = [f for lst in pool.map(mensual_lotes, [(k, max_ciclos) for k in range(semillas)]) for f in lst]
+    d = pd.DataFrame(filas)
+    d = d[d["capital_inicio"] > 0].copy()  # el primer ciclo arranca sin capital
+    d["neto_pct"] = d["neto"] / d["capital_inicio"] * 100
+    d["var_btc"] = (d["precio_cierre"] / d["precio_inicio"] - 1) * 100
+    f = OUT / f"b{max_ciclos}_mensual_cortes.csv"
+    d.to_csv(f, index=False)
+    print(f"{len(d)} ciclos ({semillas} calendarios) → {f}")
+    print(f"Neto del ciclo según cuánto se movió BTC (lotes de {max_ciclos} ciclos, corte del día 3):")
+    for nombre, g in (("cae más de 5 %", d[d.var_btc < -5]), ("entre −5 % y +5 %", d[d.var_btc.between(-5, 5)]),
+                      ("sube más de 5 %", d[d.var_btc > 5])):
+        print(f"  {nombre:18} neto mediano {g.neto_pct.median():+6.2f} % · ciclos con neto ≥ 0: "
+              f"{(g.neto_pct >= 0).mean():.0%} de {len(g)}")
+    print(f"  todos              neto medio {d.neto_pct.mean():+.2f} % · mediano {d.neto_pct.median():+.2f} % · "
+          f"correlación con BTC {d[['neto_pct', 'var_btc']].corr().iloc[0, 1]:.2f}")
+
+
 # --- pruebas ------------------------------------------------------------------------
 def _velas_sinteticas(n_dias: int, tocar_tp: bool = True) -> pd.DataFrame:
     """Precio plano en 100; cada día, la vela de las 12:00 sube el high a 102 (toca el TP)."""
@@ -586,7 +392,7 @@ def prueba() -> None:
 
 
 # --- informe ------------------------------------------------------------------------
-VARIANTES = {"actual": None, "b1": "placebo_b1", "b2": "placebo_b2", "b4": "placebo_b4",
+VARIANTES = {"actual": None, "b1": "placebo_b1", "b2": "placebo_b2", "b3": "placebo_b3", "b4": "placebo_b4",
              "fb1": "placebo_r_fb1", "fb2": "placebo_r_fb2", "fb4": "placebo_r_fb4",
              "dca_filtro": "placebo_r_dca_filtro"}
 
@@ -666,9 +472,14 @@ def main() -> None:
     ap.add_argument("--procesos", type=int, default=8)
     ap.add_argument("--semillas", type=int, default=200)
     ap.add_argument("--prueba", action="store_true")
+    ap.add_argument("--mensual", type=int, metavar="CICLOS", help="neto mes a mes con el corte del real")
     args = ap.parse_args()
     if args.prueba:
         prueba()
+        return
+    if args.mensual:
+        OUT.mkdir(parents=True, exist_ok=True)
+        informe_mensual(args.mensual, args.procesos)
         return
     OUT.mkdir(parents=True, exist_ok=True)
     t0 = time.time()

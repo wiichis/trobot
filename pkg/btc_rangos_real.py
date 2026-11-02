@@ -1,20 +1,29 @@
 """Bot BTC por rangos en modo REAL (24/10/2026): manda órdenes a BingX spot.
 
-Misma combinación y mismo motor que el bot en papel (`pkg/btc_rangos.py`), con 186,65 USDT (todo el saldo spot al 24/10). El
-usuario eligió pasar a real aunque el backtest no pasa los criterios de viabilidad; los hitos
-para medirlo están fijados en `docs/btc_rangos_real_hitos.md`.
+Desde el 02/11/2026 opera con las reglas de lotes, "reponer sólo cuando hay dinero"
+(`pkg/btc_rangos_lotes.py`, 3 ciclos por lote), con el mismo motor que el papel
+(`pkg/btc_rangos.py`) y que la simulación (`scripts/btc_rangos_lotes_sim.py`). El usuario las
+eligió aunque ninguna variante le gana al DCA puro en la simulación; los hitos para medirlo están
+en `docs/btc_rangos_real_hitos.md`. El estado v0.4 (cierre forzado el día 3) se migra solo en la
+primera corrida, con respaldo en `archivos/btc_rangos/real_v04_<fecha>/`.
 
-Cómo ejecuta las reglas del motor (`pkg/btc_rangos_motor.py`) en el mundo real:
-- **Compra**: la señal se calcula al cierre de la vela; el job corre al minuto :01 y compra a
-  mercado (`quoteOrderQty` = USDT del slot). Es la "apertura de la vela siguiente" del backtest.
-- **Venta**: apenas se compra, se deja en el exchange una orden LÍMITE de venta al TP
+Cómo ejecuta las reglas del motor en el mundo real, en el orden de la vela del motor:
+- **Ventas**: apenas se compra, se deja en el exchange una orden LÍMITE de venta al TP
   (`Motor.precio_tp`: +0,75 × R, mínimo +0,6 %, nunca bajo el piso). Es el "si el máximo de la
   vela toca el TP, vende al TP" del backtest, y se ejecuta aunque el server esté caído. Cada
   hora se reemplaza si el TP cambió con el R vigente (en la práctica, una vez por día).
-- **Cierre mensual (día 3, 00:00 UTC)**: se cancelan las órdenes de los slots abiertos, que
-  pasan a holding (el BTC queda en la cuenta spot; el bot no lo vende nunca). El DCA es el
-  USDT que el usuario depositó en spot desde el cierre anterior (lo que excede la contabilidad
-  del bot), con tope `dca_maximo_usdt`. Repone los slots y el resto compra BTC para holding.
+- **Atrapados**: al cierre de la vela, el slot con el close a −10 % de su entrada o con 30 días
+  abierto. Mantiene su venta al TP hasta que lo reemplazan.
+- **Compra de holding**: el capital de los tramos que cumplieron sus ciclos más el 10 % de la
+  ganancia, a mercado, cuando suma la orden mínima.
+- **Depósitos**: cada hora, el USDT de la cuenta que excede la contabilidad del bot más
+  `usdt_ajeno` es un depósito (desde `min_deposito_usdt`, con tope `dca_maximo_usdt`; el exceso
+  pasa a `usdt_ajeno`). Si cubre a un atrapado, se cancela la venta del atrapado y su BTC queda en
+  la cuenta como holding (el bot no lo vende nunca). Registro en `depositos.csv`; el papel los lee
+  de ahí para aplicarlos en la misma hora.
+- **Compras**: la señal se calcula al cierre de la vela; el job corre al minuto :01 y compra a
+  mercado (`quoteOrderQty` = USDT del slot). Es la "apertura de la vela siguiente" del backtest.
+- **Día 3 (00:00 UTC)**: sólo un corte contable en `mensual.csv`. No opera.
 
 La fuente de verdad es el exchange (lección del bot de 5 min): los fills salen del estado de la
 orden (`executedQty`, `cummulativeQuoteQty`, `fee`, `feeAsset`), nunca de lo que el bot infiere.
@@ -29,8 +38,8 @@ Falla cerrado:
   → PAUSA las compras (las ventas siguen) y avisa. La pausa la levanta una persona.
 
 Estado y registros en `archivos/btc_rangos/real/`: `estado.json`, `operaciones.csv`,
-`mensual.csv`, `ordenes.csv` (cada orden con el libro al mandarla, para medir el
-deslizamiento) y `equity.csv`.
+`mensual.csv`, `depositos.csv`, `ordenes.csv` (cada orden con el libro al mandarla, para medir
+el deslizamiento) y `equity.csv`.
 """
 from __future__ import annotations
 
@@ -46,6 +55,7 @@ import numpy as np
 import pandas as pd
 
 from . import btc_rangos as papel
+from . import btc_rangos_lotes as ml
 from . import btc_rangos_motor as mm
 from .bingx_spot import ClienteSpot, ErrorExchange, Orden, Reglas
 
@@ -55,11 +65,19 @@ CONFIG_PATH = Path(__file__).resolve().parent / "btc_rangos_real.json"
 OUT_DIR = papel.BASE_DIR / "archivos" / "btc_rangos" / "real"
 TOLERANCIA_USDT = 1.0
 TOLERANCIA_BTC = 2e-6
+MIN_DEPOSITO_USDT = 15.0
 
-# Neto del mes esperado por el backtest según cuánto se movió BTC en el ciclo (A · E4 0,5 ·
-# S4 0,75 · G4, reposición parcial, DCA 400, 2021-2026; medianas en % del capital del bot).
-ESPERADO_BACKTEST = ((-5.0, "cayó más de 5 %", -10.1), (5.0, "se movió menos de ±5 %", -0.8),
-                     (math.inf, "subió más de 5 %", 9.1))
+# Neto del ciclo esperado por la simulación según cuánto se movió BTC (lotes de 3 ciclos, corte del
+# día 3, 50 calendarios 2021-2026, `btc_rangos_lotes_sim.py --mensual 3`; medianas en % del capital
+# del bot al empezar el ciclo).
+ESPERADO_SIMULACION = ((-5.0, "cayó más de 5 %", -9.8), (5.0, "se movió menos de ±5 %", 1.1),
+                       (math.inf, "subió más de 5 %", 9.6))
+
+
+def esperado_simulacion(var_btc_pct: float):
+    for tope, texto, neto in ESPERADO_SIMULACION:
+        if var_btc_pct < tope:
+            return texto, neto
 
 
 class Pausa(Exception):
@@ -72,7 +90,8 @@ def _cfg() -> Dict:
 
 def _rutas() -> Dict[str, Path]:
     return {k: OUT_DIR / f for k, f in (("estado", "estado.json"), ("ops", "operaciones.csv"),
-                                         ("mes", "mensual.csv"), ("ordenes", "ordenes.csv"), ("eq", "equity.csv"))}
+                                         ("mes", "mensual.csv"), ("ordenes", "ordenes.csv"), ("eq", "equity.csv"),
+                                         ("dep", "depositos.csv"))}
 
 
 def leer_estado() -> Optional[Dict]:
@@ -93,34 +112,34 @@ def _emitir(categoria: str, severidad: str, **campos) -> None:
         pass
 
 
-def esperado_backtest(var_btc_pct: float):
-    for tope, texto, neto in ESPERADO_BACKTEST:
-        if var_btc_pct < tope or tope == math.inf:
-            return texto, neto
-
-
 class Corrida:
     """Una corrida del job. Guarda el estado después de cada cambio que toca el exchange."""
 
-    def __init__(self, cfg: Dict, estado: Dict, m: mm.Motor, cli: ClienteSpot, reglas: Reglas, ahora: pd.Timestamp):
+    def __init__(self, cfg: Dict, estado: Dict, m: ml.MotorLotes, cli: ClienteSpot, reglas: Reglas,
+                 ahora: pd.Timestamp):
         self.cfg, self.estado, self.m, self.cli, self.reglas, self.ahora = cfg, estado, m, cli, reglas, ahora
         self.symbol = cfg.get("symbol", "BTC-USDT")
         self.eventos: List[Dict] = []
         self.ordenes_log: List[Dict] = []
+        self.depositos_log: List[Dict] = []
+        # lo ya vendido de las ventas al TP que siguen vivas (llenas en parte): el USDT está en la
+        # cuenta y el BTC ya no, pero el bot lo realiza recién cuando la orden termina
+        self.parcial = {"usdt": 0.0, "btc": 0.0}
 
     # --- persistencia -------------------------------------------------------------
     def guardar(self, final: bool = False) -> None:
-        """Operaciones y órdenes van al CSV enseguida. El registro del cierre mensual se completa
-        después de la compra de holding, así que espera en el estado hasta el final de la corrida."""
+        """Operaciones, órdenes y depósitos van al CSV enseguida. El corte mensual espera en el
+        estado hasta el final de la corrida."""
         r = _rutas()
         papel._append_csv(r["ops"], self.m.operaciones)
         papel._append_csv(r["ordenes"], self.ordenes_log)
-        self.m.operaciones, self.ordenes_log = [], []
+        papel._append_csv(r["dep"], self.depositos_log)
+        self.m.operaciones, self.ordenes_log, self.depositos_log = [], [], []
         if final:
             papel._append_csv(r["mes"], self.m.meses)
             self.m.meses = []
         self.estado["meses_pendientes"] = papel._a_json(self.m.meses)
-        self.estado["motor"] = papel.motor_a_dict(self.m)
+        self.estado["motor"] = self.m.a_dict()
         self.estado["actualizado"] = str(self.ahora)
         tmp = r["estado"].with_suffix(".tmp")
         tmp.write_text(json.dumps(papel._a_json(self.estado), indent=1, ensure_ascii=False), encoding="utf-8")
@@ -133,6 +152,9 @@ class Corrida:
             _emitir("btc_real_alerta", "CRITICAL", mensaje_md=(
                 f"*Compras en pausa.* {motivo}\nLas ventas ya colocadas siguen activas. "
                 "La pausa la levanta una persona después de revisar."))
+
+    def en_pausa(self) -> bool:
+        return bool(self.estado.get("pausa") or self.cfg.get("pausar_entradas"))
 
     def _registrar_orden(self, o: Orden, libro: Optional[Dict], slot: int, motivo: str) -> None:
         self.ordenes_log.append({"ts": self.ahora, "slot": slot, "motivo": motivo, "order_id": o.order_id,
@@ -181,8 +203,8 @@ class Corrida:
     def _aplicar_compra_holding(self, o: Orden) -> float:
         qty = o.ejecutado - (o.fee if o.fee_asset == "BTC" else 0.0)
         gastado = o.quote + (o.fee if o.fee_asset in ("USDT", "") else 0.0)
-        self.m.holding_btc += qty
-        self.m.usdt_para_holding = max(self.m.usdt_para_holding - gastado, 0.0)
+        self.m.holding_comprado(gastado, qty)
+        self.eventos.append({"tipo": "holding", "qty": qty, "usdt": gastado, "precio": o.precio_medio})
         return qty
 
     # --- pasos --------------------------------------------------------------------
@@ -205,13 +227,14 @@ class Corrida:
         self._registrar_orden(o, None, c["slot"], "compra_recuperada")
         if o.ejecutado > 0 and c.get("motivo") == "holding":
             self._aplicar_compra_holding(o)
-        elif o.ejecutado > 0:
-            self._aplicar_compra(c["slot"] - 1, o, pd.Timestamp(c["t"]))
+        elif o.ejecutado > 0:  # la vela en que se compró (el estado guarda la hora UTC de la corrida)
+            self._aplicar_compra(c["slot"] - 1, o, pd.Timestamp(c["t"]).tz_convert(None).floor("h"))
         self.estado["compra_en_curso"] = None
         self.guardar()
 
     def conciliar_ventas(self) -> None:
-        for k, od in list(self.estado.get("ordenes", {}).items()):
+        # en orden de slot, como `Motor._salidas`: varias ventas en la misma vela se aplican igual
+        for k, od in sorted(self.estado.get("ordenes", {}).items(), key=lambda x: int(x[0])):
             i = int(k) - 1
             o = self.cli.consultar(self.symbol, order_id=od["order_id"])
             if o.estado == "FILLED":
@@ -228,6 +251,9 @@ class Corrida:
                 _emitir("btc_real_alerta", "WARN", mensaje_md=(
                     f"La venta del slot {i + 1} apareció cancelada ({o.estado}) sin que el bot la cancelara. "
                     "Se vuelve a colocar."))
+            elif o.ejecutado > 0:
+                self.parcial["usdt"] += o.quote - self._fee_usdt(o)
+                self.parcial["btc"] += o.ejecutado
 
     def _cancelar(self, k: str, motivo: str) -> Orden:
         """Cancela y devuelve el estado final: puede haberse llenado (total o en parte) en el medio."""
@@ -247,47 +273,87 @@ class Corrida:
         self.guardar()
         return o
 
+    def _liberar_atrapados(self, slots: List[int]) -> None:
+        """Antes de reemplazar a un atrapado se cancela su venta: su BTC pasa a holding libre. Si
+        la venta se llenó en el medio, el slot se cerró con ganancia y ya no hay que reemplazarlo;
+        si se llenó en parte, esa parte se realiza ahora."""
+        for i in slots:
+            k = str(i + 1)
+            if k in self.estado.get("ordenes", {}):
+                o = self.cli.consultar(self.symbol, order_id=self.estado["ordenes"][k]["order_id"])
+                if o.ejecutado > 0:   # deja de ser "parcial en curso": `_cancelar` lo realiza
+                    self.parcial["usdt"] -= o.quote - self._fee_usdt(o)
+                    self.parcial["btc"] -= o.ejecutado
+                self._cancelar(k, "reemplazo_atrapado")
+
     def verificar_saldos(self) -> Dict[str, float]:
         sal = self.cli.saldos()
         usdt = sum(sal.get("USDT", {"free": 0, "locked": 0}).values())
         btc = sum(sal.get("BTC", {"free": 0, "locked": 0}).values())
-        en_slots = sum(s.qty for s in self.m.slots if s.abierto)
+        en_slots = sum(s.qty for s in self.m.slots if s.abierto) - self.parcial["btc"]
         if btc + TOLERANCIA_BTC < en_slots:
             self.pausar(f"la cuenta spot tiene {btc:.6f} BTC y los slots abiertos suman {en_slots:.6f}")
         return {"usdt": usdt, "usdt_libre": sal.get("USDT", {}).get("free", 0.0), "btc": btc}
 
-    def cierre_mensual(self, t_barra: pd.Timestamp) -> None:
-        m = self.m
-        for k in list(self.estado.get("ordenes", {})):
-            self._cancelar(k, "cierre_mensual")
-        precio = self.cli.precio(self.symbol)
-        sal = self.verificar_saldos()
-        esperado = m.usdt_bot() + m.usdt_para_holding + float(self.estado.get("usdt_ajeno", 0.0))
-        deposito = sal["usdt"] - esperado
-        if deposito < -TOLERANCIA_USDT:
-            self.pausar(f"en el cierre hay {sal['usdt']:.2f} USDT y el bot esperaba al menos {esperado:.2f}")
-            deposito = 0.0
-        tope = float(self.cfg.get("dca_maximo_usdt", 500))
-        dca = min(max(deposito, 0.0), tope)
-        self.estado["usdt_ajeno"] = float(self.estado.get("usdt_ajeno", 0.0)) + (deposito - dca)
-        atrapado = sum(s.qty for s in m.slots if s.abierto)
-        antes = m.holding_btc
-        m.dca = lambda k, x=dca: x
-        m.cierre_mensual(t_barra, precio)
-        m.ciclo = mm.ciclo_de(t_barra, m.cfg.dia_cierre)  # ya, antes de guardar: un error después no repite el cierre
-        mes = m.meses[-1]
-        self.eventos.append({"tipo": "cierre", "mes": mes})
-        # el motor sumó al holding una compra simulada: se deshace y se reemplaza por el fill real
-        m.holding_btc = antes + atrapado
-        compra = mes["compra_holding"]
-        m.usdt_para_holding += compra          # sigue siendo USDT hasta que la compra se llene
-        mes.update({"deposito_detectado": deposito, "compra_holding_btc": 0.0, "precio_cierre": precio})
+    def corte_mensual(self, t_ejec: pd.Timestamp) -> None:
+        """Día 3: sólo contabilidad. El ciclo se marca antes de guardar: un error después no lo repite."""
+        fila = self.m.corte_mensual(t_ejec, self.cli.precio(self.symbol))
+        self.m.ciclo = mm.ciclo_de(t_ejec, self.m.cfg.dia_cierre)
+        self.eventos.append({"tipo": "cierre", "mes": fila})
         self.guardar()
+
+    def comprar_holding(self, t_ejec: pd.Timestamp) -> None:
+        monto = self.m.monto_holding()
+        if monto <= 0 or self.en_pausa():
+            return
+        precio = self.cli.precio(self.symbol)
         minimo = max(self.m.cfg.min_orden, self.reglas.min_notional, self.reglas.min_qty * precio * 1.02)
-        if compra >= minimo:   # si no llega a la orden mínima, espera al próximo cierre
-            o = self._comprar(compra, f"BRH{t_barra:%y%m%d%H}", 0, "holding")
-            if o.ejecutado > 0:
-                mes["compra_holding_btc"] = self._aplicar_compra_holding(o)
+        if monto < minimo:   # espera a sumar la orden mínima
+            return
+        o = self._comprar(monto, f"BRH{t_ejec:%y%m%d%H}", 0, "holding")
+        if o.ejecutado > 0:
+            self._aplicar_compra_holding(o)
+        self.guardar()
+
+    def detectar_deposito(self, t_ejec: pd.Timestamp, sal: Dict[str, float]) -> None:
+        """El USDT que excede la contabilidad del bot más `usdt_ajeno` es un depósito, que entra
+        como un lote nuevo. Lo que falta es plata que el bot cree tener y no está: pausa."""
+        esperado = self.m.usdt_bot() + float(self.estado.get("usdt_ajeno", 0.0)) + self.parcial["usdt"]
+        diferencia = sal["usdt"] - esperado
+        if diferencia < -TOLERANCIA_USDT:
+            self.pausar(f"hay {sal['usdt']:.2f} USDT en spot y el bot esperaba al menos {esperado:.2f}")
+            return
+        if diferencia < float(self.cfg.get("min_deposito_usdt", MIN_DEPOSITO_USDT)):
+            return
+        tope = float(self.cfg.get("dca_maximo_usdt", 500))
+        monto = round(min(diferencia, tope), 2)
+        self.estado["usdt_ajeno"] = float(self.estado.get("usdt_ajeno", 0.0)) + (diferencia - monto)
+        precio = self.cli.precio(self.symbol)
+        self._liberar_atrapados(self.m.reemplazaria(monto))
+        antes = {i: self.m.slots[i].costo for i in range(3) if self.m.atrapado[i]}
+        lote = self.m.sig_lote
+        self.m.sig_lote += 1
+        self.m.depositar(monto, lote, t_ejec, precio)
+        reemplazados = [i + 1 for i in antes if not self.m.atrapado[i]]
+        self.depositos_log.append({"ts": self.ahora, "t": t_ejec, "lote": lote, "monto": monto,
+                                   "excedente": diferencia - monto, "precio": precio,
+                                   "reemplaza": " ".join(map(str, reemplazados))})
+        self.eventos.append({"tipo": "deposito", "monto": monto, "lote": lote, "reemplaza": reemplazados,
+                             "ajeno": diferencia - monto})
+        self.guardar()
+
+    def chequear_cuarto(self, t_ejec: pd.Timestamp) -> None:
+        a_reemplazar = self.m.reemplazaria(0.0)
+        precio = float("nan")
+        if a_reemplazar:
+            self._liberar_atrapados(a_reemplazar)
+            precio = self.cli.precio(self.symbol)
+        antes = [i for i in range(3) if self.m.atrapado[i]]
+        self.m.chequear_cuarto(t_ejec, precio)
+        reemplazados = [i + 1 for i in antes if not self.m.atrapado[i] and not self.m.slots[i].abierto]
+        if reemplazados:
+            self.eventos.append({"tipo": "reemplazo_4", "reemplaza": reemplazados})
+        self.guardar()
 
     def _comprar(self, usdt: float, client_id: str, slot: int, motivo: str) -> Orden:
         libro = self.cli.libro(self.symbol)
@@ -339,13 +405,14 @@ class Corrida:
             self.guardar()
 
     def comprar_senal(self, t_ejec: pd.Timestamp, sal: Dict[str, float]) -> None:
-        if self.estado.get("pausa") or self.cfg.get("pausar_entradas"):
+        if self.en_pausa():
             self.m.pendientes = []
             return
         for i in list(self.m.pendientes):
             s = self.m.slots[i]
+            self.m._sync(i)
             minimo = max(self.m.cfg.min_orden, self.reglas.min_notional)
-            if s.abierto or not s.activo or s.nominal < minimo:
+            if s.abierto or s.nominal < minimo:
                 continue
             if sal["usdt_libre"] + TOLERANCIA_USDT < s.nominal:
                 self.pausar(f"para comprar el slot {i + 1} hacen falta {s.nominal:.2f} USDT y hay "
@@ -376,71 +443,99 @@ def mensaje_operaciones_md(eventos: List[Dict]) -> str:
         elif e["tipo"] == "venta_parcial":
             lineas.append(f"🔴 *Venta parcial* slot {e['slot']}: {_n(e['qty'], 6)} BTC a {_n(e['precio'], 0)} · "
                           f"ganancia {_signo(e['ganancia'])} USDT")
+        elif e["tipo"] == "deposito":
+            txt = f"💵 *Depósito* {_n(e['monto'])} USDT detectado (lote {e['lote']})"
+            if e["reemplaza"]:
+                txt += f" · reemplaza a los atrapados {', '.join(map(str, e['reemplaza']))}, que pasan a holding"
+            if e["ajeno"] > 0.005:
+                txt += f" · {_n(e['ajeno'])} USDT sobre el tope quedan aparte"
+            lineas.append(txt)
+        elif e["tipo"] == "reemplazo_4":
+            lineas.append(f"🔁 El 4.º slot reemplaza a los atrapados {', '.join(map(str, e['reemplaza']))}, "
+                          "que pasan a holding")
+        elif e["tipo"] == "holding":
+            lineas.append(f"🟠 *Holding*: {_n(e['qty'], 6)} BTC a {_n(e['precio'], 0)} ({_n(e['usdt'])} USDT)")
     return "\n".join(lineas)
 
 
 def mensaje_cierre_md(mes: Dict, var_btc: Optional[float], acumulado: float) -> str:
-    neto = mes["realizado"] - mes["atrapadas_costo"]
-    pct = neto / mes["capital_inicio"] * 100 if mes["capital_inicio"] else 0.0
+    cap = mes["capital_inicio"]
+    pct = mes["neto"] / cap * 100 if cap else 0.0
     lineas = [
-        f"{MARCA} Ciclo {mes['ciclo']} cerrado a {_n(mes['precio_cierre'], 0)}.",
-        f"Ganancia realizada {_signo(mes['realizado'])} USDT · {mes['ciclos']} ventas · {mes['entradas']} compras",
-        f"Atrapados que pasan a holding: {mes['n_atrapadas']} (costo {_n(mes['atrapadas_costo'])} USDT)",
-        f"*Neto del mes {_signo(neto)} USDT ({_signo(pct, 1)} %)* · acumulado {_signo(acumulado)} USDT",
+        f"{MARCA} Corte del ciclo {mes['ciclo']} a {_n(mes['precio_cierre'], 0)} (sólo contable, no opera).",
+        f"Ganancia realizada {_signo(mes['realizado'])} USDT · {int(mes['ventas'])} ventas · "
+        f"{int(mes['entradas'])} compras",
+        f"Atrapados reemplazados: {int(mes['reemplazos_deposito'] + mes['reemplazos_4'])} (costo "
+        f"{_n(mes['atrapadas_costo'])} USDT) · pérdida latente de lo abierto {_signo(mes['latente'])} USDT",
+        f"*Neto del ciclo {_signo(mes['neto'])} USDT ({_signo(pct, 1)} %)* · acumulado {_signo(acumulado)} USDT",
+        f"Depósitos {_n(mes['depositado'])} USDT · holding {_n(mes['holding_btc'], 6)} BTC",
     ]
     if var_btc is not None:
-        texto, esperado = esperado_backtest(var_btc)
-        lineas.append(f"BTC {_signo(var_btc, 1)} % en el ciclo ({texto}): para eso el backtest esperaba un neto de "
+        texto, esperado = esperado_simulacion(var_btc)
+        lineas.append(f"BTC {_signo(var_btc, 1)} % en el ciclo ({texto}): para eso la simulación esperaba un neto de "
                       f"~{_signo(esperado, 1)} %")
-    lineas += [
-        f"DCA detectado {_n(mes.get('deposito_detectado', 0.0))} USDT: repone {_n(mes['repuesto'])} · "
-        f"compra holding {_n(mes['compra_holding'])} USDT ({_n(mes.get('compra_holding_btc', 0.0), 6)} BTC)",
-        f"Slots apagados: {mes['slots_apagados']}",
-    ]
     return "\n".join(lineas)
 
 
-def mensaje_resumen_md(cfg: Dict, est: Dict, m: mm.Motor, precio: float, rango: float, ops: pd.DataFrame,
+def mensaje_resumen_md(cfg: Dict, est: Dict, m: ml.MotorLotes, precio: float, rango: float, ops: pd.DataFrame,
                        meses: pd.DataFrame) -> str:
     filas = ["```", "slot  estado     USDT   entrada  venta en"]
     for i, s in enumerate(m.slots, 1):
         if s.abierto:
             od = est.get("ordenes", {}).get(str(i))
             venta = f"{float(od['precio']):9.0f}" if od else "   sin orden"
-            filas.append(f"{i:<5} comprado {s.costo:7.1f} {s.entrada:9.0f} {venta}")
-        elif s.activo:
+            marca = "atrapado" if m.atrapado[i - 1] else "comprado"
+            filas.append(f"{i:<5} {marca} {s.costo:7.1f} {s.entrada:9.0f} {venta}")
+        elif s.nominal > 0 or i <= 3:
             filas.append(f"{i:<5} libre    {s.nominal:7.1f}")
-        else:
-            filas.append(f"{i:<5} apagado  {max(s.nominal - s.costo, 0):7.1f}")
     filas.append("```")
     gan = float(ops["ganancia"].sum()) if len(ops) else 0.0
-    atr = float(meses["atrapadas_costo"].sum()) if len(meses) else 0.0
-    latente = sum((s.entrada - precio) * s.qty for s in m.slots if s.abierto)
     con_bot = m.patrimonio_btc(precio)
-    sin_bot = m.bench_btc + m.cfg.capital / precio
     lineas = [
-        f"{MARCA} Desde {est['inicio'][:10]}. BTC {_n(precio, 0)} · rango diario {_n(rango * 100, 2)} %",
+        f"{MARCA} Desde {est['inicio'][:10]}, lotes de {_n(m.max_ciclos, 0)} ciclos desde {est['inicio_lotes'][:10]}. "
+        f"BTC {_n(precio, 0)} · rango diario {_n(rango * 100, 2)} %",
         *filas,
-        f"Ventas: {len(ops)} · ganancia realizada {_signo(gan)} USDT · costo de atrapadas {_n(atr)} USDT",
-        f"Pérdida latente de lo abierto {_n(max(latente, 0.0))} USDT · *neto hoy {_signo(gan - atr - latente)} USDT*",
-        f"Capital del bot {_n(m.capital_bot_nominal())} USDT · holding {_n(m.holding_btc, 6)} BTC",
-        f"BTC con bot {_n(con_bot, 6)} · sin bot {_n(sin_bot, 6)} ({_signo((con_bot / sin_bot - 1) * 100, 2)} %)",
+        f"Ventas: {len(ops)} · ganancia realizada {_signo(gan)} USDT · costo de atrapadas reemplazadas "
+        f"{_n(m.st['atrapadas_costo'])} USDT",
+        f"Pérdida latente de lo abierto {_signo(m.latente(precio))} USDT",
+        f"USDT del bot {_n(m.usdt_bot())} · para holding {_n(m.monto_holding())} · holding {_n(m.holding_btc, 6)} BTC",
+        f"BTC con bot {_n(con_bot, 6)} · DCA puro {_n(m.bench_btc, 6)} ({_signo((con_bot / m.bench_btc - 1) * 100, 2)} %)"
+        if m.bench_btc else f"BTC con bot {_n(con_bot, 6)}",
     ]
     if est.get("pausa"):
         lineas.append(f"⏸️ Compras en pausa desde {est['pausa']['desde'][:16]}: {est['pausa']['motivo']}")
     return "\n".join(lineas)
 
 
-def mensaje_recordatorio_md(m: mm.Motor, cfg: Dict) -> str:
-    abiertos = [s for s in m.slots if s.abierto]
-    apagados = [s for s in m.slots if not s.activo]
-    reponer = sum(s.costo for s in abiertos) + sum(s.costo for s in apagados)
-    return "\n".join([
-        f"{MARCA} Mañana día {m.cfg.dia_cierre} a las 00:00 UTC (19:00 de hoy en Lima) es el cierre mensual.",
-        f"Slots abiertos que pasarían a holding: {len(abiertos)}. Para reponerlos hacen falta ~{_n(reponer, 0)} USDT.",
-        f"Deposita tu DCA en la cuenta *spot* de BingX antes del cierre (tope que toma el bot: "
-        f"{_n(float(cfg.get('dca_maximo_usdt', 500)), 0)} USDT). Lo que sobre de reponer compra BTC para holding.",
-    ])
+# --- estado ---------------------------------------------------------------------------
+def migrar_v04(estado: Dict, cfg: Dict, combo: Dict, ahora: pd.Timestamp) -> Dict:
+    """Pasa el estado v0.4 a lotes, sin tocar el exchange: las órdenes de venta vivas siguen.
+    Respalda la carpeta entera antes. El DCA puro compra el capital inicial al precio del arranque."""
+    import shutil
+    destino = OUT_DIR.parent / f"real_v04_{ahora:%Y%m%d%H%M}"
+    shutil.copytree(OUT_DIR, destino)
+    r = _rutas()
+    ops = pd.read_csv(r["ops"]) if r["ops"].exists() else pd.DataFrame()
+    eq_v04 = r["eq"].with_name("equity_v04.csv")
+    precio_inicio = float(estado.get("precio_cierre_anterior")
+                          or pd.read_csv(r["eq"] if r["eq"].exists() else eq_v04)["precio"].iloc[0])
+    m = ml.migrar_desde_v04(estado["motor"], papel.config_motor(cfg), pd.Timestamp(ahora.tz_localize(None)),
+                            precio_inicio, float(estado["combo"]["capital"]),
+                            max_ciclos=int(cfg["ciclos_por_lote"]))
+    # lo hecho con v0.4 entra en el primer corte, que va del arranque al primer día 3 después de migrar
+    m.st["realizado"] = float(ops["ganancia"].sum()) if len(ops) else 0.0
+    m.st["ventas"] = len(ops)
+    m.st["entradas"] = len(ops) + sum(s["abierto"] for s in estado["motor"]["slots"])
+    m.ciclo = mm.ciclo_de(pd.Timestamp(ahora.tz_localize(None)), int(cfg.get("dia_cierre", 3)))
+    nuevo = dict(estado, combo=combo, reglas="lotes", inicio_lotes=str(ahora), respaldo_v04=str(destino),
+                 motor=m.a_dict(), precio_inicio=precio_inicio)
+    nuevo.pop("precio_cierre_anterior", None)
+    nuevo.pop("ultimo_recordatorio", None)
+    # las columnas de equity.csv cambian: el de v0.4 queda aparte y el nuevo empieza con su encabezado
+    if r["eq"].exists():
+        os.replace(r["eq"], eq_v04)
+    log.warning("btc_rangos_real: estado v0.4 migrado a lotes (respaldo en %s)", destino)
+    return nuevo
 
 
 # --- job ------------------------------------------------------------------------------
@@ -483,7 +578,7 @@ def run_btc_rangos_real(ahora: Optional[datetime] = None, cliente: Optional[Clie
             log.warning("btc_rangos_real: %s velas cerradas; se reintenta en 1 h", len(v))
             return None
         datos = papel.preparar(v, cfg)
-        combo = {k: cfg.get(k) for k in papel.CAMPOS_COMBO}
+        combo = papel.combo(cfg)
         mcfg = papel.config_motor(cfg)
         t_barra = v.index[-1]
         t_ejec = t_barra + pd.Timedelta(hours=1)
@@ -492,54 +587,71 @@ def run_btc_rangos_real(ahora: Optional[datetime] = None, cliente: Optional[Clie
             sal = cli.saldos()
             usdt = sum(sal.get("USDT", {"free": 0, "locked": 0}).values())
             libre = sal.get("USDT", {}).get("free", 0.0)
-            if libre + 1e-9 < mcfg.capital:
+            capital = float(cfg["capital"])
+            if libre + 1e-9 < capital:
                 if "capital" not in _AVISADO:
                     _AVISADO.add("capital")
                     _emitir("btc_real_alerta", "WARN", mensaje_md=(
                         f"{MARCA} No arranca: la cuenta spot tiene {_n(libre)} USDT libres y el bot necesita "
-                        f"{_n(mcfg.capital, 0)}. Transfiere desde futuros a spot y arranca solo en la próxima hora."))
+                        f"{_n(capital, 0)}. Transfiere desde futuros a spot y arranca solo en la próxima hora."))
                 return None
             com = cli.comisiones(symbol)
-            m = mm.Motor(cfg=mcfg, dca=lambda k: 0.0)
+            m = papel.motor_nuevo(cfg)
             m.ciclo = mm.ciclo_de(t_ejec, mcfg.dia_cierre)
-            estado = {"inicio": str(ahora), "modo": "real", "combo": combo, "ultima_barra": str(t_barra),
-                      "ultimo_resumen": None, "ultimo_recordatorio": None, "ordenes": {}, "compra_en_curso": None,
-                      "pausa": None, "usdt_ajeno": usdt - mcfg.capital, "comisiones_cuenta": com}
+            precio = cli.precio(symbol)
+            m.depositar(capital, 0, t_ejec, precio)
+            m.sig_lote = 1
+            m.iniciar_cortes(capital, precio)
+            estado = {"inicio": str(ahora), "inicio_lotes": str(ahora), "reglas": "lotes", "modo": "real",
+                      "combo": combo, "ultima_barra": str(t_barra), "ultimo_resumen": None, "ordenes": {},
+                      "compra_en_curso": None, "pausa": None, "usdt_ajeno": usdt - capital,
+                      "comisiones_cuenta": com, "precio_inicio": precio}
             corrida = Corrida(cfg, estado, m, cli, reglas, ahora)
+            corrida.depositos_log.append({"ts": ahora, "t": t_ejec, "lote": 0, "monto": capital, "excedente": 0.0,
+                                          "precio": precio, "reemplaza": ""})
             corrida.guardar()
             aviso = ""
             if max(com.values()) > mcfg.comision + 1e-9:
                 aviso = f" ⚠️ La comisión de la cuenta ({com}) es mayor que la del backtest ({mcfg.comision})."
             _emitir("btc_real_inicio", "INFO", mensaje_md=(
-                f"{MARCA} Arranca con {_n(mcfg.capital, 0)} USDT en {mcfg.n_slots} slots. {papel.describir_combo(cfg)}. "
-                f"Primera decisión con la vela que cierra a las {t_ejec:%H:%M} UTC.{aviso}"))
+                f"{MARCA} Arranca con {_n(capital, 0)} USDT en 3 slots, lotes de {cfg['ciclos_por_lote']} ciclos. "
+                f"{papel.describir_combo(cfg)}. Primera decisión con la vela que cierra a las {t_ejec:%H:%M} UTC.{aviso}"))
             return {"nuevo": True}
+        if estado.get("reglas") != "lotes" and cfg.get("reglas") == "lotes":
+            estado = migrar_v04(estado, cfg, combo, ahora)
+            _emitir("btc_real_inicio", "INFO", mensaje_md=(
+                f"{MARCA} Pasa a lotes de {cfg['ciclos_por_lote']} ciclos, sin corte el día 3: un slot atrapado "
+                "espera con su venta y se reemplaza cuando depositas USDT en spot. Las órdenes vivas siguen."))
         if estado.get("combo") != combo:
             if "combo" not in _AVISADO:
                 _AVISADO.add("combo")
                 _emitir("btc_real_alerta", "WARN", detail="la config real cambió respecto del estado; no corre")
             return None
 
-        m = papel.motor_desde_dict(estado["motor"], mcfg, lambda k: 0.0)
+        m = ml.MotorLotes.desde_dict(estado["motor"], mcfg)
         m.meses = list(estado.get("meses_pendientes") or [])
         corrida = Corrida(cfg, estado, m, cli, reglas, ahora)
+        corrida.guardar()  # una migración recién hecha queda escrita antes de tocar el exchange
         corrida.resolver_compra_en_curso()
         corrida.conciliar_ventas()
-        # Mismo orden que el motor del backtest: la señal se decide al cierre de la vela (con los
-        # slots como quedaron en esa vela), DESPUÉS viene el cierre mensual de la vela que abre, y
-        # recién ahí se ejecutan las compras.
+        # Mismo orden que `MotorLotes.vela`: al cierre de la vela, atrapados y señal; después, en la
+        # vela que abre, el corte contable, la compra de holding, los depósitos, el 4.º slot y las
+        # compras.
         m.pendientes = []
         nueva = t_barra > pd.Timestamp(estado["ultima_barra"])
         if nueva:
             for s in m.slots:
                 s.entro_en_vela = False
+            c = float(v["close"].iloc[-1])
+            m.marcar_atrapados(t_ejec, c)
             m.rango = float(datos["rango_prev"].iloc[-1])
-            m._senales(t_barra, float(v["close"].iloc[-1]), bool(datos["senal"].iloc[-1]))
+            m._senales(t_barra, c, bool(datos["senal"].iloc[-1]))
         if mm.ciclo_de(t_ejec, mcfg.dia_cierre) != m.ciclo:
-            if m.ciclo is None:
-                m.ciclo = mm.ciclo_de(t_ejec, mcfg.dia_cierre)
-            else:
-                corrida.cierre_mensual(t_ejec)
+            corrida.corte_mensual(t_ejec)
+        corrida.comprar_holding(t_ejec)
+        sal = corrida.verificar_saldos()
+        corrida.detectar_deposito(t_ejec, sal)
+        corrida.chequear_cuarto(t_ejec)
         sal = corrida.verificar_saldos()
         m.rango = float(datos["rango"].iloc[-1])   # el R con el que opera la vela que abre ahora
         corrida.actualizar_ventas()
@@ -553,14 +665,16 @@ def run_btc_rangos_real(ahora: Optional[datetime] = None, cliente: Optional[Clie
         r = _rutas()
         nuevos_meses = [e["mes"] for e in corrida.eventos if e["tipo"] == "cierre"]
         precio = float(v["close"].iloc[-1])
-        papel._append_csv(r["eq"], [{"ts": ahora, "precio": precio, "capital_bot": m.capital_bot_nominal(),
+        sal = corrida.verificar_saldos()
+        papel._append_csv(r["eq"], [{"ts": ahora, "precio": precio, "capital_bot": m.usdt_bot() + m.invertido(),
                                      "usdt_bot": m.usdt_bot(), "btc_slots": m.btc_en_slots(),
                                      "holding_btc": m.holding_btc, "bench_btc": m.bench_btc,
                                      "patrimonio_btc": m.patrimonio_btc(precio), "usdt_cuenta": sal["usdt"],
-                                     "btc_cuenta": sal["btc"]}])
+                                     "btc_cuenta": sal["btc"], "latente": m.latente(precio),
+                                     "atrapados": sum(m.atrapado)}])
         corrida.guardar(final=True)
         meses = pd.read_csv(r["mes"]) if r["mes"].exists() else pd.DataFrame()
-        acumulado = float((meses["realizado"] - meses["atrapadas_costo"]).sum()) if len(meses) else 0.0
+        acumulado = float(meses["neto"].sum()) if len(meses) and "neto" in meses else 0.0
         limite = cfg.get("pausa_si_neto_menor_usdt")
         if nuevos_meses and limite is not None and acumulado < float(limite):
             corrida.pausar(f"el neto acumulado ({_signo(acumulado)} USDT) quedó bajo el límite de {_n(float(limite), 0)}")
@@ -570,12 +684,8 @@ def run_btc_rangos_real(ahora: Optional[datetime] = None, cliente: Optional[Clie
         if ops_eventos:
             _emitir("btc_real_operaciones", "INFO", mensaje_md=mensaje_operaciones_md(ops_eventos))
         for mes in nuevos_meses:
-            p_ant = estado.get("precio_cierre_anterior")
-            var = (mes["precio_cierre"] / p_ant - 1) * 100 if p_ant else None
+            var = (mes["precio_cierre"] / mes["precio_inicio"] - 1) * 100
             _emitir("btc_real_cierre_mensual", "INFO", mensaje_md=mensaje_cierre_md(mes, var, acumulado))
-            estado["precio_cierre_anterior"] = mes["precio_cierre"]
-        if estado.get("precio_cierre_anterior") is None:
-            estado["precio_cierre_anterior"] = precio  # referencia del primer ciclo (parcial)
         hoy = str(ahora.date())
         hora = int(cfg.get("hora_resumen_utc", 12))
         if estado.get("ultimo_resumen") != hoy and ahora.hour >= hora:
@@ -583,10 +693,6 @@ def run_btc_rangos_real(ahora: Optional[datetime] = None, cliente: Optional[Clie
             _emitir("btc_real_resumen", "INFO", mensaje_md=mensaje_resumen_md(
                 cfg, estado, m, precio, float(datos["rango"].iloc[-1]), ops, meses))
             estado["ultimo_resumen"] = hoy
-        if (t_ejec.day == mcfg.dia_cierre - 1 and ahora.hour >= hora
-                and estado.get("ultimo_recordatorio") != hoy):
-            _emitir("btc_real_recordatorio_dca", "INFO", mensaje_md=mensaje_recordatorio_md(m, cfg))
-            estado["ultimo_recordatorio"] = hoy
         corrida.guardar()
         _ERRORES["seguidos"] = 0
         return {"nuevo": False, "eventos": len(corrida.eventos), "pausa": bool(estado.get("pausa"))}

@@ -1,9 +1,11 @@
 # Bot BTC por rangos — lotes de 4 ciclos y mejoras contra el DCA (27-28/10/2026)
 
-**Decisión del usuario (28/10):** el bot real sigue en prod como está, con A · E4_0.5 · S4_0.75 · G4, reposición parcial y cierre el día 3. Se observa cómo evoluciona según los hitos de [btc_rangos_real_hitos.md](btc_rangos_real_hitos.md). Nada de este informe se implementó en el real.
+**Decisión del usuario (28/10):** el bot real sigue en prod como está, con A · E4_0.5 · S4_0.75 · G4, reposición parcial y cierre el día 3. Se observa cómo evoluciona según los hitos de [btc_rangos_real_hitos.md](btc_rangos_real_hitos.md).
 
-- **Script:** `scripts/btc_rangos_lotes_sim.py`. `--prueba` corre 5 pruebas: caso a mano, atrapado y 4.º slot, filtro, contraste exacto con `pkg/btc_rangos_motor.py` y filtro siempre en COMPRA = sin filtro. La corrida completa tarda ~5 min en el Mac.
-- **Datos:** `archivos/btc_rangos/lotes_sim/`, con `corridas.csv`, `mejoras.csv`, `b1_mensual.csv` y `b1_mensual_por_calendario.csv`.
+**Decisión del usuario (02/11):** pasar el real a lotes de **3 ciclos**, variante B y sin filtro. El motivo: no va a depositar hasta mediados de mes, y con la regla v0.4 el cierre del día 3 sin depósito deja al bot quieto. Los 3 ciclos no estaban simulados y se agregaron después de la decisión, como información (sección 7). El motor de lotes se movió a `pkg/btc_rangos_lotes.py`, y la simulación, el papel y el real usan ese mismo código. Con el motor movido, las 7.600 corridas de la simulación dan idénticas.
+
+- **Script:** `scripts/btc_rangos_lotes_sim.py` (el motor está en `pkg/btc_rangos_lotes.py`). `--prueba` corre 5 pruebas: caso a mano, atrapado y 4.º slot, filtro, contraste exacto con `pkg/btc_rangos_motor.py` y filtro siempre en COMPRA = sin filtro. La corrida completa tarda ~5 min en el Mac.
+- **Datos:** `archivos/btc_rangos/lotes_sim/`, con `corridas.csv`, `mejoras.csv`, `b1_mensual.csv`, `b1_mensual_por_calendario.csv` y `b3_mensual_cortes.csv`. `--mensual 3` genera este último en ~10 s.
 
 ## Qué se probó
 
@@ -73,6 +75,7 @@ Los criterios se fijaron antes de correr:
 | Regla actual | −1,30 % | −1,59 % | +0,23 % | +27 | — |
 | 1 ciclo por lote | **−0,65 %** | −0,62 % | −0,65 % | +146 | 32 % |
 | 2 ciclos | −0,90 % | −0,75 % | −1,20 % | +204 | 27 % |
+| 3 ciclos (02/11, después de la decisión) | −1,20 % | −0,88 % | −1,99 % | +232 | 25 % |
 | 4 ciclos (B) | −1,73 % | −1,15 % | −2,84 % | +307 | 23 % |
 | Filtro + 1 ciclo | −0,80 % | −0,12 % | −1,39 % | +272 | 68 % |
 | Filtro + 2 ciclos | −1,54 % | −0,97 % | −2,10 % | +40 | 50 % |
@@ -100,6 +103,19 @@ Los criterios se fijaron antes de correr:
 - **% neto:** el crudo menos las atrapadas y el cambio en lo no realizado. Es negativo en el 30 % de los meses, los de caída fuerte.
 - **En dinero**, el crudo son unos 10 USDT al mes, sobre un capital de ~230. El detalle mes a mes está en `b1_mensual.csv`.
 
+### 7. Lotes de 3 ciclos (02/11)
+
+- **BTC contra el DCA puro**: −1,20 % de mediana. Gana en el 6 % de los calendarios: en el 24 % en 2021-2023 y en el 3 % en 2024-2026. Su placebo da −0,53 % en el percentil 90.
+- **Contra la regla v0.4**: es casi igual en todo el período (−1,20 % contra −1,30 %). Pero en 2024-2026 es peor: −1,99 % contra +0,23 %.
+- **Atrapadas**: medidas contra el día del depósito, −2,1 % de BTC.
+- **Neto del ciclo con el corte del día 3 del real** (`--mensual 3`, 50 calendarios, 3.350 ciclos): medio +0,68 %, mediano +1,65 %, con correlación 0,77 con BTC.
+
+| BTC en el ciclo | neto mediano | ciclos con neto ≥ 0 |
+|---|---|---|
+| cae más de 5 % | −9,8 % | 5 % |
+| entre −5 % y +5 % | +1,1 % | 61 % |
+| sube más de 5 % | +9,6 % | 97 % |
+
 ## Conclusiones
 
 1. **Ninguna variante le gana al DCA puro en BTC.** Lo más cerca es 1 ciclo por lote (−0,65 %). La regla en prod da −1,30 %.
@@ -107,3 +123,4 @@ Los criterios se fijaron antes de correr:
 3. **Las atrapadas se miden contra el día del depósito**, no contra el promedio del DCA. En la 1.ª compra cuestan lo mismo que el DCA; lo que cuesta es el dinero que vuelve a entrar después de varios ciclos.
 4. **Ni el momento de entrar ni el filtro de tendencia mueven el resultado** más allá de ±1 %. Lo mismo dieron las compras semanales y el Modo Acumulación.
 5. **Si algún día se cambia la regla del real**, el candidato es 1 ciclo por lote, sin filtro. Cambiarla exige archivar `archivos/btc_rangos/real/` y reiniciar los hitos.
+6. **El 02/11 el usuario eligió 3 ciclos.** Su motivo es operativo: no depende de depositar el día 3. En BTC da casi lo mismo que la regla v0.4 en todo el período y peor en 2024-2026.

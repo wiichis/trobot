@@ -18,11 +18,11 @@ El bot de 5 min multi-par sobre perpetuos se archivó porque no tiene edge medid
 | 1. Velas spot 1 h de BTC + reglas del exchange (mínimo, step, tick, retiro) | ✅ 22/10 — `scripts/btc_rangos_datos.py`, paridad Binance↔BingX ~0 bps |
 | 2. Backtest contra DCA puro, con selección 2021-2023 y validación 2024-2026 intacta | ❌ 22/10 — **no viable**: v0.1 0 de 5 finalistas, no le gana al placebo; v0.2 (sólo en ventana COMPRA) 0 de 5. Ver [docs/btc_rangos_fase2_informe.md](docs/btc_rangos_fase2_informe.md) |
 | 3. Bot en papel | 🟡 23/10 — **en papel desde el 23/10** con A · E4_0.5 · S4_0.75 · G4 y reposición parcial (`pkg/btc_rangos.py`, `pkg/btc_rangos.json`), elegido por el usuario aunque el backtest no pasa los criterios (ingreso realizado ~5 %/mes, neto ≈ 0 contra el DCA) |
-| 4. Bot en real, 186,65 USDT | 🟢 **en real desde el 25/10/2026 00:01 UTC** (`pkg/btc_rangos_real.py`, `pkg/bingx_spot.py`, `pkg/btc_rangos_real.json`). El usuario prefirió no esperar meses de papel. Hitos y criterios fijados antes de operar: [docs/btc_rangos_real_hitos.md](docs/btc_rangos_real_hitos.md), con la bitácora al final; próximo: H1, el cierre del 03/11; veredicto el 03/05/2027. Tablero: `scripts/btc_rangos_hitos.py` |
+| 4. Bot en real, 186,65 USDT | 🟢 **en real desde el 25/10/2026 00:01 UTC** (`pkg/btc_rangos_real.py`, `pkg/bingx_spot.py`, `pkg/btc_rangos_real.json`). El usuario prefirió no esperar meses de papel. **02/11: pasa a lotes de 3 ciclos** ("reponer sólo cuando hay dinero", `pkg/btc_rangos_lotes.py`), elegido por el usuario aunque en la simulación da −1,20 % contra el DCA. En prod, hasta el deploy, sigue v0.4 con el cierre postergado al 28/11 (`dia_cierre: 28`); la primera corrida con el código nuevo migra el estado sola. Hitos y criterios de cada versión: [docs/btc_rangos_real_hitos.md](docs/btc_rangos_real_hitos.md), con la bitácora al final; próximo: M0 (la migración) y M1 (el primer depósito, ~15/11); veredicto el 03/06/2027. Tablero: `scripts/btc_rangos_hitos.py` |
 
 Herramientas de la Fase 2: `pkg/btc_rangos_reglas.py` (señales), `pkg/btc_rangos_motor.py` (motor; el mismo que usaría el live), `scripts/btc_rangos_backtest.py` (grilla + validación + placebo, ~70 s) y `scripts/btc_acumulacion_backtest.py` (§13).
 
-Lotes de ciclos y mejoras contra el DCA (27-28/10): `scripts/btc_rangos_lotes_sim.py`, informe en [docs/btc_rangos_lotes_informe.md](docs/btc_rangos_lotes_informe.md). 0 de 8 variantes le ganan al DCA; la mejor es 1 ciclo por lote (−0,65 %). Decisión: el real sigue como está y se observa.
+Lotes de ciclos y mejoras contra el DCA (27-28/10): `scripts/btc_rangos_lotes_sim.py`, informe en [docs/btc_rangos_lotes_informe.md](docs/btc_rangos_lotes_informe.md). 0 de 8 variantes le ganan al DCA; la mejor es 1 ciclo por lote (−0,65 %). El 02/11 se agregó 3 ciclos (−1,20 %; `--mensual 3` da el neto esperado por ciclo según BTC) y el usuario lo eligió para el real.
 
 ## Qué corre en el server
 
@@ -31,7 +31,7 @@ Los jobs se encienden en `pkg/jobs.json`. Cambiar un flag = editar + restart. Si
 | Job | Estado | Módulo |
 |---|---|---|
 | **Bot BTC por rangos en REAL** | **activo desde el 25/10**, :01 cada hora, antes del papel (se apaga con `btc_rangos_real` en jobs.json o `enabled` en `pkg/btc_rangos_real.json`) | `pkg/btc_rangos_real.py` — estado en `archivos/btc_rangos/real/`. Ver abajo |
-| **Bot BTC por rangos en papel** | activo, :01 cada hora | `pkg/btc_rangos.py` — estado en `archivos/btc_rangos/papel/`; `dca_mensual_usdt` se ajusta en `pkg/btc_rangos.json` antes de cada día 3. Sombra del real desde el 25/10, con el mismo capital (186,65). Registra cada compra una hora después que el real: simula el fill en la apertura de la vela siguiente y lo ve recién cuando esa vela cierra |
+| **Bot BTC por rangos en papel** | activo, :01 cada hora | `pkg/btc_rangos.py` — estado en `archivos/btc_rangos/papel/`. Sombra del real desde el 25/10, con el mismo capital (186,65); con lotes, aplica los depósitos que el real anota en `real/depositos.csv`. Registra cada compra una hora después que el real: simula el fill en la apertura de la vela siguiente y lo ve recién cuando esa vela cierra |
 | Resumen diario (BTC + S&P + Dow) | activo | `pkg/daily_digest.py` |
 | Alerta de ventana de compra/venta de BTC | activo | `pkg/btc_alertas.py` (su gate `alerta_ventana` está en `pkg/btc_bots.json`) |
 | Bot de 5 min multi-par | apagado | `pkg/monkey_bx.py` y compañía |
@@ -48,8 +48,8 @@ ssh -i ~/Documents/proyectos/ls_keys/trobot4.pem ubuntu@98.81.217.194
 - **Consultar el exchange desde prod**: las claves vienen del `EnvironmentFile`, así que hay que cargarlas: `sudo bash -c 'set -a; . /etc/default/trobot; set +a; cd /home/ubuntu/TRobot && PYTHONPATH=. env/bin/python3 ...'`. Exigir siempre `code == 0`: sin claves el API devuelve un error que se confunde con "no hay nada".
 - **Bot real (BingX spot)**:
   - **Clave propia**: `TROBOT_BINGX_SPOT_APIKEY` / `TROBOT_BINGX_SPOT_SECRETKEY` en `/etc/default/trobot`, con trading spot, sin retiro y con whitelist de la IP. Sin ella no opera: nunca usa la clave de perpetuos (que sale de AWS Secrets Manager).
-  - **Cómo opera**: compra a mercado en el :01 y deja una venta LÍMITE al TP en el exchange, que se reemplaza cuando cambia el R. El orden de los pasos es el mismo que el motor: señal al cierre de la vela → cierre mensual → compras.
-  - **El DCA** es el USDT que el usuario deposita en spot antes del día 3 (lo que excede la contabilidad del bot más `usdt_ajeno`), con tope `dca_maximo_usdt`.
+  - **Cómo opera**: compra a mercado en el :01 y deja una venta LÍMITE al TP en el exchange, que se reemplaza cuando cambia el R. El orden de los pasos es el mismo que `MotorLotes.vela`: atrapados y señal al cierre de la vela → corte contable del día 3 → compra de holding → depósitos → 4.º slot → compras.
+  - **Depósitos (lotes)**: cada hora, el USDT de spot que excede la contabilidad del bot más `usdt_ajeno` es un depósito, desde `min_deposito_usdt` y con tope `dca_maximo_usdt` por depósito. Si cubre a un atrapado, el bot cancela su venta y el BTC queda como holding. Se anota en `depositos.csv`. **Todo USDT que aparece en spot es del bot.**
   - **Pausa**: frena sólo las compras. Se levanta borrando `pausa` en `estado.json` después de revisar. `pausar_entradas: true` en la config la fuerza a mano.
   - **Prueba de humo** antes de la primera orden: `scripts/btc_rangos_real_humo.py` (compra límite al 50 % del precio y la cancela).
 - **Servidor**: t3.micro con 914 MB. Los backtests y los barridos se corren **siempre en el Mac**.
