@@ -56,8 +56,8 @@ CAMPOS_COMBO = ("reglas", "ciclos_por_lote", "caida_atrapado", "dias_atrapado", 
 
 
 # --- config, fuentes ------------------------------------------------------------------
-def _cfg() -> Dict:
-    return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+def _cfg(path: Optional[Path] = None) -> Dict:
+    return json.loads(Path(path or CONFIG_PATH).read_text(encoding="utf-8"))
 
 
 def combo(cfg: Dict) -> Dict:
@@ -130,12 +130,13 @@ class EstadoIlegible(Exception):
     pass
 
 
-def _rutas():
-    return (OUT_DIR / "estado.json", OUT_DIR / "operaciones.csv", OUT_DIR / "mensual.csv", OUT_DIR / "equity.csv")
+def _rutas(out: Optional[Path] = None):
+    out = Path(out or OUT_DIR)
+    return (out / "estado.json", out / "operaciones.csv", out / "mensual.csv", out / "equity.csv")
 
 
-def leer_estado() -> Optional[Dict]:
-    f = _rutas()[0]
+def leer_estado(out: Optional[Path] = None) -> Optional[Dict]:
+    f = _rutas(out)[0]
     if not f.exists():
         return None
     try:
@@ -144,8 +145,8 @@ def leer_estado() -> Optional[Dict]:
         raise EstadoIlegible(str(exc)) from exc
 
 
-def _guardar_estado(estado: Dict) -> None:
-    f = _rutas()[0]
+def _guardar_estado(estado: Dict, out: Optional[Path] = None) -> None:
+    f = _rutas(out)[0]
     tmp = f.with_suffix(".tmp")
     tmp.write_text(json.dumps(estado, indent=1, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, f)
@@ -261,12 +262,13 @@ def depositos_del_real(f: Path = None) -> pd.DataFrame:
     return d[d["lote"] > 0]
 
 
-def migrar_v04(estado: Dict, cfg: Dict, ahora: pd.Timestamp) -> Dict:
+def migrar_v04(estado: Dict, cfg: Dict, ahora: pd.Timestamp, out: Optional[Path] = None) -> Dict:
     """Pasa el estado v0.4 a lotes, con respaldo de la carpeta. Mismas reglas que el real."""
     import shutil
-    destino = OUT_DIR.parent / f"papel_v04_{ahora:%Y%m%d%H%M}"
-    shutil.copytree(OUT_DIR, destino)
-    f_estado, f_ops, _, f_eq = _rutas()
+    out = Path(out or OUT_DIR)
+    destino = out.parent / f"{out.name}_v04_{ahora:%Y%m%d%H%M}"
+    shutil.copytree(out, destino)
+    f_estado, f_ops, _, f_eq = _rutas(out)
     ops = pd.read_csv(f_ops) if f_ops.exists() else pd.DataFrame()
     eq_v04 = f_eq.with_name("equity_v04.csv")
     precio_inicio = float(pd.read_csv(f_eq if f_eq.exists() else eq_v04)["precio"].iloc[0])
@@ -289,10 +291,14 @@ def migrar_v04(estado: Dict, cfg: Dict, ahora: pd.Timestamp) -> Dict:
 _AVISADO = set()
 
 
-def run_btc_rangos(ahora: Optional[datetime] = None, fuentes: Optional[Dict[str, Callable]] = None) -> Optional[Dict]:
-    """Job horario. Devuelve un resumen de la corrida, o None si no corrió. Nunca levanta."""
+def run_btc_rangos(ahora: Optional[datetime] = None, fuentes: Optional[Dict[str, Callable]] = None,
+                   config_path: Optional[Path] = None, out_dir: Optional[Path] = None) -> Optional[Dict]:
+    """Job horario. Devuelve un resumen de la corrida, o None si no corrió. Nunca levanta.
+    `config_path` y `out_dir` corren otra instancia (los experimentos de `btc_rangos_experimentos`)."""
     try:
-        cfg = _cfg()
+        cfg = _cfg(config_path)
+        out = Path(out_dir or OUT_DIR)
+        info = _emitir if cfg.get("avisos", True) else (lambda *a, **k: None)  # los errores avisan igual
         if not cfg.get("enabled", False):
             return None
         modo = cfg.get("modo", "papel")
@@ -306,11 +312,11 @@ def run_btc_rangos(ahora: Optional[datetime] = None, fuentes: Optional[Dict[str,
         ahora = ahora.tz_localize("UTC") if ahora.tzinfo is None else ahora.tz_convert("UTC")
         fuentes = fuentes or {}
         velas_fn = fuentes.get("velas") or (lambda limit: _velas_bingx(cfg.get("symbol", "BTC-USDT"), limit))
-        OUT_DIR.mkdir(parents=True, exist_ok=True)
-        f_estado, f_ops, f_mes, f_eq = _rutas()
+        out.mkdir(parents=True, exist_ok=True)
+        f_estado, f_ops, f_mes, f_eq = _rutas(out)
 
         try:
-            estado = leer_estado()
+            estado = leer_estado(out)
         except EstadoIlegible as exc:
             log.critical("btc_rangos: estado ilegible (%s); no se escribe nada", exc)
             _emitir("btc_rangos_estado_ilegible", "CRITICAL", detail=str(exc)[:300])
@@ -335,21 +341,21 @@ def run_btc_rangos(ahora: Optional[datetime] = None, fuentes: Optional[Dict[str,
             estado = {"inicio": str(ahora), "inicio_lotes": str(ahora), "reglas": "lotes", "modo": modo,
                       "combo": combo(cfg), "ultima_barra": str(v.index[-1]), "ultimo_resumen": None,
                       "precio_inicio": precio0, "lotes_aplicados": [], "motor": m.a_dict()}
-            _guardar_estado(estado)
-            _emitir("btc_rangos_inicio", "INFO", mensaje_md=(
+            _guardar_estado(estado, out)
+            info("btc_rangos_inicio", "INFO", mensaje_md=(
                 f"_Modo papel: sin dinero real._ Arranca con {_n(capital, 0)} USDT en 3 slots, lotes de "
                 f"{cfg['ciclos_por_lote']} ciclos. {describir_combo(cfg)}. "
                 f"Opera desde la vela que abre a las {t0:%H:%M} UTC."))
             return {"nuevo": True, "procesadas": 0}
         if estado.get("reglas") != "lotes" and cfg.get("reglas") == "lotes":
-            estado = migrar_v04(estado, cfg, ahora)
-            _guardar_estado(estado)
+            estado = migrar_v04(estado, cfg, ahora, out)
+            _guardar_estado(estado, out)
         if estado.get("combo") != combo(cfg):
-            if "combo" not in _AVISADO:
-                _AVISADO.add("combo")
+            if f"combo:{out}" not in _AVISADO:
+                _AVISADO.add(f"combo:{out}")
                 _emitir("btc_rangos_modo_rechazado", "WARN",
                         detail="la config cambió respecto del estado; no se mezclan combinaciones. "
-                               "Para cambiar, archivar archivos/btc_rangos/papel/ y reiniciar.")
+                               f"Para cambiar, archivar {out} y reiniciar.")
             return None
 
         m = ml.MotorLotes.desde_dict(estado["motor"], mcfg)
@@ -405,17 +411,17 @@ def run_btc_rangos(ahora: Optional[datetime] = None, fuentes: Optional[Dict[str,
         estado["actualizado"] = str(ahora)
 
         if eventos:
-            _emitir("btc_rangos_operaciones", "INFO", mensaje_md=mensaje_operaciones_md(eventos))
+            info("btc_rangos_operaciones", "INFO", mensaje_md=mensaje_operaciones_md(eventos))
         for mes in cierres:
-            _emitir("btc_rangos_cierre_mensual", "INFO", mensaje_md=mensaje_cierre_md(mes))
+            info("btc_rangos_cierre_mensual", "INFO", mensaje_md=mensaje_cierre_md(mes))
         hoy = str(ahora.date())
         if estado.get("ultimo_resumen") != hoy and ahora.hour >= int(cfg.get("hora_resumen_utc", 12)):
             ops = pd.read_csv(f_ops) if f_ops.exists() else pd.DataFrame()
             meses = pd.read_csv(f_mes) if f_mes.exists() else pd.DataFrame()
-            _emitir("btc_rangos_resumen", "INFO",
+            info("btc_rangos_resumen", "INFO",
                     mensaje_md=mensaje_resumen_md(cfg, m, precio, rango_actual, ops, meses, estado["inicio"]))
             estado["ultimo_resumen"] = hoy
-        _guardar_estado(estado)
+        _guardar_estado(estado, out)
         return {"nuevo": False, "procesadas": len(nuevas), "eventos": len(eventos), "cierres": len(cierres)}
     except Exception as exc:  # el scheduler es de un solo hilo: nunca propagar
         log.exception("btc_rangos: error en la corrida: %s", exc)

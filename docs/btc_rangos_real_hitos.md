@@ -83,6 +83,19 @@ La pausa también frena la compra de holding. La levanta una persona, después d
   - **todo USDT que aparezca en spot es del bot**, desde 15 USDT (lo menor se acumula hasta llegar);
   - el tope es de 500 USDT por depósito, y el exceso queda aparte en `usdt_ajeno`.
 
+### Experimentos en papel junto al real (fijado el 02/11/2026, antes de desplegar)
+
+Corren desde el deploy, sin Telegram (`pkg/btc_rangos_experimentos.py`). Arrancan del mismo punto que el real (los 3 slots abiertos del 02/11) y usan los mismos depósitos (`real/depositos.csv`).
+
+| | Regla | En la simulación (BTC contra el DCA) |
+|---|---|---|
+| `exp_b1` | Lotes de **1 ciclo**: cada depósito vende una vez al TP y pasa a holding | −0,65 % en 2021-2026, la mejor del total |
+| `exp_v04` | La **v0.4**: cierre forzado el día 3; los depósitos entran en el cierre y hasta entonces quedan en USDT | +0,23 % en 2024-2026, la mejor de ese tramo |
+
+- **Medida**: patrimonio en BTC (BTC + USDT ÷ precio), todos al mismo precio, contra el real y contra un DCA puro calculado aparte (el capital a 80.877,24 y cada depósito en su hora).
+- **Dónde se ve**: la sección 4 de `scripts/btc_rangos_hitos.py`; con `--json` da la tabla y la serie para el tablero web.
+- **Criterio del usuario**: el **30/11** se revisa cómo van, **sin cambiar el real** por el resultado de un mes. Con la misma señal y el mismo TP, lo que cambia es cuánto tiene cada uno en BTC, así que el mes lo decide sobre todo BTC: si sube fuerte, se espera que gane la v0.4; si va de lado, los lotes de 3; si cae, la v0.4 (con el depósito en USDT).
+
 ## v0.4 (fijado el 24/10/2026, antes de operar; vigente hasta la migración)
 
 ### Qué se prueba
@@ -156,3 +169,4 @@ La pausa la levanta una persona, después de revisar.
 | 27-28/10 | Se simularon los lotes de ciclos y dos mejoras (menos ciclos y filtro de tendencia a los depósitos): 0 de 8 le ganan al DCA. **Decisión del usuario: el real sigue como está**, sin cambiar reglas durante la prueba. Informe: [btc_rangos_lotes_informe.md](btc_rangos_lotes_informe.md). |
 | 27/10 22:01 | **H0, primera venta ✅.** La venta límite del slot 1 se llenó a 81.148,99 y cobró la comisión en USDT (0,1 %). Al 02/11 suman 4 ventas al TP: +3,62 USDT realizados, +0,20 por encima del papel en las mismas operaciones. 7 compras con deslizamiento mediano de 0 bps contra el ask. Saldos y órdenes vivas comparados directo contra BingX: coinciden exactos. |
 | 02/11 | **Decisión del usuario: no deposita hasta mediados de mes y pasa a "reponer sólo cuando hay dinero"** (lotes de 3 ciclos, sin corte el día 3, como en [btc_rangos_lotes_informe.md](btc_rangos_lotes_informe.md)). El neto al 02/11 era de ≈ −0,5 USDT con BTC −4,6 % en el ciclo (el backtest esperaba −0,8 %). Con la regla actual, el cierre del 03/11 sin depósito habría atrapado los 3 slots (~4 USDT) y dejado al bot quieto. **Se posterga el cierre**: `dia_cierre` 3 → 28 en la config y en el estado del real y del papel; no hay cierre hasta el 28/11 y los slots siguen con sus ventas al TP. H1 queda sin efecto; los hitos se reinician con las reglas nuevas. |
+| 02/11 | **Experimentos en papel** (lotes de 1 ciclo y v0.4), decididos con el usuario antes del deploy: corren junto al real desde el mismo punto y con los mismos depósitos; se revisan el 30/11 sin cambiar el real. Ver la sección de experimentos arriba. |

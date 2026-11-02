@@ -32,6 +32,7 @@ Los jobs se encienden en `pkg/jobs.json`. Cambiar un flag = editar + restart. Si
 |---|---|---|
 | **Bot BTC por rangos en REAL** | **activo desde el 25/10**, :01 cada hora, antes del papel (se apaga con `btc_rangos_real` en jobs.json o `enabled` en `pkg/btc_rangos_real.json`) | `pkg/btc_rangos_real.py` — estado en `archivos/btc_rangos/real/`. Ver abajo |
 | **Bot BTC por rangos en papel** | activo, :01 cada hora | `pkg/btc_rangos.py` — estado en `archivos/btc_rangos/papel/`. Sombra del real desde el 25/10, con el mismo capital (186,65); con lotes, aplica los depósitos que el real anota en `real/depositos.csv`. Registra cada compra una hora después que el real: simula el fill en la apertura de la vela siguiente y lo ve recién cuando esa vela cierra |
+| **Dos experimentos en papel** (lotes de 1 ciclo y v0.4) | activo desde el 02/11, :01, sin Telegram (`btc_rangos_experimentos` en jobs.json) | `pkg/btc_rangos_experimentos.py`, `pkg/btc_rangos_v04.py`, configs `pkg/btc_rangos_exp_{b1,v04}.json` — estado en `archivos/btc_rangos/exp_{b1,v04}/`. Mismo punto de partida y mismos depósitos que el real; comparación en la sección 4 de `scripts/btc_rangos_hitos.py` (`--json` para el tablero web). Se revisan el 30/11 sin cambiar el real |
 | Resumen diario (BTC + S&P + Dow) | activo | `pkg/daily_digest.py` |
 | Alerta de ventana de compra/venta de BTC | activo | `pkg/btc_alertas.py` (su gate `alerta_ventana` está en `pkg/btc_bots.json`) |
 | Bot de 5 min multi-par | apagado | `pkg/monkey_bx.py` y compañía |

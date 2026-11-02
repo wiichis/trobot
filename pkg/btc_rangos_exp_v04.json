@@ -1,0 +1,21 @@
+{
+  "_comentario": "EXPERIMENTO en papel (02/11/2026, pkg/btc_rangos_v04.py): la regla v0.4 con el cierre forzado del día 3, la mejor de la simulación en 2024-2026 (+0,23 % contra el DCA). Usa los depósitos del real (real/depositos.csv) en el cierre del día 3, como la v0.4 real; hasta entonces quedan en USDT. Sin Telegram. Estado en archivos/btc_rangos/exp_v04/, arrancado del papel del 02/11 17:00 UTC. Se revisa el 30/11 sin cambiar el real.",
+  "enabled": true,
+  "modo": "papel",
+  "symbol": "BTC-USDT",
+  "capital": 186.65,
+  "slots": "A",
+  "escalon_r": 0.0,
+  "entrada": "E4_0.5",
+  "filtro": false,
+  "salida": "S4_0.75",
+  "ganancia": "G4",
+  "reposicion_parcial": true,
+  "dia_cierre": 3,
+  "comision": 0.001,
+  "slippage": 0.0005,
+  "min_orden_usdt": 15.0,
+  "hora_resumen_utc": 12,
+  "depositos_del_real": true,
+  "avisos": false
+}

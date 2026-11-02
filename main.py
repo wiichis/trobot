@@ -14,6 +14,7 @@ import pkg.light_mode
 import pkg.daily_digest
 import pkg.btc_rangos
 import pkg.btc_rangos_real
+import pkg.btc_rangos_experimentos
 import schedule
 import time
 import threading
@@ -35,6 +36,7 @@ JOBS_DEFAULT = {
     "daily_digest": True,
     "btc_rangos": False,
     "btc_rangos_real": False,
+    "btc_rangos_experimentos": False,
 }
 
 
@@ -237,6 +239,10 @@ if __name__ == '__main__':
         # Bot BTC por rangos en PAPEL (pkg/btc_rangos.json): procesa cada vela 1 h cerrada de
         # BingX spot con el mismo motor del backtest. No manda órdenes.
         schedule.every().hour.at(":01").do(pkg.btc_rangos.run_btc_rangos)
+    if jobs["btc_rangos_experimentos"]:
+        # Dos experimentos en papel junto al real (pkg/btc_rangos_experimentos.py): lotes de 1
+        # ciclo y la regla v0.4, con los depósitos del real. Sin Telegram; se miran en el tablero.
+        schedule.every().hour.at(":01").do(pkg.btc_rangos_experimentos.run_btc_rangos_experimentos)
     if jobs["daily_digest"]:
         # Resumen diario de BTC y bolsa de EE. UU. (pkg/daily_digest.py): un mensaje por día UTC
         # a partir de hora_utc (pkg/daily_digest.json). Hilo aparte; si una fuente cae, reintenta.

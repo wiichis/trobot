@@ -7,18 +7,28 @@ Lee `archivos/btc_rangos/real/` (y `papel/` como sombra, si arrancaron juntos) y
 2. Depósitos y corte a corte (día 3): ganancia realizada, costo de las atrapadas reemplazadas,
    cambio en la pérdida latente, neto, cuánto se movió BTC y qué esperaba la simulación.
 3. Los cuatro criterios del veredicto, con el valor de hoy.
+4. Los dos experimentos en papel (lotes de 1 ciclo y v0.4) contra el real y el DCA puro, todos al
+   mismo precio (`pkg/btc_rangos_experimentos.py`). Se revisan el 30/11 sin cambiar el real.
 
 Uso (en el server o con copias locales): python3 scripts/btc_rangos_hitos.py [--dir archivos/btc_rangos]
+[--json]  (el JSON es lo que lee el tablero web: la tabla de experimentos y su serie hora a hora)
 """
 from __future__ import annotations
 
 import argparse
 import json
+import sys
+import types
 from pathlib import Path
 
 import pandas as pd
 
 REPO = Path(__file__).resolve().parent.parent
+# `pkg/__init__` arrastra las credenciales y el bot de 5 min: se registra el paquete sin ejecutarlo
+_pkg = types.ModuleType("pkg")
+_pkg.__path__ = [str(REPO / "pkg")]
+sys.modules.setdefault("pkg", _pkg)
+from pkg import btc_rangos_experimentos as bx  # noqa: E402
 # lotes de 3 ciclos, `btc_rangos_lotes_sim.py --mensual 3` (igual que `ESPERADO_SIMULACION` del real)
 ESPERADO = ((-5.0, "cae >5 %", -9.8), (5.0, "±5 %", 1.1), (float("inf"), "sube >5 %", 9.6))
 VEREDICTO = "03/06/2027"
@@ -34,7 +44,16 @@ def esperado(var):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", default=str(REPO / "archivos" / "btc_rangos"))
-    base = Path(ap.parse_args().dir)
+    ap.add_argument("--json", action="store_true", help="sólo la comparación de experimentos, en JSON")
+    args = ap.parse_args()
+    base = Path(args.dir)
+    if args.json:
+        sin_nan = lambda x: (None if isinstance(x, float) and x != x else  # el NaN no es JSON válido
+                             {k: sin_nan(v) for k, v in x.items()} if isinstance(x, dict) else
+                             [sin_nan(v) for v in x] if isinstance(x, list) else x)
+        print(json.dumps(sin_nan({"comparacion": bx.comparacion(base), "serie": bx.serie(base)}),
+                         default=str, allow_nan=False))
+        return
     real, sombra = base / "real", base / "papel"
     est = json.loads((real / "estado.json").read_text(encoding="utf-8"))
     leer = lambda f: pd.read_csv(f) if f.exists() else pd.DataFrame()
@@ -95,6 +114,18 @@ def main() -> None:
         con, sin = u["patrimonio_btc"], u["bench_btc"]
         print(f"   b) BTC con bot {con:.6f} vs DCA puro {sin:.6f} ({(con / sin - 1) * 100:+.2f} %) · "
               f"pérdida latente hoy {u['latente']:+.2f} USDT · atrapados {int(u['atrapados'])}")
+
+    print("\n4) EXPERIMENTOS EN PAPEL (se revisan el 30/11, sin cambiar el real)")
+    c = bx.comparacion(base)
+    if c["precio"]:
+        print(f"   todos a {c['precio']:,.0f} · DCA puro {c['dca_puro_btc']:.6f} BTC")
+    for f in c["filas"]:
+        if not f["corre"]:
+            print(f"   {f['nombre']:<30} todavía no corre")
+            continue
+        print(f"   {f['nombre']:<30} {f['patrimonio_btc']:.6f} BTC ({f['vs_dca_pct']:+.2f} % vs DCA, "
+              f"{f['vs_real_pct']:+.2f} % vs real) · {f['btc']:.6f} BTC + {f['usdt']:6.2f} USDT · "
+              f"{f['ventas']} ventas, {f['realizado']:+.2f} USDT")
 
 
 if __name__ == "__main__":

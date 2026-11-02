@@ -1,0 +1,21 @@
+{
+  "_comentario": "EXPERIMENTO en papel (02/11/2026, pkg/btc_rangos_experimentos.py): lotes de 1 ciclo, la mejor variante de la simulación (−0,65 % de BTC contra el DCA). Mismo motor y mismos depósitos que la sombra (real/depositos.csv); sólo cambia ciclos_por_lote. Sin Telegram. Estado en archivos/btc_rangos/exp_b1/. Se revisa el 30/11 sin cambiar el real.",
+  "enabled": true,
+  "modo": "papel",
+  "symbol": "BTC-USDT",
+  "capital": 186.65,
+  "reglas": "lotes",
+  "ciclos_por_lote": 1,
+  "caida_atrapado": 0.1,
+  "dias_atrapado": 30,
+  "entrada": "E4_0.5",
+  "filtro": false,
+  "salida": "S4_0.75",
+  "ganancia": "G4",
+  "dia_cierre": 3,
+  "comision": 0.001,
+  "slippage": 0.0005,
+  "min_orden_usdt": 15.0,
+  "hora_resumen_utc": 12,
+  "avisos": false
+}
