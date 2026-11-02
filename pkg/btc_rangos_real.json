@@ -11,7 +11,7 @@
   "salida": "S4_0.75",
   "ganancia": "G4",
   "reposicion_parcial": true,
-  "dia_cierre": 3,
+  "dia_cierre": 28,
   "dca_maximo_usdt": 500.0,
   "pausa_si_neto_menor_usdt": -45.0,
   "pausar_entradas": false,

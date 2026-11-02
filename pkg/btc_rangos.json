@@ -11,7 +11,7 @@
   "salida": "S4_0.75",
   "ganancia": "G4",
   "reposicion_parcial": true,
-  "dia_cierre": 3,
+  "dia_cierre": 28,
   "dca_mensual_usdt": 400.0,
   "comision": 0.001,
   "slippage": 0.0005,
