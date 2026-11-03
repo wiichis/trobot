@@ -216,11 +216,19 @@ class ClienteSpot:
         self._llamar("POST", "/openApi/spot/v1/trade/cancel", {"symbol": symbol, "orderId": str(order_id)})
 
     def esperar_terminada(self, symbol: str, order_id: str, intentos: int = 6, pausa: float = 1.0) -> Orden:
-        """Una orden de mercado se llena en milisegundos, pero el query puede tardar en reflejarlo."""
-        o = self.consultar(symbol, order_id=order_id)
-        for _ in range(intentos - 1):
+        """Una orden de mercado se llena en milisegundos, pero el query puede tardar en reflejarlo.
+        Recién cancelada, el query puede contestar 100404 ("order not exist") aunque la orden
+        exista (03/11/2026): se reintenta igual y sólo se levanta si sigue así al final."""
+        o = None
+        for n in range(intentos):
+            if n:
+                time.sleep(pausa)
+            try:
+                o = self.consultar(symbol, order_id=order_id)
+            except ErrorExchange as exc:
+                if "code=100404" not in str(exc) or n == intentos - 1:
+                    raise
+                continue
             if o.terminada:
                 break
-            time.sleep(pausa)
-            o = self.consultar(symbol, order_id=order_id)
         return o

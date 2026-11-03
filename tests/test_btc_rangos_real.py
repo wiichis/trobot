@@ -48,6 +48,8 @@ class BingxSpotFalso:
         self.rechazar = None      # code a devolver en la próxima orden
         self.timeout_tras_crear = False
         self.llenado_parcial = None  # fracción a llenar en la próxima vela
+        self.no_existe_tras_cancelar = 0  # queries que contestan 100404 justo después de cancelar
+        self._sin_ver = 0
 
     # --- simulación del mercado ---
     def jugar_vela(self, high: float) -> None:
@@ -122,7 +124,8 @@ class BingxSpotFalso:
                 o = self.ordenes.get(int(params["orderId"]))
             else:
                 o = next((x for x in self.ordenes.values() if x["clientOrderID"] == params["clientOrderID"]), None)
-            if o is None:
+            if o is None or self._sin_ver:
+                self._sin_ver = max(self._sin_ver - 1, 0)
                 return {"code": 100404, "msg": "order not exist", "data": {}}
             return ok(self._json(o))
         if path.endswith("trade/cancel"):
@@ -132,6 +135,7 @@ class BingxSpotFalso:
                 self.btc_lock -= resto
                 self.btc += resto
                 o["status"] = "CANCELED"
+            self._sin_ver = self.no_existe_tras_cancelar
             return ok(self._json(o))
         raise AssertionError(f"endpoint no previsto {path}")
 
@@ -473,6 +477,26 @@ def test_compra_que_nunca_llego_al_exchange_se_descarta(entorno):
     reloj.correr()
     est = json.loads((entorno["dir"] / "estado.json").read_text())
     assert est["compra_en_curso"] is None and not est["pausa"]
+
+
+def test_venta_recien_cancelada_que_el_query_todavia_no_ve(entorno):
+    """03/11/2026 00:01 en prod: al reemplazar un TP, BingX canceló la venta y el query siguiente
+    contestó 100404 ("order not exist"). La corrida se cayó con el slot sin venta. Ahora se
+    reintenta: cada reemplazo sigue y las cuentas cuadran."""
+    full = serie()
+    ex = entorno["ex"]
+    ex.no_existe_tras_cancelar = 2
+    reloj = Reloj(entorno, full, 40 * 24)
+    reloj.correr()
+    for _ in range(10 * 24):
+        reloj.avanzar()
+        res = reloj.correr()
+        assert res is not None and not res["pausa"], entorno["avisos"][-1]
+        cuentas_cuadran(entorno)
+    ords = pd.read_csv(entorno["dir"] / "ordenes.csv")
+    assert (ords["motivo"] == "tp_reemplazo").sum() > 0
+    assert (ords.loc[ords["motivo"] == "tp_reemplazo", "estado"] == "CANCELED").all()
+    assert not [a for a in entorno["avisos"] if a[1] in ("WARN", "CRITICAL")]
 
 
 def test_cliente_sin_clave_spot_no_usa_la_de_perpetuos(monkeypatch):
