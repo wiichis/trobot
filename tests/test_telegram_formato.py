@@ -37,8 +37,38 @@ def test_quitar_markdown_deja_texto_legible():
 
 
 class _Resp:
-    def __init__(self, status):
+    def __init__(self, status, cuerpo=None):
         self.status_code, self.ok, self.text = status, status == 200, ""
+        self._cuerpo = cuerpo
+
+    def json(self):
+        if self._cuerpo is None:
+            raise ValueError("sin JSON")
+        return self._cuerpo
+
+
+def test_el_log_guarda_el_id_del_mensaje(tmp_path, monkeypatch):
+    import pkg.lifecycle_events as le
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"telegram": {"enabled": True, "parse_mode": "Markdown",
+                                            "state_file": str(tmp_path / "estado.json")}}))
+    alerter = ta.TelegramAlerter(config_path=cfg, repo_root=tmp_path)
+    alerter.token, alerter.chat_id = "t", "c"
+    # respuesta real de sendMessage, recortada
+    cuerpo = {"ok": True, "result": {"message_id": 4821, "chat": {"id": -100123, "type": "private"},
+                                     "date": 1793845263, "text": "💵 Bot BTC REAL: operaciones"}}
+    monkeypatch.setattr(ta.requests, "post", lambda url, data, timeout: _Resp(200, cuerpo))
+    log = tmp_path / "lifecycle_event_log.csv"
+    monkeypatch.setattr(le, "LIFECYCLE_LOG_CSV", log)
+    disp = le.LifecycleEventDispatcher.__new__(le.LifecycleEventDispatcher)
+    disp.alerter = alerter
+    disp.emit(category="btc_real_operaciones", severity="INFO", force=True, mensaje_md="*Compra*")
+    fila = pd.read_csv(log).iloc[-1]
+    assert bool(fila.telegram_sent) and fila.telegram_detail == "ok:msg=4821"
+    # sin JSON legible el envío sigue contando como hecho
+    monkeypatch.setattr(ta.requests, "post", lambda url, data, timeout: _Resp(200))
+    r = alerter.send(category="btc_real_alerta", severity="INFO", body="otro", ts_utc="", force=True)
+    assert r.sent and r.detail == "ok"
 
 
 def test_si_telegram_rechaza_el_formato_va_en_texto_limpio(tmp_path, monkeypatch):

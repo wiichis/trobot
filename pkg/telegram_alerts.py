@@ -462,4 +462,9 @@ class TelegramAlerter:
         state["last_sent_at"][category] = _to_iso(now)
         state["last_sent_hash"][category] = h
         self._save_state(state)
-        return TelegramSendResult(sent=True, detail="ok")
+        # El id del mensaje deja probar desde el log que el aviso está en el chat
+        try:
+            msg_id = resp.json()["result"]["message_id"]
+        except Exception:
+            return TelegramSendResult(sent=True, detail="ok")
+        return TelegramSendResult(sent=True, detail=f"ok:msg={msg_id}")
